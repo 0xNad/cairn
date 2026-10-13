@@ -13,8 +13,9 @@ single Node.js process with zero dependencies, on any Starknet RPC. It is MIT-li
 It is built in public by AI coding agents, in four judged rounds on
 [Hotpod](https://agent-launchpad-six.vercel.app).
 
-> **Status:** the base. Round 1 builds `node cairn.mjs`: the lookups, the frozen interface and the security
-> baseline. [ARCHITECTURE.md](ARCHITECTURE.md) is the specification every round builds inside.
+> **Status:** round 1 lookups are implemented: `/start`, `/help`, `/status`, `/balance` and `/tx`.
+> Wallet alerts, group feeds and guards below describe later rounds.
+> [ARCHITECTURE.md](ARCHITECTURE.md) specifies the frozen interface.
 
 ## What it looks like
 
@@ -137,7 +138,58 @@ node cairn.mjs doctor   # checks the token, the node's chain and its RPC version
 node cairn.mjs run
 ```
 
-Until round 1 is merged, `cairn.mjs` is a stub.
+`doctor` prints one JSON line with the bot username, decoded chain, block number and RPC version.
+`tick` drains updates once and prints `{ "updates": n, "sent": n, "head": n }` (a busy node gives
+`head: null`). `run` polls continuously; SIGINT and SIGTERM cancel polling, RPC calls and backoff waits.
+Exit codes are 0 for completion, 1 for connectivity or an instance conflict, 2 for configuration or
+an incompatible chain/spec, and 3 for a rejected Telegram token. Logs are JSON on stderr.
+
+### Round 1 commands
+
+| Command | Reply |
+| --- | --- |
+| `/start`, `/help` | Commands, privacy, and a link to add the bot to a group |
+| `/status` | Chain, head, UTC block time, L1/L1-data/L2 gas in FRI, RPC spec |
+| `/balance 0x…` | Exact balances of every registry token, in registry order |
+| `/tx 0x…` | Finality, execution, block, fee, escaped revert reason, explorer link |
+
+In groups, use `/command` or `/command@your_bot_username`. Plain text and commands for other bots
+are ignored. Zero or out-of-range addresses and hashes are refused before a lookup. Registry token
+failures are independent, so one failing token does not hide the other balances. Native USDC and
+bridged USDC.e are distinct tokens. Mainnet has six starter tokens; Sepolia has four.
+
+All environment settings, bounds and defaults are in [ARCHITECTURE.md](ARCHITECTURE.md#the-environment).
+For Sepolia set both `CAIRN_CHAIN=SN_SEPOLIA` and
+`CAIRN_EXPLORER_URL=https://sepolia.voyager.online`. Do not pass credentials in command arguments.
+The explorer is used only for links. Redirects from either configured endpoint are refused.
+
+### State and recovery
+
+Use a dedicated `CAIRN_DATA` directory per bot. It is mode 700 and files are mode 600. Round 1 stores
+only the update offset, schema version and registered command list. No message text, lookup inputs,
+usernames, bot token or RPC URL are persisted. A process lock rejects a second owner of the same data
+directory using a separate SQLite exclusive transaction; the OS releases it after a kill, with no
+PID-file recovery race. State itself is an atomic JSON file. Corrupt state is refused, never reset.
+
+Each update's claim is fsynced and atomically renamed **before** its reply is sent. This prevents
+duplicate handling after SIGKILL, including a kill immediately after Telegram accepts a reply.
+Telegram supplies no idempotency key for `sendMessage`: a crash between the durable claim and the
+send can lose that reply, and a crash during a split reply can leave it incomplete. Send a new command
+to retry. This is an at-most-once policy, not a promise of exactly-once delivery. Explicit Telegram
+429/5xx rejections are retried; ambiguous transport failures are never resent. Back up the data
+directory while the process is stopped; preserve state when restarting.
+
+### Checks
+
+```sh
+node .launchpad/checks/round-1/run.mjs
+node --test test/edge-cases.test.mjs
+```
+
+The published checks use local fake Telegram and Starknet services and exercise the CLI as child
+processes, including kills, retries, strict host limits and credential scans. Additional tests cover
+redirects, ambiguous sends, aborting Retry-After waits, corruption, concurrent state owners, symlinks,
+full-range u256 arithmetic, 36-decimal tokens and long HTML with emoji. They use Node built-ins only.
 
 ## Build it with your agent
 
