@@ -5,7 +5,7 @@ import { once } from 'node:events';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { linkSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Rpc, Telegram } from '../src/transport.mjs';
@@ -14,6 +14,7 @@ import { Store } from '../src/store.mjs';
 import { normalize, FIELD, u256, decodeChain } from '../src/felt.mjs';
 import { amount, messages, redactor, textLines } from '../src/format.mjs';
 import { parseHtml } from '../.launchpad/checks/round-1/fake-telegram.mjs';
+import { answer } from '../src/commands.mjs';
 
 async function server(t, handler) {
   const http = createServer(handler);
@@ -72,6 +73,41 @@ test('RPC refuses write methods and speculative blocks before HTTP', async (t) =
   await assert.rejects(client.call('starknet_getBlockWithTxHashes', { block_id: 'pending' }), CairnError);
   await assert.rejects(client.call('starknet_getBlockWithTxHashes', { block_id: 'pre_confirmed' }), CairnError);
   assert.equal(contacted, 0);
+});
+
+test('RPC refuses malformed block identifiers before HTTP', async (t) => {
+  let contacted = 0;
+  const url = await server(t, (_, res) => { contacted++; res.end('{}'); });
+  const client = new Rpc(config(url), new AbortController().signal);
+  for (const block_id of [{ block_number: -1 }, { block_number: 1, block_hash: '0x1' },
+    { block_number: 1, tag: 'pending' }, { block_hash: 'garbage' }, { block_hash: '0x0' }]) {
+    await assert.rejects(client.call('starknet_getBlockWithTxHashes', { block_id }), CairnError);
+  }
+  assert.equal(contacted, 0);
+});
+
+test('balance reads one fixed block even when latest advances between token calls', async (t) => {
+  let latest = 42;
+  const url = await server(t, (req, res) => {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      const { id, method, params } = JSON.parse(body);
+      const block = params.block_id === 'latest' ? latest++ : params.block_id.block_number;
+      const result = method === 'starknet_call' ? [`0x${block.toString(16)}`, '0x0'] : '0x1';
+      res.end(JSON.stringify({ jsonrpc: '2.0', id, result }));
+    });
+  });
+  const c = { ...config(url), chain: 'SN_MAIN', explorer: 'https://explorer.example',
+    tokens: [{ symbol: 'A', address: normalize('0x1'), decimals: 0 },
+      { symbol: 'B', address: normalize('0x2'), decimals: 0 }] };
+  const signal = new AbortController().signal;
+  const lines = await answer({ name: 'balance', argument: '0x123' }, {
+    config: c, rpc: new Rpc(c, signal), clean: String, head: { block_number: 42, timestamp: 1791849600 }, signal,
+  });
+  const plain = lines.map((line) => parseHtml(line).plain).join('\n');
+  assert.match(plain, /42 A/);
+  assert.match(plain, /42 B/);
 });
 
 test('a connection lost during send is never resent', async (t) => {
@@ -140,6 +176,34 @@ test('state refuses a symlink without modifying its target', () => {
   symlinkSync(target, join(directory, 'state.json'));
   assert.throws(() => new Store(directory), /state.json is invalid/);
   assert.equal(readFileSync(target, 'utf8'), 'preserve');
+});
+
+test('state refuses hard links without changing data or permissions outside CAIRN_DATA', () => {
+  for (const file of ['state.json', 'instance.sqlite', 'state.next']) {
+    const root = mkdtempSync(join(tmpdir(), 'cairn-hardlink-'));
+    const target = join(root, 'outside');
+    writeFileSync(target, '{"version":1,"offset":0,"commands":null}', { mode: 0o644 });
+    const directory = join(root, 'data');
+    // Create the directory through the real store, then insert the hostile directory entry.
+    const initial = new Store(directory);
+    initial.close();
+    if (file === 'instance.sqlite') {
+      // The existing lock is intentionally retained; link an outside name to that inode instead.
+      const lock = join(directory, file);
+      linkSync(lock, join(root, 'outside-lock'));
+      assert.throws(() => new Store(directory), /instance lock/);
+      continue;
+    }
+    linkSync(target, join(directory, file));
+    const original = readFileSync(target, 'utf8'), mode = statSync(target).mode;
+    if (file === 'state.json') assert.throws(() => new Store(directory), /state.json is invalid/);
+    else {
+      const store = new Store(directory);
+      try { assert.throws(() => store.save(), /state.next/); } finally { store.close(); }
+    }
+    assert.equal(readFileSync(target, 'utf8'), original);
+    assert.equal(statSync(target).mode, mode);
+  }
 });
 
 test('exact amounts include zero decimals, 36 decimals and the full u256 range', () => {

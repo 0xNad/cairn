@@ -1,6 +1,7 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { performance } from 'node:perf_hooks';
 import { CairnError, NodeBusy, RpcError } from './errors.mjs';
+import { normalize } from './felt.mjs';
 
 const TIMER_MAX = 2147483647;
 export async function sleep(ms, signal) {
@@ -40,6 +41,16 @@ const READ_METHODS = new Set(['starknet_chainId', 'starknet_specVersion', 'stark
   'starknet_getBlockWithTxHashes', 'starknet_getClassHashAt', 'starknet_call',
   'starknet_getTransactionStatus', 'starknet_getTransactionReceipt']);
 
+function validBlockId(value) {
+  if (value === 'latest') return true;
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 1) return false;
+  if (Object.hasOwn(value, 'block_number')) return Number.isSafeInteger(value.block_number) && value.block_number >= 0;
+  if (Object.hasOwn(value, 'block_hash')) {
+    try { normalize(value.block_hash, 'hash'); return true; } catch { return false; }
+  }
+  return false;
+}
+
 export class Rpc {
   #times = [];
   #id = 0;
@@ -54,8 +65,7 @@ export class Rpc {
   }
   async call(method, params = {}) {
     if (!READ_METHODS.has(method)) throw new CairnError('Unsupported RPC method.');
-    if (params.block_id !== undefined && params.block_id !== 'latest' &&
-        !(typeof params.block_id === 'object' && (Number.isSafeInteger(params.block_id?.block_number) || typeof params.block_id?.block_hash === 'string'))) {
+    if (params.block_id !== undefined && !validBlockId(params.block_id)) {
       throw new CairnError('Unsupported block identifier.');
     }
     for (let attempt = 0; attempt < 3; attempt++) {

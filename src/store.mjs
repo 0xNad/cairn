@@ -1,4 +1,4 @@
-import { chmodSync, closeSync, constants, existsSync, fsyncSync, lstatSync, mkdirSync,
+import { chmodSync, closeSync, constants, existsSync, fchmodSync, fstatSync, fsyncSync, ftruncateSync, lstatSync, mkdirSync,
   openSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
@@ -17,7 +17,8 @@ export class Store {
     this.acquire();
     try {
       if (existsSync(this.file)) {
-        if (!lstatSync(this.file).isFile() || lstatSync(this.file).isSymbolicLink()) throw new Error('unsafe state');
+        const info = lstatSync(this.file);
+        if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) throw new Error('unsafe state');
         chmodSync(this.file, 0o600);
         const saved = JSON.parse(readFileSync(this.file, 'utf8'));
         if (saved.version !== 1 || !Number.isSafeInteger(saved.offset) || saved.offset < 0 ||
@@ -32,14 +33,17 @@ export class Store {
   acquire() {
     // A separate SQLite transaction holds the OS lock for this process's lifetime. Unlike PID files,
     // it has no stale-owner deletion race, and the kernel releases it immediately after SIGKILL.
-    if (existsSync(this.lock) && (!lstatSync(this.lock).isFile() || lstatSync(this.lock).isSymbolicLink())) {
-      throw new CairnError('Unsafe CAIRN_DATA instance lock.');
+    if (existsSync(this.lock)) {
+      const info = lstatSync(this.lock);
+      if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) throw new CairnError('Unsafe CAIRN_DATA instance lock.');
     }
     const oldMask = process.umask(0o077);
     try {
       const fd = openSync(this.lock, constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
-      closeSync(fd);
-      chmodSync(this.lock, 0o600);
+      try {
+        if (fstatSync(fd).nlink !== 1) throw new Error('unsafe lock');
+        fchmodSync(fd, 0o600);
+      } finally { closeSync(fd); }
       this.owner = new DatabaseSync(this.lock);
       this.owner.exec('BEGIN EXCLUSIVE');
     } catch (error) {
@@ -49,8 +53,15 @@ export class Store {
   }
   save() {
     const temporary = join(this.directory, 'state.next');
-    const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600);
-    try { chmodSync(temporary, 0o600); writeFileSync(fd, JSON.stringify(this.state)); fsyncSync(fd); } finally { closeSync(fd); }
+    const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
+    try {
+      const info = fstatSync(fd);
+      if (!info.isFile() || info.nlink !== 1) throw new CairnError('Unsafe CAIRN_DATA/state.next; restore a consistent state backup.');
+      fchmodSync(fd, 0o600);
+      ftruncateSync(fd, 0);
+      writeFileSync(fd, JSON.stringify(this.state));
+      fsyncSync(fd);
+    } finally { closeSync(fd); }
     renameSync(temporary, this.file);
     const dir = openSync(this.directory, constants.O_RDONLY);
     try { fsyncSync(dir); } finally { closeSync(dir); }

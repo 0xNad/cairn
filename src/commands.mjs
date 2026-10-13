@@ -34,8 +34,9 @@ export async function answer(command, context) {
       case 'status':
         return text(`Starknet · ${config.chain}\nHead: ${head.block_number}\n${utc(head.timestamp)}\nL1 gas: ${unsigned(head.l1_gas_price.price_in_fri)} FRI\nL1-data gas: ${unsigned(head.l1_data_gas_price.price_in_fri)} FRI\nL2 gas: ${unsigned(head.l2_gas_price.price_in_fri)} FRI\nRPC spec: ${spec}`);
       case 'balance': {
-        const lines = [...text(`Balances · ${config.chain} · block ${head.block_number}`), link('contract', input)];
-        try { await rpc.call('starknet_getClassHashAt', { block_id: 'latest', contract_address: input }); }
+        const block_id = { block_number: head.block_number };
+        const lines = [...text(`Balances · ${config.chain} · block ${head.block_number}\n${utc(head.timestamp)}`), link('contract', input)];
+        try { await rpc.call('starknet_getClassHashAt', { block_id, contract_address: input }); }
         catch (error) {
           if (error instanceof RpcError && error.code === 20) lines.push(...text('Account not deployed (balances still available).'));
           else if (error instanceof NodeBusy) throw error;
@@ -44,7 +45,7 @@ export async function answer(command, context) {
         }
         for (const token of config.tokens) {
           try {
-            const params = { request: { contract_address: token.address, entry_point_selector: SELECTORS.balance_of, calldata: [input] }, block_id: 'latest' };
+            const params = { request: { contract_address: token.address, entry_point_selector: SELECTORS.balance_of, calldata: [input] }, block_id };
             let result;
             try { result = await rpc.call('starknet_call', params); }
             catch (error) {
