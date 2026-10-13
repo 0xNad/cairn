@@ -2,7 +2,7 @@ export const escapeHtml = s => String(s).replaceAll('&', '&amp;').replaceAll('<'
 export const short = hex => `${hex.slice(0, 6)}…${hex.slice(-4)}`;
 
 export function unsigned(value, bits = 256) {
-  if (typeof value !== 'string' || !/^0x[0-9a-fA-F]+$/.test(value) || value.length > 2 + Math.ceil(bits / 4)) throw new Error('Invalid node amount');
+  if (typeof value !== 'string' || !/^0x[0-9a-fA-F]+$/.test(value)) throw new Error('Invalid node amount');
   const n = BigInt(value);
   if (n >= 2n ** BigInt(bits)) throw new Error('Invalid node amount');
   return n;
@@ -26,7 +26,11 @@ export function utc(seconds) {
 // Every line has its own markup. Long single lines are the only case split away from a newline.
 export function messages(lines, redact) {
   const result = [];
-  let html = '', length = 0;
+  let html = '', length = 0, visible = false;
+  const flush = () => {
+    if (visible) result.push(html);
+    html = ''; length = 0; visible = false;
+  };
   for (const item of lines) {
     const line = typeof item === 'string' ? { text: item } : item;
     for (const raw of redact(line.text).toWellFormed().split('\n')) {
@@ -38,15 +42,16 @@ export function messages(lines, redact) {
       }
       pieces.push(piece);
       for (const text of pieces) {
-        if (length + (html ? 1 : 0) + text.length > 4096) { result.push(html); html = ''; length = 0; }
+        if (length + (html ? 1 : 0) + text.length > 4096) flush();
         let rendered = escapeHtml(text);
         if (line.href) rendered = `<a href="${escapeHtml(redact(line.href))}">${rendered}</a>`;
         else if (line.bold && text) rendered = `<b>${rendered}</b>`;
         if (html) { html += '\n'; length++; }
         html += rendered; length += text.length;
+        visible ||= text.trim().length > 0;
       }
     }
   }
-  if (html.trim()) result.push(html);
+  flush();
   return result;
 }

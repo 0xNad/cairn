@@ -104,7 +104,7 @@ time. Token balances are the registry contracts' reported values; Cairn does not
 ## Verification
 
 ```sh
-node scripts/proof.mjs /home/djizus/.launchpad/djAIzus/cairn-1/evidence
+node scripts/proof.mjs ../evidence
 npm run check
 ```
 

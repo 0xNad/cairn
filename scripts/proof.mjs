@@ -28,14 +28,14 @@ const env = { PATH: process.env.PATH, LANG: 'C.UTF-8', TZ: 'UTC',
   CAIRN_NETWORK_FILE: join(dir, 'network.json'), CAIRN_DATA: join(dir, 'data'),
   CAIRN_RPC_RPS: '100', CAIRN_POLL_MS: '100', CAIRN_TG_TIMEOUT: '1', CAIRN_RPC_TIMEOUT_MS: '500',
   NODE_OPTIONS: `--import=${join(root, '.launchpad/checks/round-1/trap.mjs')}`, CAIRN_TRAP_LOG: join(dir, 'network.jsonl') };
-const runs = [], actions = [], children = new Set(), endpoints = [];
+const runs = [], actions = [], children = new Set(), endpoints = [], formatExchanges = [], regressions = [];
 async function endpoint(handler) {
   const requests = [];
   const server = createServer(async (req, res) => {
     let body = '';
     for await (const part of req) body += part;
     requests.push({ path: req.url, body });
-    handler(req, res, body);
+    await handler(req, res, body);
   });
   await new Promise(ok => server.listen(0, '127.0.0.1', ok));
   const item = { server, requests, url: `http://127.0.0.1:${server.address().port}` };
@@ -148,10 +148,67 @@ try {
     assert(!contents.includes(token) && !contents.includes(rpc.url));
     assert(!contents.includes(longReason) && !contents.includes('Example'));
   }
+
+  // Read the same balances through minimal and zero-padded HTTP responses, including both limb limits.
+  let encoding = 'minimal';
+  const balanceProxy = await endpoint(async (_req, res, body) => {
+    const request = JSON.parse(body);
+    const response = await fetch(rpc.url, { method: 'POST', headers: { 'content-type': 'application/json' }, body });
+    const json = await response.json();
+    if (request.method === 'starknet_call' && Array.isArray(json.result)) {
+      if (encoding === 'padded') json.result = json.result.map(v => `0x${v.slice(2).padStart(64, '0')}`);
+      if (encoding === 'overflow-low') json.result[0] = `0x${(2n ** 128n).toString(16)}`;
+      if (encoding === 'overflow-high') json.result[1] = `0x${(2n ** 128n).toString(16)}`;
+      formatExchanges.push({ encoding, request, response: json });
+    }
+    res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(json));
+  });
+  try {
+    for (const [balance, expected] of [[0n, '0'], [2n ** 128n + 5n, '340282366920938463463.374607431768211461'],
+      [2n ** 128n - 1n, '340282366920938463463.374607431768211455']]) {
+      rpc.contract(1n, erc20({ symbol: 'STRK', decimals: 18, balances: new Map([[2n, balance]]) }));
+      let control;
+      for (encoding of ['minimal', 'padded', 'overflow-low', 'overflow-high']) {
+        say('/balance 0x2');
+        assert.deepEqual(await run('tick', { STARKNET_RPC_URL: balanceProxy.url }), { updates: 1, sent: 1, head: 4200010 });
+        const text = tg.accepted.at(-1).text;
+        if (encoding.startsWith('overflow')) {
+          assert.match(text, /STRK: unavailable/);
+          assert(!/\d STRK/.test(text), 'An out-of-range limb must not produce a balance');
+        } else {
+          assert.equal(text.split('\n').at(-1), `${expected} STRK`);
+          if (encoding === 'minimal') control = text;
+          else assert.equal(text, control, 'Padding must not change the displayed balance');
+        }
+      }
+    }
+    regressions.push({ name: 'padded balances and numeric limb bounds', passed: true });
+  } catch (error) { regressions.push({ name: 'padded balances and numeric limb bounds', passed: false, error: error.message }); }
+
+  try {
+    for (const whitespace of [' '.repeat(5000), '\t'.repeat(9000), '\n'.repeat(5000)]) {
+      rpc.tx({ hash: 5n, block: 4200007, finality: 'ACCEPTED_ON_L2', execution: 'REVERTED', fee: 1n,
+        revert: `before\n${whitespace}\nafter` });
+      const before = tg.accepted.length, beforeCalls = tg.calls.length;
+      say('/tx 0x5'); say('/help');
+      const summary = await run('tick');
+      const accepted = tg.accepted.slice(before);
+      assert.equal(summary.updates, 2);
+      assert.equal(summary.sent, accepted.length);
+      assert(accepted.every(m => m.text.trim().length > 0 && m.text.length <= 4096));
+      assert.equal(tg.calls.slice(beforeCalls).filter(c => c.status === 400).length, 0);
+      assert.match(accepted.at(-1).text, /On-chain facts, not financial advice\./);
+      const reason = accepted.slice(0, -1).map(m => m.text).join('\n').split('Revert reason:\n')[1];
+      assert.equal(reason?.replace(/\s+/g, ' ').trim(), 'before after');
+    }
+    regressions.push({ name: 'whitespace chunks preserve content and following commands', passed: true });
+  } catch (error) { regressions.push({ name: 'whitespace chunks preserve content and following commands', passed: false, error: error.message }); }
+  assert(regressions.every(r => r.passed), JSON.stringify(regressions.filter(r => !r.passed)));
   assert.deepEqual(tg.violations, []);
   assert.deepEqual(rpc.violations, []);
   result = { passed: true, checks: ['doctor', 'lookups', 'input refusal', 'restart', 'SIGKILL', 'long poll', 'SIGTERM',
-    'UTF-16 splitting', 'secret reflection', 'redirect refusal', 'startup recovery', 'SIGINT', 'private state'] };
+    'UTF-16 splitting', 'secret reflection', 'redirect refusal', 'startup recovery', 'SIGINT', 'private state',
+    ...regressions.map(r => r.name)] };
 } catch (error) {
   result = { passed: false, error: error.message };
   process.exitCode = 1;
@@ -162,6 +219,7 @@ try {
   save('telegram.json', { calls: tg.calls, accepted: tg.accepted, acked: tg.acked });
   save('rpc.json', { requests: rpc.requests, calls: rpc.calls });
   save('endpoints.json', endpoints.map(({ url, requests }) => ({ url, requests })));
+  save('format-regressions.json', { regressions, exchanges: formatExchanges });
   save('result.json', result);
   await Promise.all([tg.close(), rpc.close(), ...endpoints.map(({ server }) => new Promise(ok => {
     server.close(ok); server.closeAllConnections();
