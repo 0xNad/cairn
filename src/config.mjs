@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { accessSync, constants, lstatSync, readFileSync, statSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CairnError } from './errors.mjs';
 import { normalize } from './felt.mjs';
@@ -17,6 +18,29 @@ function integer(env, key, fallback, min, max = Number.MAX_SAFE_INTEGER) {
   if (!/^\d+$/.test(raw) || !Number.isSafeInteger(value) || value < min || value > max) bad(`${key}: must be a decimal integer from ${min} to ${max}.`);
   return value;
 }
+function dataDirectory(value) {
+  if (!value) bad('CAIRN_DATA: must name a data directory.');
+  const path = resolve(value);
+  let ancestor = path;
+  for (;;) {
+    let info;
+    try { info = lstatSync(ancestor); }
+    catch (error) {
+      if (error.code !== 'ENOENT') bad('CAIRN_DATA: directory or parent is unreadable or not a directory.');
+      ancestor = dirname(ancestor);
+      continue;
+    }
+    if (ancestor === path && info.isSymbolicLink()) bad('CAIRN_DATA: must be a real directory, not a symbolic link.');
+    try {
+      if (!statSync(ancestor).isDirectory()) bad('CAIRN_DATA: must name a directory, not a file.');
+      accessSync(ancestor, constants.W_OK | constants.X_OK);
+    } catch (error) {
+      if (error instanceof CairnError) throw error;
+      bad('CAIRN_DATA: directory or parent is not writable and searchable.');
+    }
+    return path;
+  }
+}
 export function loadConfig(args, env = process.env) {
   if (args.length !== 1 || !['run', 'tick', 'doctor'].includes(args[0])) bad('Usage: node cairn.mjs run|tick|doctor (no flags).');
   const token = env.TELEGRAM_BOT_TOKEN;
@@ -28,7 +52,7 @@ export function loadConfig(args, env = process.env) {
   const explorer = url(env.CAIRN_EXPLORER_URL ?? 'https://voyager.online', 'CAIRN_EXPLORER_URL').replace(/\/$/, '');
   const config = {
     mode: args[0], token, telegramRoot, rpcUrl, chain, explorer,
-    data: env.CAIRN_DATA ?? './data',
+    data: dataDirectory(env.CAIRN_DATA ?? './data'),
     pollMs: integer(env, 'CAIRN_POLL_MS', 10000, 50),
     tgTimeout: integer(env, 'CAIRN_TG_TIMEOUT', 30, 0, 50),
     rpcRps: integer(env, 'CAIRN_RPC_RPS', 5, 1, 100),
@@ -36,7 +60,6 @@ export function loadConfig(args, env = process.env) {
     logLevel: env.CAIRN_LOG ?? 'info',
   };
   if (!['error', 'warn', 'info', 'debug'].includes(config.logLevel)) bad('CAIRN_LOG: must be error, warn, info or debug.');
-  if (!config.data) bad('CAIRN_DATA: must name a data directory.');
   const path = env.CAIRN_NETWORK_FILE ?? fileURLToPath(new URL(`../networks/${chain}.json`, import.meta.url));
   let network;
   try { network = JSON.parse(readFileSync(path, 'utf8')); } catch { bad(`${path}: missing, unreadable or not JSON.`); }

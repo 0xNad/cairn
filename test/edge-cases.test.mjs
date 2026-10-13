@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import { mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -20,6 +23,37 @@ async function server(t, handler) {
   return `http://127.0.0.1:${http.address().port}`;
 }
 const config = (url) => ({ rpcUrl: url, rpcRps: 100, rpcTimeout: 100, telegramRoot: url, token: `12:${'x'.repeat(30)}` });
+
+test('a file configured as CAIRN_DATA is refused before contacting either host', async (t) => {
+  let requests = 0;
+  const tg = await server(t, (_, res) => { requests++; res.end(JSON.stringify({ ok: true, result: { username: 'edge_bot' } })); });
+  const rpc = await server(t, (req, res) => {
+    requests++;
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      const { id, method } = JSON.parse(body);
+      const result = method === 'starknet_chainId' ? '0x534e5f4d41494e' : '0.10.3';
+      res.end(JSON.stringify({ jsonrpc: '2.0', id, result }));
+    });
+  });
+  const directory = mkdtempSync(join(tmpdir(), 'cairn-data-file-'));
+  const file = join(directory, 'keep.txt');
+  writeFileSync(file, 'preserve');
+  let failure;
+  try {
+    await promisify(execFile)(process.execPath, ['cairn.mjs', 'tick'], {
+      cwd: fileURLToPath(new URL('..', import.meta.url)),
+      env: { PATH: process.env.PATH, TMPDIR: tmpdir(), TELEGRAM_BOT_TOKEN: config(tg).token,
+        TELEGRAM_API_ROOT: tg, STARKNET_RPC_URL: rpc, CAIRN_DATA: file }, timeout: 5000,
+    });
+  } catch (error) { failure = error; }
+  assert.equal(failure?.code, 2);
+  assert.equal(failure.stdout, '');
+  assert.match(failure.stderr, /CAIRN_DATA/);
+  assert.equal(requests, 0);
+  assert.equal(readFileSync(file, 'utf8'), 'preserve');
+});
 
 test('RPC rejects redirects without contacting the destination', async (t) => {
   let contacted = 0;
