@@ -48,6 +48,14 @@ test('a connection lost during send is never resent', async (t) => {
   assert.equal(sends, 1);
 });
 
+test('an ambiguous HTTP 500 during send is never resent', async (t) => {
+  let sends = 0;
+  const url = await server(t, (_, res) => { sends++; res.writeHead(500); res.end('{}'); });
+  const client = new Telegram(config(url), new AbortController().signal);
+  await assert.rejects(client.call('sendMessage', { chat_id: 1, text: 'example' }));
+  assert.equal(sends, 1);
+});
+
 test('shutdown interrupts an RPC Retry-After wait', async (t) => {
   let reached;
   const request = new Promise((resolve) => { reached = resolve; });
@@ -58,6 +66,19 @@ test('shutdown interrupts an RPC Retry-After wait', async (t) => {
   await request;
   abort.abort();
   await assert.rejects(result);
+});
+
+test('a valid timeout above the native timer range still permits a fast RPC reply', async (t) => {
+  const url = await server(t, (req, res) => {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      const { id } = JSON.parse(body);
+      res.end(JSON.stringify({ jsonrpc: '2.0', id, result: 42 }));
+    });
+  });
+  const client = new Rpc({ ...config(url), rpcTimeout: 4294967296 }, new AbortController().signal);
+  assert.equal(await client.call('starknet_blockNumber'), 42);
 });
 
 test('state excludes concurrent owners and preserves a durable offset', () => {

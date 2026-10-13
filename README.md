@@ -176,7 +176,8 @@ duplicate handling after SIGKILL, including a kill immediately after Telegram ac
 Telegram supplies no idempotency key for `sendMessage`: a crash between the durable claim and the
 send can lose that reply, and a crash during a split reply can leave it incomplete. Send a new command
 to retry. This is an at-most-once policy, not a promise of exactly-once delivery. Explicit Telegram
-429/5xx rejections are retried; ambiguous transport failures are never resent. Back up the data
+429/5xx rejections are retried; ambiguous transport failures (including HTTP 500 without a Telegram
+rejection body) are never resent. Back up the data
 directory while the process is stopped; preserve state when restarting.
 
 ### Checks

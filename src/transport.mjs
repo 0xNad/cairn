@@ -2,16 +2,39 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { performance } from 'node:perf_hooks';
 import { CairnError, NodeBusy, RpcError } from './errors.mjs';
 
-export const sleep = (ms, signal) => delay(ms, undefined, { signal });
+const TIMER_MAX = 2147483647;
+export async function sleep(ms, signal) {
+  do {
+    const chunk = Math.min(ms, TIMER_MAX);
+    await delay(chunk, undefined, { signal });
+    ms -= chunk;
+  } while (ms > 0);
+}
+
+function deadline(milliseconds) {
+  const controller = new AbortController();
+  let timer;
+  const schedule = () => {
+    const chunk = Math.min(milliseconds, TIMER_MAX);
+    milliseconds -= chunk;
+    timer = setTimeout(() => milliseconds > 0 ? schedule() : controller.abort(), chunk);
+    timer.unref();
+  };
+  schedule();
+  return { signal: controller.signal, clear: () => clearTimeout(timer) };
+}
 
 async function post(url, body, timeout, signal) {
-  const response = await fetch(url, {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
-    redirect: 'error', signal: AbortSignal.any([signal, AbortSignal.timeout(timeout)]),
-  });
-  let json;
-  try { json = await response.json(); } catch { json = null; }
-  return { response, json };
+  const limit = deadline(timeout);
+  try {
+    const response = await fetch(url, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+      redirect: 'error', signal: AbortSignal.any([signal, limit.signal]),
+    });
+    let json;
+    try { json = await response.json(); } catch { json = null; }
+    return { response, json };
+  } finally { limit.clear(); }
 }
 const READ_METHODS = new Set(['starknet_chainId', 'starknet_specVersion', 'starknet_blockNumber',
   'starknet_getBlockWithTxHashes', 'starknet_getClassHashAt', 'starknet_call',
@@ -90,7 +113,10 @@ export class Telegram {
           break;
         }
         default:
-          if (code >= 500 && attempt < 2) { await sleep(200 * 2 ** attempt, this.signal); break; }
+          if (code >= 500 && json?.ok === false && Number.isInteger(json.error_code) && attempt < 2) {
+            await sleep(200 * 2 ** attempt, this.signal);
+            break;
+          }
           throw new CairnError(`Telegram request ${method} failed (${Number.isInteger(code) ? code : 'invalid response'}).`);
       }
     }
