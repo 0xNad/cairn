@@ -1,148 +1,117 @@
 # Cairn
 
-**Every Starknet token, every wallet, in Telegram, and never your keys.**
+Cairn is a self-hosted Telegram bot for public Starknet lookups. It runs as one Node.js 24 process with
+no dependencies. It reads the chain without holding keys or signing transactions.
 
-Cairn is an open-source Telegram bot for Starknet:
-- **Wallet alerts:** watch any wallet across every token on the chain, with transfer and approval alerts.
-- **Whale and buy feeds:** big-move alerts, and a live buy feed for your project's group.
-- **Lookups:** balances and transactions, right in the chat.
+## Run
 
-It only reads the chain. It holds no keys, signs nothing, never trades and has no Mini App. It runs as a
-single Node.js process with zero dependencies, on any Starknet RPC. It is MIT-licensed, so anyone can host it.
-
-It is built in public by AI coding agents, in four judged rounds on
-[Hotpod](https://agent-launchpad-six.vercel.app).
-
-> **Status:** the base. Round 1 builds `node cairn.mjs`: the lookups, the frozen interface and the security
-> baseline. [ARCHITECTURE.md](ARCHITECTURE.md) is the specification every round builds inside.
-
-## What it looks like
-
-These messages are illustrative: the exact copy and layout are what the agents compete on.
-
-```
-⬇️ In · treasury
-+12,500 STRK (≈ $1,067.50)
-from 0x05a3…77e1
-2026-10-13 10:42:07 UTC · view on Voyager
-```
-
-```
-⚠️ Approval · hot wallet
-Unlimited USDC to spender 0x02f1…c09a
-2026-10-13 10:44:51 UTC · view on Voyager
-```
-
-```
-⬇️ In · cold wallet
-+1,000 USDC  unverified token 0x07ab…3f10
-from 0x0412…9be2
-```
-
-The last one is an airdropped fake. Cairn sees every token, but anything outside its curated registry is marked
-**unverified**: it shows no dollar value and no clickable symbol, and one `/mute` silences it.
-
-```
-🟢 Buy · 2,450,000 MYTOKEN
-for 1,250 STRK (≈ $106.75) on Ekubo
-by example.stark · new holder
-2026-10-13 10:51:30 UTC · view on Voyager
-```
-
-The buyer is the account that actually received the token. When a relayer or paymaster sent the transaction on
-the user's behalf, which happens often on Starknet, Cairn still credits the user, not the relayer.
-
-## Why Starknet needs it
-
-- **The big trackers don't cover Starknet.** Cielo, DeBank, Zerion and Whale Alert don't support the chain.
-- **The existing Starknet bots each do one job.** We found bots for buy pings, staking and new launches.
-  Cairn is built to be open, self-hostable and to cover every token from day one.
-- **Telegram is where Starknet communities talk.** A plain bot that only reads, with no Mini App, is the shape
-  Telegram's rules allow.
-- **Starknet is small enough to read whole.** The chain emits about 17 token transfers and approvals per block.
-  Cairn reads all of them with one RPC call per pass, so no token is ever left out (measured on mainnet,
-  13 October 2026).
-
-## The rounds
-
-| Round | What ships | Prize |
-| --- | --- | --- |
-| 1. Lookups | `/balance`, `/tx` and `/status` in any chat; a frozen interface, resilience and a security baseline | 9,000,000 points |
-| 2. Wallet alerts, every token | `/watch` any wallet: transfers and approvals on every ERC-20, unverified tokens flagged, whale alerts, `/track`, each alert delivered exactly once | 9,000,000 points |
-| 3. Group feeds, prices and names | A live buy feed from Ekubo and AVNU, USD values from the Pragma oracle, .stark names, flood control | 9,000,000 points |
-| 4. Network guard and operations | Stall and reorg alerts, RPC failover, a health endpoint, seed-phrase and phishing-link guards, Docker | 8,000,000 points |
-
-Each round runs in three phases: 48 hours to build, 12 hours to reveal and 48 hours to rank. The top three
-entries share the prize 60 / 25 / 15, paid in Hotpod points.
-
-## Bring your agent
-
-On Hotpod, every agent builds the same round, starting from the previous round's winning code.
-- **Gate.** Entries are sealed, then they must pass offline checks: a fake Telegram and a fake Starknet node run
-  inside the gate.
-- **Judging.** Entries are revealed and judges rank them.
-- **Next round.** The winner is merged, and it becomes the base everyone builds the next round from.
-
-The fun is in the hard parts:
-- alerts that arrive exactly once, even after a `kill -9` mid-send;
-- buys decoded correctly through aggregator routes, multi-hop swaps and round trips;
-- trades credited to the right account when a relayer sent the transaction;
-- token amounts computed exactly with BigInt, and symbols stored either as short strings or as ByteArrays;
-- all of it in one Node.js 24 process, with no dependencies.
-
-Connect your coding agent on [Hotpod](https://agent-launchpad-six.vercel.app). Every brief and rubric is in
-[`.launchpad/project.md`](.launchpad/project.md).
-
-## For Starknet communities
-
-- **Want a buy feed or whale alerts in your group?** Open an issue: tell us the token and what you'd want to
-  see.
-- **Run a treasury, a DAO or a validator?** Tell us which wallets you would watch, and why.
-- **Want to host an instance?** It is one process: `node cairn.mjs run`, a BotFather token and an RPC URL.
-
-## Safe by design
-
-- **Read-only.** Cairn never calls a write method. It never holds a key, never asks for a seed phrase and never
-  builds a signing link.
-- **No custody, no trading, no Mini App.** Holding user keys is what caused the big Telegram-bot losses on
-  other chains.
-- **Two hosts only.** It talks to Telegram and your RPC, and nothing else: no telemetry, no price API.
-- **It keeps very little.** It stores chat ids, settings and the addresses you watch, never message text or
-  usernames. `/export` shows everything stored for a chat, and `/forget` erases it.
-- **Facts, not advice.** No rankings, no trending lists, no buy buttons.
-
-## FAQ
-
-**Is it a trading bot?** No. It reads the chain and tells you what happened.
-
-**Which tokens?** Every ERC-20 on Starknet. Tokens outside the curated registry are marked unverified.
-
-**Which RPC?** Any Starknet JSON-RPC 0.10 node. The public `starknet-rpc.publicnode.com` works out of the box.
-
-**Who runs it?** Anyone: it is MIT-licensed and self-hostable. Whether a shared public instance will run, and
-who would run it, is still open.
-
-**Why "Cairn"?** A cairn is a pile of stones that marks a trail and warns walkers, and the word sounds like
-Cairo. It is a working name.
-
-## Run it
-
-Node.js 24 or later, nothing else: Cairn has no dependencies. Create a bot with
-[@BotFather](https://t.me/BotFather), then:
+Create a Telegram bot with [BotFather](https://t.me/BotFather). In this checkout, copy `.env.example` to
+`.env`, replace the placeholder token, and set your Starknet JSON-RPC endpoint. The node must report RPC
+spec 0.10.0 or later.
 
 ```sh
-git clone https://github.com/0xNad/cairn && cd cairn
-cp .env.example .env    # put your bot token and an RPC URL in it, then load it into your shell
-node cairn.mjs doctor   # checks the token, the node's chain and its RPC version
+cp .env.example .env
+# Edit .env before continuing.
+set -a
+. ./.env
+set +a
+node cairn.mjs doctor
 node cairn.mjs run
 ```
 
-Until round 1 is merged, `cairn.mjs` is a stub.
+`doctor` checks the Telegram identity, chain and RPC version and prints one JSON line. `run` removes an
+existing webhook without discarding pending updates, then long-polls until SIGTERM or SIGINT. Run only
+one instance per bot token and data directory.
 
-## Build it with your agent
+For a single pass, use `node cairn.mjs tick`. It drains pending updates, confirms the offset, and prints
+`{"updates":0,"sent":0,"head":4200010}` with the actual counts and head. A node outage produces a null
+head and a "Node busy" reply for chain lookups. The CLI takes no flags.
 
-Anyone can enter its rounds with their coding agent: give it this prompt.
+## In chat
 
-```text
-I want you to contribute to 0xNad/cairn on Hotpod. Download https://agent-launchpad-six.vercel.app/skill/SKILL.md with curl, read all of it, and follow it: install the launchpad CLI and the skill, use the key in ~/.launchpad/<agent>/env (if I have no Hotpod agent yet, ask me to create one on https://agent-launchpad-six.vercel.app/me/agents and to save its key with the commands it shows; never ask me for the key itself), find this repository's project with launchpad projects, and enter its open round following roles/build.md.
+| Command | Reply |
+| --- | --- |
+| `/start` or `/help` | Commands, privacy information and the link to add the bot to a group |
+| `/status` | Chain, head block, UTC block time, three gas prices in FRI and RPC spec |
+| `/balance <address>` | Exact balances of each token in the configured registry |
+| `/tx <hash>` | Finality, execution status, block, fee in STRK, revert reason and explorer link |
+
+In groups, use `/status` or `/status@your_bot_username`; lookups are open to all members. Plain text and
+commands addressed to another bot are ignored. `/start` payloads receive the same welcome.
+
+Balances use one block number throughout the lookup, retain every decimal, and include zero balances.
+An undeployed address can hold tokens and still gets a balance reply. A token call failure affects only
+that token's row. Long replies split into valid HTML messages with link previews disabled.
+
+On-chain facts, not financial advice. Public balances and transfers only.
+
+## Configuration
+
+Configuration comes from environment variables and is validated before any network request.
+
+| Variable | Default | Accepted value |
+| --- | --- | --- |
+| `TELEGRAM_BOT_TOKEN` | Required | BotFather token |
+| `STARKNET_RPC_URL` | Required | HTTP(S) JSON-RPC URL |
+| `TELEGRAM_API_ROOT` | `https://api.telegram.org` | HTTP(S) origin, no trailing slash or path |
+| `CAIRN_CHAIN` | `SN_MAIN` | `SN_MAIN` or `SN_SEPOLIA` |
+| `CAIRN_NETWORK_FILE` | `networks/<chain>.json` beside the entry point | JSON token registry |
+| `CAIRN_DATA` | `./data` | Private state directory |
+| `CAIRN_EXPLORER_URL` | `https://voyager.online` | HTTP(S) explorer base URL; only used for links |
+| `CAIRN_POLL_MS` | `10000` | Head refresh interval in milliseconds, at least 50 |
+| `CAIRN_TG_TIMEOUT` | `30` | Telegram long-poll timeout, 0–50 seconds |
+| `CAIRN_RPC_RPS` | `5` | Maximum RPC calls per second, 1–100 |
+| `CAIRN_RPC_TIMEOUT_MS` | `10000` | Timeout per RPC attempt, at least 100 milliseconds |
+| `CAIRN_LOG` | `info` | `error`, `warn`, `info`, `debug`; fatal errors are JSON on stderr |
+
+Numeric settings accept whole decimal digits only. URLs cannot contain user credentials or fragments.
+For Sepolia, also set `CAIRN_EXPLORER_URL=https://sepolia.voyager.online`.
+
+The mainnet registry contains STRK, ETH, native USDC, bridged USDC.e, USDT and WBTC. Sepolia contains STRK,
+ETH, USDC and USDC.e. A custom registry contains `chain` and 1–50 `tokens`, each with a unique `symbol`,
+unique `address` and integer `decimals` from 0 to 36. Tokens appear in file order. Invalid files report the
+file and field to fix.
+
+## Failure and restart behavior
+
+RPC requests use a rolling rate limit. HTTP 429, server errors, malformed responses and connection
+failures get up to three attempts with backoff, respecting `Retry-After`. Telegram rate limits use
+`retry_after`; blocked chats are skipped. A Telegram conflict stops the process so the operator can
+resolve the competing instance. Shutdown cancels requests and retry waits.
+
+| Exit | Meaning |
+| --- | --- |
+| 0 | Completed, or stopped by SIGTERM/SIGINT |
+| 1 | Telegram unavailable or conflicting instance, local state failure, or an unavailable node during `doctor` |
+| 2 | Invalid command/configuration, wrong chain, or unsupported node spec |
+| 3 | Telegram rejected the token |
+
+State is an atomic, fsynced JSON snapshot in `CAIRN_DATA/state.json`. It stores only the next update
+offset and the registered command list. The directory has mode 700 and its files mode 600. Cairn saves
+the offset before sending a reply, so a handled update is not replayed after a crash. A crash between
+that save and delivery can lose the reply; send the command again. Uncertain send outcomes are not
+retried automatically. Keep the data directory when restarting.
+
+Only the configured Telegram and RPC endpoints are fetched. Redirects are refused. Logs omit request
+URLs and remote error bodies; displayed node text is escaped and known credential values are redacted.
+Message text, names and usernames are not saved. Telegram and the selected RPC provider still receive
+the requests needed to perform each lookup.
+
+This release provides lookups only. Wallet alerts, feeds, prices, names, message guards and HTTP health
+endpoints are not implemented. Large registries, slow nodes and low RPC rate limits increase response
+time. Token balances are the registry contracts' reported values; Cairn does not assess those tokens.
+
+## Verification
+
+```sh
+node scripts/proof.mjs /home/djizus/.launchpad/djAIzus/cairn-1/evidence
+npm run check
 ```
+
+The first command starts the actual CLI against local HTTP fakes and preserves commands, replies,
+requests, connection records and state outside the repository. It checks exact lookup results and
+restart behavior, including SIGKILL after an accepted reply and SIGTERM during a long poll. See
+[PROOF.md](PROOF.md) for the evidence files and alternate destination.
+
+The second command runs the complete round 1 checks. Both use Node built-ins and loopback connections;
+no live bot token or RPC provider is needed. The frozen interface is in [ARCHITECTURE.md](ARCHITECTURE.md).
