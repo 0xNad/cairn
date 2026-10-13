@@ -13,8 +13,9 @@ single Node.js process with zero dependencies, on any Starknet RPC. It is MIT-li
 It is built in public by AI coding agents, in four judged rounds on
 [Hotpod](https://agent-launchpad-six.vercel.app).
 
-> **Status:** the base. Round 1 builds `node cairn.mjs`: the lookups, the frozen interface and the security
-> baseline. [ARCHITECTURE.md](ARCHITECTURE.md) is the specification every round builds inside.
+> **Status:** round 1, the lookups: `/status`, `/balance` and `/tx` in any chat, the frozen interface and the
+> security baseline. Wallet alerts and feeds come in rounds 2 to 4. [ARCHITECTURE.md](ARCHITECTURE.md) is
+> the specification every round builds inside.
 
 ## What it looks like
 
@@ -132,12 +133,102 @@ Node.js 24 or later, nothing else: Cairn has no dependencies. Create a bot with
 
 ```sh
 git clone https://github.com/0xNad/cairn && cd cairn
-cp .env.example .env    # put your bot token and an RPC URL in it, then load it into your shell
-node cairn.mjs doctor   # checks the token, the node's chain and its RPC version
-node cairn.mjs run
+cp .env.example .env                       # put your bot token and an RPC URL in it
+node --env-file=.env cairn.mjs doctor      # checks the token, the node's chain and its RPC version
+node --env-file=.env cairn.mjs run         # answers until Ctrl-C or SIGTERM
 ```
 
-Until round 1 is merged, `cairn.mjs` is a stub.
+`doctor` prints one line, such as `{"bot":"my_cairn_bot","chain":"SN_MAIN","block":16320066,"spec":"0.10.3"}`.
+`node cairn.mjs tick` does a single pass instead of running: it answers what is pending, prints
+`{"updates":3,"sent":3,"head":16320066}` and exits, for cron or for a quick test. The public
+`https://starknet-rpc.publicnode.com` works out of the box; set `CAIRN_CHAIN=SN_SEPOLIA` and
+`CAIRN_EXPLORER_URL=https://sepolia.voyager.online` for a Sepolia node.
+
+Then, in a private chat with your bot or in a group you add it to (the link is in `/help`):
+
+| Command | Answer |
+| --- | --- |
+| `/status` | the chain, the latest block and its time, the L1, L1 data and L2 gas prices in FRI, the node's RPC version |
+| `/balance <address>` | each token of the network file, in its order, with exact amounts; "not deployed" for an address with no contract yet |
+| `/tx <hash>` | finality, execution status, block and time, fee in STRK, the listed tokens it moved or approved, the revert reason |
+| `/start`, `/help` | the commands, what the bot stores, and a link to add it to a group |
+
+### Configuration
+
+Everything comes from the environment; there are no flags. A bad value stops Cairn with exit code 2 and a
+reason, before it contacts anything.
+
+| Variable | Default | |
+| --- | --- | --- |
+| `TELEGRAM_BOT_TOKEN` | required | from @BotFather; a secret |
+| `STARKNET_RPC_URL` | required | any Starknet JSON-RPC 0.10 node; a secret, since providers put keys in it |
+| `CAIRN_CHAIN` | `SN_MAIN` | or `SN_SEPOLIA`; the node must be on it |
+| `CAIRN_NETWORK_FILE` | `networks/<CAIRN_CHAIN>.json` | the tokens `/balance` reads |
+| `CAIRN_DATA` | `./data` | Cairn's only writable place: mode 700, files 600 |
+| `CAIRN_EXPLORER_URL` | `https://voyager.online` | only used to build links |
+| `TELEGRAM_API_ROOT` | `https://api.telegram.org` | for a local Bot API server |
+| `CAIRN_RPC_RPS` | `5` | the most RPC calls in any second (1 to 100) |
+| `CAIRN_RPC_TIMEOUT_MS` | `10000` | per RPC call |
+| `CAIRN_POLL_MS`, `CAIRN_TG_TIMEOUT` | `10000`, `30` | the pass interval, and the long poll in seconds |
+| `CAIRN_LOG` | `info` | `error`, `warn`, `info` or `debug`: JSON lines on standard error |
+
+Exit codes: 0 done, 1 Telegram unreachable (or the node, for `doctor`) or another instance running, 2 a bad
+command line, setting, network file, chain or node version, 3 a token Telegram rejects. Standard output
+only ever holds the one JSON line of `tick` or `doctor`.
+
+### What it stores
+
+`CAIRN_DATA/state.db` (`node:sqlite`) holds two values: the number of the last Telegram update Cairn handled,
+and the command menu it registered. No chat id, no message, no name or username, no token or RPC URL. Logs
+never hold message text, the token or the RPC URL beyond its origin; every log line is also scrubbed of them
+before it is written.
+
+### How it is built
+
+```text
+cairn.mjs              the command line: run, tick, doctor, exit codes
+src/config.mjs         the environment and the network file, validated before any network call
+src/bot.mjs            a pass: the head, the updates in order, each saved before its reply is sent
+src/telegram.mjs       the Bot API: long polling, 429, 403, 409 and 401
+src/rpc.mjs            JSON-RPC: the rate limit, retries with backoff, timeouts
+src/starknet.mjs       the node check (chain, spec version), headers, calls, balances
+src/store.mjs          state in CAIRN_DATA, with numbered migrations for later rounds
+src/felt.mjs           addresses, hashes, u256, short strings
+src/format.mjs         Telegram HTML, escaping, exact amounts, links, times, splitting at 4096 characters
+src/events.mjs         Transfer and Approval decoding by shape, and the fee payment rule
+src/commands/          one module per chat command
+networks/              the starter network files
+test/                  unit tests: npm test
+```
+
+`npm test` runs the unit tests and `npm run check` round 1's checks (a fake Telegram, a fake node and a
+network trap, all on 127.0.0.1).
+
+### Choices where the specification is silent
+
+- **A reply is sent at most once.** Each update is saved as handled before its reply is sent, so a `kill -9`
+  can lose the one reply in flight, never send it twice. A timeout on `sendMessage` is not retried for the
+  same reason; a refused connection or a Telegram 5xx is.
+- **`/balance` reads every token at the head block**, so the amounts belong together and the reply says which
+  block. A node that does not have that block yet is asked for its latest. Zero balances share one "Nothing
+  in …" line, and each symbol links to its token contract, so a lookalike cannot pass for it.
+- **`balanceOf` is the fallback** on error 21, and also on error 40 when its message says the entry point does
+  not exist, which some nodes return instead.
+- **`/tx` also lists the moves**: transfers and approvals of the network file's tokens in the receipt, the fee
+  payment left out, with the other tokens' events counted. A revert reason longer than 3,000 characters keeps
+  its end, where Cairo reports the innermost failure, and the decoded cause (`('…')`) gets its own line.
+- **Groups**: a reply quotes the command it answers, in the same forum topic. Plain text is ignored; in a
+  private chat it gets a pointer to `/help`.
+- **A node that is down** is noted once in the log and tried once per pass until it answers again, so commands
+  get "node busy" at once instead of after three tries each. Retries back off 0.5 s, then 1.5 s, and never
+  sooner than `Retry-After`; a `Retry-After` over 10 s is not waited for. HTTP 401, 403 or 404 from the node
+  (a wrong URL or key) are not retried.
+- **Telegram unreachable**: at start, every command exits 1. Once `run` is up, it waits the outage out,
+  2 s doubling to 60 s, rather than exit.
+- **Hosts**: neither client follows a redirect. Credentials in `STARKNET_RPC_URL` (`https://user:pass@…`) are
+  sent as an `Authorization` header.
+- **Settings**: a variable set to an empty string is refused, not taken as unset. An existing `CAIRN_DATA`
+  with a looser mode than 700 is logged as a warning and left as it is.
 
 ## Build it with your agent
 
