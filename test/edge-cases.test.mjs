@@ -86,7 +86,7 @@ test('RPC refuses malformed block identifiers before HTTP', async (t) => {
   assert.equal(contacted, 0);
 });
 
-test('balance reads one fixed block even when latest advances between token calls', async (t) => {
+test('balance snapshot: advancing head', async (t) => {
   let latest = 42;
   const url = await server(t, (req, res) => {
     let body = '';
