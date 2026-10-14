@@ -13,8 +13,8 @@ single Node.js process with zero dependencies, on any Starknet RPC. It is MIT-li
 It is built in public by AI coding agents, in four judged rounds on
 [Hotpod](https://agent-launchpad-six.vercel.app).
 
-> **Status:** the base. Round 1 builds `node cairn.mjs`: the lookups, the frozen interface and the security
-> baseline. [ARCHITECTURE.md](ARCHITECTURE.md) is the specification every round builds inside.
+> **Status:** round 1, Lookups: `/status`, `/balance` and `/tx` in any chat, the frozen interface and the
+> security baseline. [ARCHITECTURE.md](ARCHITECTURE.md) is the specification every round builds inside.
 
 ## What it looks like
 
@@ -132,12 +132,53 @@ Node.js 24 or later, nothing else: Cairn has no dependencies. Create a bot with
 
 ```sh
 git clone https://github.com/0xNad/cairn && cd cairn
-cp .env.example .env    # put your bot token and an RPC URL in it, then load it into your shell
-node cairn.mjs doctor   # checks the token, the node's chain and its RPC version
-node cairn.mjs run
+cp .env.example .env                        # put your bot token and an RPC URL in it
+node --env-file=.env cairn.mjs doctor       # checks the token, the node's chain and its RPC version
+node --env-file=.env cairn.mjs run          # answers until SIGTERM or Ctrl-C
 ```
 
-Until round 1 is merged, `cairn.mjs` is a stub.
+`doctor` prints one line, `{"bot":"…","chain":"SN_MAIN","block":…,"spec":"0.10.3"}`. `node cairn.mjs tick`
+does one pass instead of running (for cron or a test): it answers what is pending and prints
+`{"updates":…,"sent":…,"head":…}`. Exit codes: 0 done, 1 Telegram unreachable (or, for `doctor`, the node) or
+another instance running, 2 a bad setting, network file, chain or node version, 3 a token Telegram rejects.
+Every reason and log line goes to standard error as one JSON object.
+
+`npm test` runs the unit tests and `npm run check` the round's checks; both need nothing but Node.js.
+
+### What is where
+
+| Path | What it holds |
+| --- | --- |
+| `cairn.mjs` | The command line: `run`, `tick`, `doctor`, exit codes |
+| `src/config.mjs` | The environment and the network file, checked before any network call |
+| `src/telegram.mjs`, `src/rpc.mjs` | The two clients: retries, 429s, timeouts, the RPC rate limit |
+| `src/starknet.mjs`, `src/events.mjs` | Typed chain reads, selectors, event decoding |
+| `src/bot.mjs`, `src/modes.mjs` | The pass, update handling, and the three modes |
+| `src/commands/` | One module per chat command |
+| `src/store.mjs` | State in `CAIRN_DATA/state.db` (`node:sqlite`), with numbered migrations |
+| `src/felt.mjs`, `src/format.mjs` | Felts and addresses; HTML, amounts, times, message splitting |
+| `networks/` | The token registries for `SN_MAIN` and `SN_SEPOLIA` |
+
+### Round 1 choices
+
+Where ARCHITECTURE.md leaves a choice, this is what Cairn does:
+
+- **Replies are at most once.** An update's offset is saved before its reply is sent, so an update is never
+  answered twice. A crash between the two loses that one reply, and the user can ask again.
+- **Groups stay quiet.** Plain text is ignored. A bare unknown command (`/foo`) is assumed to be for another
+  bot and ignored; `/foo@cairnbot` gets a hint. Replies in groups quote the command they answer, and stay in
+  its forum topic. A revert reason longer than 1,500 characters is cut in groups, never in a private chat.
+- **In a private chat**, plain text gets a short hint pointing to `/balance`, `/tx` and `/help`.
+- **`/balance`** lists non-zero balances in registry order, then the zero ones on one line, then any token
+  whose call failed. Balances are read at `latest`, and the reply names the block.
+- **`/tx`** shows the token moves of registry tokens (the fee payment aside), counts transfers of other
+  tokens, and puts the innermost revert message (`('…')`) in bold above the whole reason.
+- **Node outages** get "node busy" after 3 tries (Retry-After is honoured up to 10 s). `tick` reads the head
+  once and answers every chain command of the pass from it; `run` reads it once per batch of updates.
+- **Settings:** an empty variable counts as unset, and values are trimmed. Every problem is reported at
+  once. `CAIRN_DATA` is created (not its parents) with mode 700, and its files are 600.
+- **Logs** show the RPC origin only. The token and every part of the RPC URL beyond its origin are
+  scrubbed from every log line, even from error messages that might carry them.
 
 ## Build it with your agent
 
