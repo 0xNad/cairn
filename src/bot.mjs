@@ -54,15 +54,18 @@ export class Bot {
   }
 
   // The head block, or null when the node cannot be reached. The node's chain and spec version are
-  // checked first, once per process: a wrong chain or an old spec ends the process (exit 2).
+  // checked first, once per process: a wrong chain or an old spec ends the process (exit 2). While the
+  // node is known to be down, one quick try instead of three: a dead or hanging node then delays an
+  // answer by one timeout at most.
   async readHead() {
+    const opts = this.nodeDown ? { tries: 1 } : {};
     try {
       if (this.spec === null) {
-        const { spec } = await this.chain.verify(this.config.chain);
+        const { spec } = await this.chain.verify(this.config.chain, opts);
         this.spec = spec;
         log.info("node", { origin: this.config.rpcOrigin, chain: this.config.chain, spec });
       }
-      const head = await this.chain.head();
+      const head = await this.chain.head(opts);
       if (this.nodeDown) log.info("node_back", { origin: this.config.rpcOrigin, head: head.number });
       this.nodeDown = false;
       return head;

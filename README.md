@@ -164,7 +164,9 @@ Every reason and log line goes to standard error as one JSON object.
 Where ARCHITECTURE.md leaves a choice, this is what Cairn does:
 
 - **Replies are at most once.** An update's offset is saved before its reply is sent, so an update is never
-  answered twice. A crash between the two loses that one reply, and the user can ask again.
+  answered twice. A crash between the two loses that one reply, and the user can ask again. For the same
+  reason a reply is sent again only when Telegram cannot have received it (no connection, 429, 5xx), never
+  after a timeout.
 - **Groups stay quiet.** Plain text is ignored. A bare unknown command (`/foo`) is assumed to be for another
   bot and ignored; `/foo@cairnbot` gets a hint. Replies in groups quote the command they answer, and stay in
   its forum topic. A revert reason longer than 1,500 characters is cut in groups, never in a private chat.
@@ -172,11 +174,17 @@ Where ARCHITECTURE.md leaves a choice, this is what Cairn does:
 - **`/balance`** lists non-zero balances in registry order, then the zero ones on one line, then any token
   whose call failed. Balances are read at `latest`, and the reply names the block.
 - **`/tx`** shows the token moves of registry tokens (the fee payment aside), counts transfers of other
-  tokens, and puts the innermost revert message (`('…')`) in bold above the whole reason.
-- **Node outages** get "node busy" after 3 tries (Retry-After is honoured up to 10 s). `tick` reads the head
-  once and answers every chain command of the pass from it; `run` reads it once per batch of updates.
+  tokens, names any type but invoke (an L1 handler's fee is paid on Ethereum), and puts the innermost
+  revert message (`('…')`) in bold above the whole reason. A hash that is not found, or an empty address
+  with no contract, gets a hint that it may be the other kind.
+- **Node outages** get "node busy" after 3 tries (Retry-After is honoured up to 10 s), or after one quick try
+  while the node is already known to be down, so that a dead or hanging node delays an answer by one timeout
+  at most. `tick` reads the head once and answers every chain command of the pass from it; `run` reads it
+  once per batch of updates, and spaces its passes out (up to a minute) while the node is down.
 - **Settings:** an empty variable counts as unset, and values are trimmed. Every problem is reported at
-  once. `CAIRN_DATA` is created (not its parents) with mode 700, and its files are 600.
+  once, and Node.js older than 24 is refused with exit 2. `CAIRN_CHAIN=SN_SEPOLIA` with the default
+  explorer logs a warning, since its links would open mainnet Voyager. `CAIRN_DATA` is created (not its
+  parents) with mode 700, and its files are 600.
 - **Logs** show the RPC origin only. The token and every part of the RPC URL beyond its origin are
   scrubbed from every log line, even from error messages that might carry them.
 

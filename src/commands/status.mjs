@@ -1,4 +1,5 @@
-// /status: the chain, the head block and its time, the three gas prices in FRI, the node's spec version.
+// /status: the chain, the head block and its time, the three gas prices in FRI, the Starknet version and
+// the node's spec version.
 import { escapeHtml, formatTime, groupDigits } from "../format.mjs";
 
 const fri = (v) => (v === null || v === undefined ? "not given by the node" : `${groupDigits(v)} FRI`);
@@ -14,6 +15,6 @@ export default async function status(args, ctx) {
     `L1 data gas: ${fri(head.gas.l1Data)}`,
     `L2 gas: ${fri(head.gas.l2)}`,
     "",
-    `Node: JSON-RPC ${escapeHtml(ctx.spec)}`,
+    `${head.version ? `Starknet ${escapeHtml(head.version)} · ` : ""}node JSON-RPC ${escapeHtml(ctx.spec)}`,
   ];
 }

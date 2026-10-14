@@ -1,7 +1,9 @@
 // The Telegram Bot API client: POST ${TELEGRAM_API_ROOT}/bot<token>/<method> with a JSON body.
 // 401 ends the process with exit 3 and 409 with exit 1 (another instance). 429 waits exactly retry_after
 // and tries again; 5xx and network failures are retried with backoff, then reported as unreachable.
-// sendMessage skips a chat that blocked the bot (403) and follows a group that became a supergroup.
+// sendMessage is retried only when Telegram cannot have received it (no connection, 429, 5xx), so that a
+// reply is never sent twice; it skips a chat that blocked the bot (403) and follows a group that became
+// a supergroup.
 import { EXIT, Fatal } from "./errors.mjs";
 import { htmlToText } from "./format.mjs";
 import { log, reasonOf } from "./log.mjs";
@@ -9,6 +11,8 @@ import { backoff, sleep } from "./wait.mjs";
 
 const TRIES = 3;
 const MAX_429 = 5;
+// Failures that happen before a request leaves: retrying cannot repeat it.
+const NOT_SENT = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH", "UND_ERR_CONNECT_TIMEOUT"]);
 
 // Telegram answered with an error: `status` is its error_code, `parameters` its retry_after or
 // migrate_to_chat_id.
@@ -22,28 +26,33 @@ export class TelegramError extends Error {
   }
 }
 
-// Telegram could not be reached, or kept answering 5xx.
+// Telegram could not be reached, or kept answering 5xx. `maybeDelivered`: the request may have reached
+// Telegram anyway (a timeout or a connection cut after it was sent).
 export class TelegramUnreachable extends Error {
-  constructor(reason) {
+  constructor(reason, { maybeDelivered = false } = {}) {
     super(`Telegram is unreachable: ${reason}`);
     this.name = "TelegramUnreachable";
+    this.maybeDelivered = maybeDelivered;
   }
 }
 
-export function telegramClient({ root, token, stop }) {
+export function telegramClient({ root, token, stop, timeoutMs: defaultTimeoutMs = 20_000 }) {
   const base = `${root}/bot${token}/`;
 
   async function once(method, params, timeoutMs) {
     const timeout = AbortSignal.timeout(timeoutMs);
     const signal = stop ? AbortSignal.any([stop, timeout]) : timeout;
+    const started = Date.now();
     let res, text;
     try {
       res = await fetch(`${base}${method}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(params), signal });
       text = await res.text();
     } catch (e) {
       if (stop?.aborted) throw stop.reason;
-      throw new TelegramUnreachable(`${method}: ${timeout.aborted ? `no answer within ${timeoutMs / 1000} s` : reasonOf(e)}`);
+      const reason = timeout.aborted ? `no answer within ${timeoutMs / 1000} s` : reasonOf(e);
+      throw new TelegramUnreachable(`${method}: ${reason}`, { maybeDelivered: timeout.aborted || !NOT_SENT.has(reason) });
     }
+    log.debug("telegram_call", { method, status: res.status, ms: Date.now() - started });
     let body = null;
     try {
       body = JSON.parse(text);
@@ -52,8 +61,9 @@ export function telegramClient({ root, token, stop }) {
     throw new TelegramError(body?.error_code ?? res.status, body?.description ?? `HTTP ${res.status}`, body?.parameters);
   }
 
-  // Calls `method`; returns its result or throws Fatal, TelegramUnreachable or TelegramError.
-  async function call(method, params = {}, { timeoutMs = 20_000 } = {}) {
+  // Calls `method`; returns its result or throws Fatal, TelegramUnreachable or TelegramError. With
+  // `once: true` a request that may have reached Telegram is not repeated.
+  async function call(method, params = {}, { timeoutMs = defaultTimeoutMs, once: atMostOnce = false } = {}) {
     for (let n = 1, waits = 0; ; n++) {
       try {
         return await once(method, params, timeoutMs);
@@ -71,7 +81,7 @@ export function telegramClient({ root, token, stop }) {
           }
           if (e.status < 500) throw e;
           if (n >= TRIES) throw new TelegramUnreachable(`${method}: answered ${e.status} ${TRIES} times`);
-        } else if (!(e instanceof TelegramUnreachable) || n >= TRIES) throw e;
+        } else if (!(e instanceof TelegramUnreachable) || n >= TRIES || (atMostOnce && e.maybeDelivered)) throw e;
         log.warn("telegram_retry", { method, try: n, reason: e.message });
         await sleep(backoff(n), stop);
       }
@@ -85,7 +95,7 @@ export function telegramClient({ root, token, stop }) {
       ? { link_preview_options: { is_disabled: true }, ...message, text: htmlToText(message.text) }
       : { parse_mode: "HTML", link_preview_options: { is_disabled: true }, ...message };
     try {
-      await call("sendMessage", params);
+      await call("sendMessage", params, { once: true });
       return true;
     } catch (e) {
       if (!(e instanceof TelegramError)) throw e;
@@ -94,8 +104,8 @@ export function telegramClient({ root, token, stop }) {
         log.info("chat_migrated", { chat: message.chat_id, to });
         return send({ ...message, chat_id: to }, { migrated: true, plain });
       }
-      if (e.status === 400 && /can't parse entities/i.test(e.description) && !plain) {
-        // A formatting bug must not cost the user their answer: send the same text without HTML.
+      if (e.status === 400 && /entit|pars|too long/i.test(e.description) && !plain) {
+        // Telegram refused the formatting: the user still gets the answer, as plain text.
         log.error("html_refused", { chat: message.chat_id, reason: e.description });
         return send(message, { migrated, plain: true });
       }

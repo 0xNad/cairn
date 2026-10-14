@@ -36,7 +36,7 @@ export default async function balance(args, ctx) {
   if (failed.length) lines.push("", ...failed);
   if (deployed.value === false) {
     lines.push("", empty
-      ? "ℹ️ Not deployed: there is no contract at this address and it holds none of these tokens. Check the address."
+      ? "ℹ️ Not deployed: there is no contract at this address and it holds none of these tokens. Check the address; if it is a transaction hash, try /tx."
       : "ℹ️ Not deployed: there is no account contract at this address yet. Its balances are still real.");
   }
   return lines;

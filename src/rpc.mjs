@@ -1,6 +1,7 @@
 // Starknet JSON-RPC over HTTP: at most CAIRN_RPC_RPS calls in any second, a timeout per call, and up to
 // 3 tries on HTTP 429, 5xx, timeouts, dropped connections and garbage, waiting at least Retry-After.
 // A JSON-RPC error is the node's answer and is never retried: it is thrown as RpcError for the caller.
+// Reads are idempotent, so retrying them is always safe.
 import { log, reasonOf } from "./log.mjs";
 import { backoff, retryAfterMs, sleep } from "./wait.mjs";
 
@@ -74,6 +75,7 @@ export function rpcClient({ url, rps, timeoutMs, stop }) {
     const id = ++ids;
     const timeout = AbortSignal.timeout(timeoutMs);
     const signal = stop ? AbortSignal.any([stop, timeout]) : timeout;
+    const started = Date.now();
     let res, text;
     try {
       res = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id, method, params }), signal });
@@ -82,6 +84,7 @@ export function rpcClient({ url, rps, timeoutMs, stop }) {
       if (stop?.aborted) throw stop.reason;
       throw new Transient(timeout.aborted ? `no answer within ${timeoutMs} ms` : `no connection (${reasonOf(e)})`);
     }
+    log.debug("rpc_call", { method, status: res.status, ms: Date.now() - started });
     if (res.status === 429 || res.status >= 500) throw new Transient(`HTTP ${res.status}`, retryAfterMs(res.headers.get("retry-after")));
     let msg = null;
     try {
@@ -94,13 +97,14 @@ export function rpcClient({ url, rps, timeoutMs, stop }) {
   }
 
   // Calls `method` with named `params`; returns its result or throws RpcError or NodeUnavailable.
-  async function call(method, params = {}) {
+  // `tries` 1 makes a quick probe, for a node already known to be down.
+  async function call(method, params = {}, { tries = TRIES } = {}) {
     for (let n = 1; ; n++) {
       try {
         return await once(method, params);
       } catch (e) {
         if (!(e instanceof Transient)) throw e;
-        if (n >= TRIES) throw new NodeUnavailable(`${method}: ${e.message}, ${TRIES} tries`);
+        if (n >= tries) throw new NodeUnavailable(`${method}: ${e.message}, ${n} ${n === 1 ? "try" : "tries"}`);
         const wait = Math.max(backoff(n), e.waitMs);
         if (e.waitMs > MAX_RETRY_AFTER_MS) throw new NodeUnavailable(`${method}: ${e.message}, asked to wait ${Math.ceil(e.waitMs / 1000)} s`);
         log.warn("rpc_retry", { method, try: n, reason: e.message, wait_ms: wait });

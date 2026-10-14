@@ -10,6 +10,9 @@ import { backoff, sleep } from "./wait.mjs";
 
 // At most this many pages of getUpdates (100 updates each) in one tick, so that a tick always ends.
 const MAX_PAGES = 50;
+// While the node is down, `run` spaces its passes out (CAIRN_POLL_MS doubled each time, up to this):
+// a hanging node then rarely holds up the answers that do not need it. Chain commands still try it.
+const MAX_DOWN_INTERVAL_MS = 60_000;
 
 // doctor: getMe, then the node's chain, spec version and head block. It writes nothing.
 export async function doctor(config, stop) {
@@ -57,12 +60,13 @@ export async function run(config, stop) {
   try {
     await bot.connect({ deleteWebhook: true });
     log.info("started", { bot: bot.me.username, chain: config.chain, node: config.rpcOrigin, poll_ms: config.pollMs });
-    let due = 0, failures = 0;
+    let due = 0, failures = 0, downPasses = 0;
     while (!stop.aborted) {
       try {
         if (Date.now() >= due) {
-          await bot.readHead(); // the pass; round 2 adds the scan and the deliveries here
-          due = Date.now() + config.pollMs;
+          const head = await bot.readHead(); // the pass; round 2 adds the scan and the deliveries here
+          downPasses = head ? 0 : downPasses + 1;
+          due = Date.now() + Math.min(config.pollMs * 2 ** downPasses, Math.max(config.pollMs, MAX_DOWN_INTERVAL_MS));
         }
         // Long-poll until the next pass is due (at least 1 s, at most CAIRN_TG_TIMEOUT).
         const timeout = config.tgTimeout === 0 ? 0 : Math.min(config.tgTimeout, Math.max(1, Math.ceil((due - Date.now()) / 1000)));

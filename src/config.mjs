@@ -125,11 +125,16 @@ export function loadConfig(env = process.env, cwd = process.cwd()) {
   const networkFile = given ? resolve(cwd, given) : join(ROOT, "networks", `${chain}.json`);
   const network = loadNetwork(networkFile, given ?? `networks/${chain}.json`, chain);
 
+  // Settings that work but are probably not what the operator meant.
+  const warnings = [];
+  if (chain === "SN_SEPOLIA" && ex === undefined) warnings.push("CAIRN_CHAIN is SN_SEPOLIA but CAIRN_EXPLORER_URL is the mainnet default: links will open mainnet Voyager; set CAIRN_EXPLORER_URL=https://sepolia.voyager.online");
+
   return {
     token, telegramApiRoot, rpcUrl, rpcOrigin, chain, chainName: CHAINS[chain], explorer, dataDir, logLevel,
     networkFile, tokens: network.tokens,
     pollMs: numbers.CAIRN_POLL_MS, tgTimeout: numbers.CAIRN_TG_TIMEOUT, rpcRps: numbers.CAIRN_RPC_RPS, rpcTimeoutMs: numbers.CAIRN_RPC_TIMEOUT_MS,
     secrets: secretsOf(env),
+    warnings,
   };
 }
 

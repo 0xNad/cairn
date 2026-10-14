@@ -23,7 +23,8 @@ export const FEE_TOKENS = {
 const MIN_SPEC = [0, 10, 0];
 const LATEST = "latest";
 
-// A block header as Cairn uses it: number, hash, timestamp (chain time), sequencer and gas prices in FRI.
+// A block header as Cairn uses it: number, hash, timestamp (chain time), sequencer, gas prices in FRI and
+// the Starknet protocol version.
 function header(b) {
   const number = Number(b?.block_number);
   if (!Number.isSafeInteger(number)) throw new NodeUnavailable("the node answered a block without a number");
@@ -34,6 +35,7 @@ function header(b) {
     timestamp: Number(b.timestamp),
     sequencer: toBig(b.sequencer_address),
     gas: { l1: fri(b.l1_gas_price), l1Data: fri(b.l1_data_gas_price), l2: fri(b.l2_gas_price) },
+    version: typeof b.starknet_version === "string" ? b.starknet_version : null,
   };
 }
 
@@ -51,12 +53,13 @@ export function starknet(rpc) {
     rpc.call("starknet_call", { request: { contract_address: felt(contract), entry_point_selector: felt(selector), calldata: calldata.map(felt) }, block_id: LATEST });
 
   return {
-    // The node's chain and spec version; a Fatal (exit 2) when they are not what Cairn needs.
-    async verify(expected) {
-      const id = await rpc.call("starknet_chainId");
+    // The node's chain and spec version; a Fatal (exit 2) when they are not what Cairn needs. `opts` are
+    // the client's ({ tries }), here and in head().
+    async verify(expected, opts) {
+      const id = await rpc.call("starknet_chainId", {}, opts);
       const name = shortString(id);
       if (name !== expected) throw new Fatal(EXIT.CONFIG, `the node is on ${name ?? "an unknown chain"} (chain id ${id}), but CAIRN_CHAIN is ${expected}: point STARKNET_RPC_URL at a ${expected} node, or change CAIRN_CHAIN`);
-      const spec = await rpc.call("starknet_specVersion");
+      const spec = await rpc.call("starknet_specVersion", {}, opts);
       if (!specSupported(spec)) throw new Fatal(EXIT.CONFIG, `the node speaks JSON-RPC ${JSON.stringify(spec)}, but Cairn needs 0.10.0 or later: use a node that serves the 0.10 API`);
       return { chain: name, spec: String(spec) };
     },
@@ -64,8 +67,8 @@ export function starknet(rpc) {
     blockNumber: () => rpc.call("starknet_blockNumber"),
 
     // The latest block's header.
-    async head() {
-      return header(await rpc.call("starknet_getBlockWithTxHashes", { block_id: LATEST }));
+    async head(opts) {
+      return header(await rpc.call("starknet_getBlockWithTxHashes", { block_id: LATEST }, opts));
     },
 
     async block(number) {

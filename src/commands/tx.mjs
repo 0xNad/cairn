@@ -15,6 +15,8 @@ const FINALITY = {
   REJECTED: "Rejected",
 };
 const EXECUTION = { SUCCEEDED: ["✅", "Succeeded"], REVERTED: ["❌", "Reverted"] };
+// Every type but INVOKE, the usual one, is named in the reply.
+const TYPES = { L1_HANDLER: "L1 handler (a message from Ethereum)", DECLARE: "class declaration", DEPLOY_ACCOUNT: "account deployment", DEPLOY: "deployment" };
 const MAX_MOVES = 10;
 // In a group a long revert reason is cut, so that one lookup does not flood the chat.
 const GROUP_REASON_CHARS = 1500;
@@ -39,13 +41,14 @@ export default async function tx(args, ctx) {
       status = await ctx.chain.status(hash);
     } catch (e2) {
       if (!notTx(e2)) throw e2;
-      return [`🔍 Transaction not found: ${escapeHtml(shortHex(hash))} is not known on ${escapeHtml(chainName)}. Check the hash and the network; a transaction just sent can take a few seconds to appear.`];
+      return [`🔍 Transaction not found: ${escapeHtml(shortHex(hash))} is not known on ${escapeHtml(chainName)}. Check the hash and the network; a transaction just sent can take a few seconds to appear. If it is an address, try /balance.`];
     }
   }
   const finality = receipt?.finality_status ?? status?.finality_status;
   const execution = receipt?.execution_status ?? status?.execution_status;
   const [icon, outcome] = EXECUTION[execution] ?? ["⏳", execution ? escapeHtml(execution) : "Pending"];
   const lines = [`${icon} <b>${outcome}</b> · ${escapeHtml(FINALITY[finality] ?? finality ?? "status unknown")}`, `Transaction ${txLink(explorer, hash)}`];
+  if (receipt?.type && receipt.type !== "INVOKE") lines.push(`Type: ${escapeHtml(TYPES[receipt.type] ?? receipt.type)}`);
 
   const block = receipt?.block_number;
   if (Number.isSafeInteger(block)) {
@@ -56,7 +59,8 @@ export default async function tx(args, ctx) {
 
   const feeToken = FEE_TOKENS[receipt?.actual_fee?.unit];
   const fee = toBig(receipt?.actual_fee?.amount);
-  if (fee !== null) {
+  if (receipt?.type === "L1_HANDLER") lines.push("Fee: paid on Ethereum, with the L1 message");
+  else if (fee !== null) {
     const amount = feeToken ? `<b>${formatUnits(fee, feeToken.decimals)}</b> ${feeToken.symbol}` : `<b>${groupDigits(fee)}</b> ${escapeHtml(receipt.actual_fee.unit)}`;
     lines.push(`Fee: ${amount}${execution === "REVERTED" ? ", charged even though it reverted" : ""}`);
   }

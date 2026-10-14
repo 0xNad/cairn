@@ -10,11 +10,11 @@
 import { loadConfig, secretsOf } from "./src/config.mjs";
 import { EXIT, Fatal } from "./src/errors.mjs";
 import { configureLog, log } from "./src/log.mjs";
-import { doctor, run, tick } from "./src/modes.mjs";
 import { NodeUnavailable } from "./src/rpc.mjs";
 import { TelegramError, TelegramUnreachable } from "./src/telegram.mjs";
 
-const MODES = { run, tick, doctor };
+const MODES = ["run", "tick", "doctor"];
+const NODE_MAJOR = 24;
 // SIGTERM must end `run` within 3 s: past this, the process exits whatever is still pending.
 const STOP_GRACE_MS = 2500;
 
@@ -30,15 +30,25 @@ function fail(code, reason) {
   exit(code);
 }
 
+// A bug must still end as one JSON log line and exit 1, never as a bare stack trace.
+function crashed(e) {
+  log.error("crashed", { error: String(e?.stack ?? e).slice(0, 2000) });
+  exit(EXIT.UNREACHABLE);
+}
+
 async function main() {
   // Whatever Cairn creates (CAIRN_DATA and its files) is readable by its user only: 700 and 600.
   process.umask(0o077);
   configureLog({ level: process.env.CAIRN_LOG?.trim(), secrets: secretsOf(process.env) });
+  process.on("uncaughtException", crashed);
+  process.on("unhandledRejection", crashed);
 
   const args = process.argv.slice(2);
-  if (args.length !== 1 || !Object.hasOwn(MODES, args[0])) {
+  if (args.length !== 1 || !MODES.includes(args[0])) {
     return fail(EXIT.CONFIG, `usage: node cairn.mjs run|tick|doctor, with no other argument (got ${JSON.stringify(args.join(" ").slice(0, 60))}); settings come from the environment, see .env.example`);
   }
+  const major = Number(process.versions.node.split(".")[0]);
+  if (major < NODE_MAJOR) return fail(EXIT.CONFIG, `Cairn needs Node.js ${NODE_MAJOR} or later (for node:sqlite), this is Node.js ${process.versions.node}`);
   let config;
   try {
     config = loadConfig(process.env);
@@ -47,6 +57,7 @@ async function main() {
     throw e;
   }
   configureLog({ level: config.logLevel, secrets: config.secrets });
+  for (const warning of config.warnings) log.warn("config", { warning });
 
   const stop = new AbortController();
   for (const signal of ["SIGTERM", "SIGINT"]) {
@@ -62,7 +73,9 @@ async function main() {
   }
 
   try {
-    const { code, line } = await MODES[args[0]](config, stop.signal);
+    // Loaded after the version check: the modes need node:sqlite, which older Node.js lacks.
+    const modes = await import("./src/modes.mjs");
+    const { code, line } = await modes[args[0]](config, stop.signal);
     exit(code, line);
   } catch (e) {
     if (stop.signal.aborted) return exit(EXIT.OK);
@@ -70,8 +83,7 @@ async function main() {
     if (e instanceof TelegramUnreachable) return fail(EXIT.UNREACHABLE, `${e.message} (TELEGRAM_API_ROOT is ${config.telegramApiRoot})`);
     if (e instanceof TelegramError) return fail(EXIT.UNREACHABLE, `${e.message} (check TELEGRAM_API_ROOT, ${config.telegramApiRoot})`);
     if (e instanceof NodeUnavailable) return fail(EXIT.UNREACHABLE, e.message);
-    log.error("crashed", { error: String(e?.stack ?? e).slice(0, 2000) });
-    exit(EXIT.UNREACHABLE);
+    crashed(e);
   }
 }
 
