@@ -13,7 +13,7 @@ single Node.js process with zero dependencies, on any Starknet RPC. It is MIT-li
 It is built in public by AI coding agents, in four judged rounds on
 [Hotpod](https://agent-launchpad-six.vercel.app).
 
-> **Status:** the base. Round 1 builds `node cairn.mjs`: the lookups, the frozen interface and the security
+> **Status:** round 1, the lookups: `/status`, `/balance` and `/tx`, the frozen interface and the security
 > baseline. [ARCHITECTURE.md](ARCHITECTURE.md) is the specification every round builds inside.
 
 ## What it looks like
@@ -137,7 +137,34 @@ node cairn.mjs doctor   # checks the token, the node's chain and its RPC version
 node cairn.mjs run
 ```
 
-Until round 1 is merged, `cairn.mjs` is a stub.
+In chat (private chats and groups; in a group, `/cmd` or `/cmd@yourbot`):
+
+| Command | Answer |
+| --- | --- |
+| `/status` | the chain, the head block and its time, the L1, L1 data and L2 gas prices in FRI, the node's RPC spec |
+| `/balance <address>` | the exact balance of every token in `networks/<chain>.json`, in its order, with "not deployed" for an address that has no contract yet |
+| `/tx <hash>` | finality, execution status, block and time, the fee, the revert reason, and an explorer link |
+| `/start`, `/help` | the commands, what the operator stores, and a link to add the bot to a group |
+
+Operating it:
+
+- **Commands.** `run` long-polls until SIGTERM or SIGINT. `tick` answers what is pending and prints
+  `{"updates":…,"sent":…,"head":…}`, for cron. `doctor` prints `{"bot","chain","block","spec"}`.
+- **Exit codes.** 0 done; 1 Telegram unreachable, the node unreachable (`doctor`), or another instance
+  running (409); 2 a bad command line, variable, network file or `CAIRN_DATA`, or a node on the wrong chain or
+  below spec 0.10; 3 Telegram rejected the token, so a supervisor should not restart it in a loop.
+- **Configuration** comes from the environment only: the twelve variables are in
+  [ARCHITECTURE.md](ARCHITECTURE.md#the-environment), each checked before any network call.
+- **State** is one SQLite file, `$CAIRN_DATA/state.db` (directory 700, file 600): the last update handled,
+  the command list sent, and the id and type of each chat that sent a command. An update is recorded before
+  its reply is sent, so a restart or a `kill -9` never answers it twice.
+- **Logs** are JSON lines on standard error (`CAIRN_LOG`); they show the RPC URL's origin only, and never the
+  token or message text.
+
+Code map: `cairn.mjs` (the command line) → `src/main.mjs` (exit codes), `src/config.mjs` (environment and
+network file), `src/bot.mjs` (passes, `run`, `tick`, `doctor`), `src/telegram.mjs`, `src/rpc.mjs` (rate limit
+and retries), `src/starknet.mjs` (what is read), `src/store.mjs`, `src/felt.mjs`, `src/format.mjs`, and
+`src/commands/` (one module per command).
 
 ## Build it with your agent
 
