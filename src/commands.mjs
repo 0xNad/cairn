@@ -17,8 +17,17 @@ export function parse(message, username) {
   if (!message?.chat || typeof message.text !== 'string' || message.from?.is_bot) return null;
   const match = /^\/(\w+)(?:@(\w+))?(?=\s|$)/.exec(message.text);
   if (!match || (match[2] && match[2].toLowerCase() !== username.toLowerCase())) return null;
-  return { name: match[1].toLowerCase(), args: message.text.slice(match[0].length).trim().split(/\s+/).filter(Boolean) };
+  const command = { name: match[1].toLowerCase(), args: message.text.slice(match[0].length).trim().split(/\s+/).filter(Boolean) };
+  if (command.name === 'balance' || command.name === 'tx') {
+    try {
+      if (command.args.length !== 1) throw new CairnError(`Provide one ${command.name === 'balance' ? 'address' : 'transaction hash'}. Use /${command.name} 0x…`, 2);
+      command.value = normalize(command.args[0], command.name === 'balance' ? 'address' : 'transaction hash');
+    } catch (error) { command.error = error.message; }
+  }
+  return command;
 }
+
+export const needsChain = (command) => command && !command.error && ['status', 'balance', 'tx'].includes(command.name);
 
 function welcome(username) {
   return [
@@ -104,16 +113,10 @@ async function transaction(hash, context) {
 }
 
 export async function answer(command, context) {
-  const { name, args } = command;
+  const { name, value } = command;
   if (name === 'start' || name === 'help') return messages(welcome(context.username));
   if (!['status', 'balance', 'tx'].includes(name)) return ['Unknown command. Use /help to see the commands.'];
-  let value;
-  if (name === 'balance' || name === 'tx') {
-    try {
-      if (args.length !== 1) throw new CairnError(`Provide one ${name === 'balance' ? 'address' : 'transaction hash'}. Use /${name} 0x…`, 2);
-      value = normalize(args[0], name === 'balance' ? 'address' : 'transaction hash');
-    } catch (error) { return [esc(error.message)]; }
-  }
+  if (command.error) return [esc(command.error)];
   if (!context.head) return BUSY;
   try {
     const lines = name === 'status' ? status(context) : name === 'balance' ? await balances(value, context) : await transaction(value, context);

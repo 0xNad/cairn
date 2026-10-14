@@ -37,16 +37,16 @@ test('an accepted send with a dropped response is not automatically duplicated',
   } finally { await service.close(); }
 });
 
-async function scenario(fn) {
+async function scenario(fn, { holdMs = 1000, chainId } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'cairn-edge-'));
   const token = '7'.repeat(9) + ':' + 'fixture-secret_'.repeat(3);
   const rpcSecret = 'provider-fixture-private-value';
-  const tg = await fakeTelegram({ token, me: { id: 777777777, username: 'cairn_edge_bot', is_bot: true, first_name: 'Cairn' } }).listen();
-  const node = await fakeStarknet().listen(`/rpc/${rpcSecret}/`);
+  const tg = await fakeTelegram({ token, holdMs, me: { id: 777777777, username: 'cairn_edge_bot', is_bot: true, first_name: 'Cairn' } }).listen();
+  const node = await fakeStarknet({ ...(chainId ? { chainId } : {}) }).listen(`/rpc/${rpcSecret}/`);
   const address = feltOf('account'), contract = feltOf('coin'), hash = feltOf('transaction');
   const networkFile = join(directory, 'network.json');
   writeFileSync(networkFile, JSON.stringify({ chain: 'SN_MAIN', tokens: [{ symbol: 'STRK', address: hex64(contract), decimals: 18 }] }));
-  const env = { ...process.env, TELEGRAM_BOT_TOKEN: token, TELEGRAM_API_ROOT: tg.url,
+  const env = { PATH: process.env.PATH, HOME: directory, TMPDIR: directory, TELEGRAM_BOT_TOKEN: token, TELEGRAM_API_ROOT: tg.url,
     STARKNET_RPC_URL: node.url, CAIRN_NETWORK_FILE: networkFile, CAIRN_DATA: join(directory, 'data'),
     CAIRN_RPC_RPS: '100', CAIRN_RPC_TIMEOUT_MS: '1000' };
   const user = tg.user(101, 'Fixture');
@@ -60,8 +60,33 @@ async function scenario(fn) {
     child.on('error', reject);
     child.on('close', (code) => { clearTimeout(timer); resolve({ code, stdout, stderr }); });
   });
-  try { await fn({ tg, node, address, contract, hash, token, rpcSecret, env, chat, user, run }); }
-  finally { await tg.close(); await node.close(); rmSync(directory, { recursive: true, force: true }); }
+  const bots = [];
+  const start = (extra = {}) => {
+    const child = spawn(process.execPath, ['cairn.mjs', 'run'], { env: { ...env, ...extra }, cwd: new URL('..', import.meta.url), stdio: ['ignore', 'pipe', 'pipe'] });
+    let stderr = '';
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    const exit = new Promise((resolve) => child.on('close', (code, signal) => resolve({ code, signal, stderr })));
+    const bot = { child, exit, stderr: () => stderr };
+    bots.push(bot);
+    return bot;
+  };
+  try { await fn({ tg, node, address, contract, hash, token, rpcSecret, env, chat, user, run, start }); }
+  finally {
+    for (const bot of bots) {
+      bot.child.kill('SIGKILL');
+      await bot.exit;
+    }
+    await tg.close(); await node.close(); rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+async function until(condition, timeout = 3000) {
+  const deadline = performance.now() + timeout;
+  while (!condition()) {
+    if (performance.now() > deadline) throw new Error('Expected event did not arrive in time.');
+    await sleep(10);
+  }
 }
 
 test('huge single-line reverts remain readable HTML and do not expose credentials', () => scenario(async (w) => {
@@ -110,3 +135,56 @@ test('a corrupt saved offset fails visibly without replaying an old reply', () =
   assert.match(result.stderr, /state is unreadable/);
   assert.equal(w.tg.accepted.length, before);
 }));
+
+test('a command arriving after an empty long poll is answered within three seconds at the default poll interval', () => scenario(async (w) => {
+  w.start();
+  await until(() => w.tg.holding);
+  await sleep(250);
+  w.tg.say(w.chat, w.user, '/help');
+  await until(() => w.tg.to(w.chat.id).length > 0);
+  assert.match(w.tg.to(w.chat.id)[0].text, /On-chain facts/);
+}, { holdMs: 200 }));
+
+test('help and invalid input are answered without waiting for a slow node at startup', () => scenario(async (w) => {
+  w.node.fail({ when: () => true, delayMs: 5000, times: 100 });
+  w.tg.say(w.chat, w.user, '/help');
+  w.tg.say(w.chat, w.user, '/balance not-an-address');
+  const bot = w.start({ CAIRN_RPC_TIMEOUT_MS: '10000' });
+  await until(() => w.tg.to(w.chat.id).length === 2);
+  assert.match(w.tg.to(w.chat.id)[0].text, /On-chain facts/);
+  assert.match(w.tg.to(w.chat.id)[1].text, /Invalid address/);
+  assert.equal(w.node.callsOf('starknet_getClassHashAt').length, 0);
+  bot.child.kill('SIGTERM');
+  const result = await Promise.race([bot.exit, sleep(3000).then(() => null)]);
+  assert.equal(result?.code, 0, result?.stderr);
+}));
+
+test('a chain lookup gets a busy reply while the node is slow and succeeds after it recovers', () => scenario(async (w) => {
+  w.node.fail({ when: (call) => call.method === 'starknet_getBlockWithTxHashes', delayMs: 4000, times: 1 });
+  w.tg.say(w.chat, w.user, '/status');
+  const bot = w.start({ CAIRN_RPC_TIMEOUT_MS: '10000' });
+  await until(() => w.tg.to(w.chat.id).length === 1);
+  assert.match(w.tg.to(w.chat.id)[0].text, /Node busy/);
+  await sleep(4200);
+  w.tg.say(w.chat, w.user, '/status');
+  await until(() => w.tg.to(w.chat.id).length === 2);
+  assert.match(w.tg.to(w.chat.id)[1].text, /SN_MAIN/);
+  bot.child.kill('SIGTERM');
+  assert.equal((await bot.exit).code, 0);
+}));
+
+test('short polling remains responsive with a large chain-poll interval', () => scenario(async (w) => {
+  w.start({ CAIRN_TG_TIMEOUT: '0', CAIRN_POLL_MS: '10000' });
+  await until(() => w.tg.callsOf('getUpdates').length > 0);
+  await sleep(50);
+  w.tg.say(w.chat, w.user, '/help');
+  await until(() => w.tg.to(w.chat.id).length === 1);
+  assert.match(w.tg.to(w.chat.id)[0].text, /On-chain facts/);
+}));
+
+test('run promptly refuses an incompatible chain even while waiting for Telegram updates', () => scenario(async (w) => {
+  const bot = w.start();
+  const result = await Promise.race([bot.exit, sleep(3000).then(() => null)]);
+  assert.equal(result?.code, 2, result?.stderr);
+  assert.match(result.stderr, /SN_SEPOLIA/);
+}, { chainId: '0x534e5f5345504f4c4941' }));

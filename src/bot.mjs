@@ -3,7 +3,8 @@ import { logger, pause } from './http.mjs';
 import { Starknet } from './rpc.mjs';
 import { Telegram } from './telegram.mjs';
 import { State } from './state.mjs';
-import { answer, COMMANDS, parse } from './commands.mjs';
+import { HeadReader } from './head.mjs';
+import { answer, COMMANDS, needsChain, parse } from './commands.mjs';
 
 export async function operate(config) {
   const shutdown = new AbortController();
@@ -14,6 +15,11 @@ export async function operate(config) {
   const log = logger(config);
   const rpc = new Starknet(config, signal, log);
   const telegram = new Telegram(config, signal, log);
+  let incompatible;
+  const heads = new HeadReader(rpc, signal, log, (error) => {
+    incompatible = error;
+    shutdown.abort(error);
+  });
   try {
     const me = await telegram.call('getMe');
     if (!me || !Number.isSafeInteger(me.id) || !/^[A-Za-z0-9_]{1,64}$/.test(me.username)) throw new CairnError('Telegram returned invalid bot information.');
@@ -24,16 +30,8 @@ export async function operate(config) {
       process.stdout.write(JSON.stringify({ bot: config.clean(me.username), chain: identity.chain, spec: config.clean(identity.spec), block }) + '\n');
       return;
     }
-    // A wrong chain or old spec is fatal, but an unavailable endpoint does not stop Telegram replies.
-    const readHead = async () => {
-      try { return await rpc.head(); }
-      catch (error) {
-        if (signal.aborted || error instanceof CairnError && error.exitCode === 2) throw error;
-        log('warn', 'node_busy', { origin: new URL(config.rpc).origin });
-        return null;
-      }
-    };
-    let head = await readHead();
+    let head = config.mode === 'tick' ? await heads.read() : null;
+    signal.throwIfAborted();
     const state = new State(config.data, me.id);
     if (config.mode === 'run') await telegram.call('deleteWebhook', { drop_pending_updates: false });
     const fingerprint = JSON.stringify(COMMANDS);
@@ -41,16 +39,20 @@ export async function operate(config) {
       await telegram.call('setMyCommands', { commands: COMMANDS });
       state.commands(fingerprint);
     }
+    // Verify the node at startup without making help or input validation depend on its availability.
+    if (config.mode === 'run') heads.read();
     let updates = 0, sent = 0;
     while (!signal.aborted) {
       const pending = await telegram.updates(state.offset, config.mode === 'tick' ? 0 : config.tgTimeout);
       if (!Array.isArray(pending)) throw new CairnError('Telegram returned an invalid update list.');
-      if (config.mode === 'run') head = await readHead();
-      for (const update of pending.sort((a, b) => a.update_id - b.update_id)) {
+      const batch = pending.sort((a, b) => a.update_id - b.update_id).map((update) => ({ update, command: parse(update.message, me.username) }));
+      // Refresh once per batch only when it contains a valid chain lookup. Never serve a stale head
+      // after the wait budget expires: those commands receive a busy reply and the read keeps retrying.
+      if (config.mode === 'run' && batch.some(({ command }) => needsChain(command))) head = await heads.within(2000);
+      for (const { update, command } of batch) {
         signal.throwIfAborted();
         if (!Number.isSafeInteger(update.update_id) || update.update_id < 0) throw new CairnError('Telegram returned an invalid update id.');
         if (update.update_id < state.offset) continue;
-        const command = parse(update.message, me.username);
         const replies = command ? await answer(command, { config, rpc, username: me.username, head, log }) : [];
         // Reserve this update durably before any send: SIGKILL after acceptance cannot replay its reply.
         state.handled(update.update_id);
@@ -66,12 +68,16 @@ export async function operate(config) {
         process.stdout.write(JSON.stringify({ updates, sent, head: head?.block_number ?? null }) + '\n');
         return;
       }
-      if (config.mode === 'run' && !pending.length) await pause(config.pollMs, signal);
+      // A completed long poll already waited for updates. Short polling still yields, with a bounded
+      // delay so a large chain-poll interval cannot leave Telegram commands waiting for ten seconds.
+      if (config.mode === 'run' && config.tgTimeout === 0 && !pending.length) await pause(Math.min(config.pollMs, 1000), signal);
     }
   } catch (error) {
+    if (incompatible) throw incompatible;
     if (!signal.aborted) throw error;
     log('info', 'shutdown');
   } finally {
+    shutdown.abort();
     process.removeListener('SIGTERM', stop);
     process.removeListener('SIGINT', stop);
   }

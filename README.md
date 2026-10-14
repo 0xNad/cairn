@@ -20,6 +20,8 @@ node cairn.mjs run
 
 Use one running process per bot and data directory. `run` clears the webhook without dropping pending updates, registers its commands and long-polls Telegram. SIGTERM and SIGINT abort polling and retries, then exit 0. Nothing runs in a browser or Telegram Mini App.
 
+Telegram listens again as soon as a long poll finishes. A large `CAIRN_POLL_MS` does not add a delay between long polls; when long polling is disabled, the wait between empty polls is capped at one second. Help, welcome and invalid-input replies do not wait for the node. Valid chain commands wait up to two seconds for a fresh head, then receive a node-busy reply if it is still unavailable. The underlying head read keeps its configured timeout and retries so later commands can recover. Token and transaction calls keep their own RPC timeout and rate limit.
+
 `doctor` checks Telegram, the chain, the RPC version and head. It prints one JSON line. `tick` drains the pending updates, confirms the saved offset and prints one line such as `{"updates":2,"sent":2,"head":4200010}`. Logs and error reasons go to standard error as JSON.
 
 Exit codes: 0 for completion, 1 for a transport or state failure or a Telegram polling conflict, 2 for invalid configuration or an incompatible node, and 3 for a rejected bot token. A failed node does not fail `tick`: its head is null, and chain commands receive a node-busy reply. `doctor` exits 1 when the node is unavailable.
@@ -89,6 +91,7 @@ Cairn contacts only the configured Telegram and RPC endpoints. Redirects are ref
 
 - `src/config.mjs` validates the environment, registries and input ranges.
 - `src/rpc.mjs` validates node identity and handles read calls, retries and the rolling rate limit.
+- `src/head.mjs` shares an in-flight head read and bounds how long a command waits for it.
 - `src/telegram.mjs` implements Bot API transport and error handling.
 - `src/commands.mjs` parses commands and assembles replies from chain results.
 - `src/format.mjs` handles exact amounts, escaping, links and message splitting.
