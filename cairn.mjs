@@ -43,14 +43,15 @@ async function main() {
   }
   if (args[0] === 'run') await tg.call('deleteWebhook', { drop_pending_updates: false });
 
-  let stopping = false, pollController = null;
-  const stop = () => { stopping = true; pollController?.abort(); };
+  let stopping = false, pollController = null, wake = null;
+  const stop = () => { stopping = true; pollController?.abort(); wake?.(); };
   if (args[0] === 'run') {
     process.on('SIGINT', stop);
     process.on('SIGTERM', stop);
   }
   const blocked = new Set();
   async function pass() {
+    let started = Date.now();
     let block = null, updates = 0, sent = 0;
     try {
       if (!spec) spec = await node.verify();
@@ -69,6 +70,13 @@ async function main() {
         throw e;
       } finally { pollController = null; }
       if (batch.length === 0) break;
+      if (args[0] === 'run' && Date.now() - started >= config.pollMs) {
+        started = Date.now();
+        try {
+          if (!spec) spec = await node.verify();
+          block = await node.call('starknet_getBlockWithTxHashes', { block_id: 'latest' });
+        } catch (e) { if (e instanceof RpcError && e.code === 'config') throw e; block = null; }
+      }
       for (const update of batch) {
         if (update.update_id < store.state.offset) continue;
         // Durable at-most-once claim before any outbound reply; a crash may lose a reply, never duplicate it.
@@ -87,7 +95,7 @@ async function main() {
           }
         }
       }
-      if (args[0] === 'run') break;
+      // Keep long-polling; do not leave a 10-second gap after a reply.
     }
     if (args[0] === 'tick') await tg.call('getUpdates', { offset: store.state.offset, limit: 1, timeout: 0, allowed_updates: ['message'] });
     return { updates, sent, head: block?.block_number ?? null };
@@ -96,8 +104,16 @@ async function main() {
     process.stdout.write(JSON.stringify(await pass()) + '\n');
   } else {
     while (!stopping) {
-      await pass();
-      if (!stopping) await new Promise(resolve => setTimeout(resolve, config.pollMs));
+      const start = Date.now();
+      const result = await pass();
+      const remaining = config.pollMs - (Date.now() - start);
+      if (!stopping && config.tgTimeout === 0 && result.updates === 0 && remaining > 0) {
+        await new Promise(resolve => {
+          const timer = setTimeout(resolve, remaining);
+          wake = () => { clearTimeout(timer); resolve(); };
+        });
+        wake = null;
+      }
     }
   }
 }

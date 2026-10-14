@@ -24,6 +24,7 @@ export function rpc(config) {
           method: 'POST', headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ jsonrpc: '2.0', id: ++nextId, method, params }),
           signal: AbortSignal.timeout(config.rpcTimeoutMs),
+          redirect: 'manual',
         });
         if (res.status === 429 || res.status >= 500) {
           const header = res.headers.get('retry-after');

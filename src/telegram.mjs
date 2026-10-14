@@ -7,7 +7,7 @@ export function telegram(config) {
     const address = `${config.telegramRoot}/bot${config.token}/${method}`;
     let response, data;
     try {
-      response = await fetch(address, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal });
+      response = await fetch(address, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal, redirect: 'manual' });
       data = await response.json();
     } catch (e) {
       if (signal?.aborted) throw e;
