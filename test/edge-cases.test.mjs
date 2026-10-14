@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -214,4 +214,15 @@ test('a SIGKILL releases the local instance lock so the next tick can answer new
   const tick=await w.run();
   assert.equal(tick.code,0,tick.stderr);
   assert.equal(w.tg.to(w.chat.id).length,1);
+}));
+
+test('a dangling instance-lock symlink is refused without creating a file outside CAIRN_DATA', () => scenario(async (w) => {
+  assert.equal((await w.run()).code,0);
+  const outside=join(w.env.HOME,'outside-lock.db');
+  const lock=join(w.env.CAIRN_DATA,'instance.db');
+  unlinkSync(lock);
+  symlinkSync(outside,lock);
+  const result=await w.run();
+  assert.equal(result.code,1,result.stderr);
+  assert.equal(existsSync(outside),false);
 }));

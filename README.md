@@ -7,12 +7,12 @@ This entry implements round 1: `/start`, `/help`, `/status`, `/balance <address>
 ## Run
 
 1. Create a bot with [BotFather](https://t.me/BotFather). Keep its token private.
-2. Copy `.env.example` to `.env`, replace the placeholders, and restrict its permissions with `chmod 600 .env`.
+2. Copy `.env.example` to `../cairn.env` outside the checkout, replace the placeholders, and restrict its permissions with `chmod 600 ../cairn.env`. Choose a separate environment file for each bot.
 3. Load the environment into your shell, then start Cairn:
 
 ```sh
 set -a
-. ./.env
+. ../cairn.env
 set +a
 node cairn.mjs doctor
 node cairn.mjs run

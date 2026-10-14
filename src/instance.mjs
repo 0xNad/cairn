@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { chmodSync, existsSync, lstatSync } from 'node:fs';
+import { chmodSync, lstatSync } from 'node:fs';
 import { join } from 'node:path';
 import { CairnError } from './errors.mjs';
 
@@ -7,7 +7,10 @@ export function acquireInstance(directory) {
   const file = join(directory, 'instance.db');
   let database;
   try {
-    if (existsSync(file) && (!lstatSync(file).isFile() || lstatSync(file).isSymbolicLink())) throw new Error();
+    let existing;
+    try { existing = lstatSync(file); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    if (existing && (!existing.isFile() || existing.isSymbolicLink())) throw new Error();
     database = new DatabaseSync(file);
     chmodSync(file, 0o600);
     // A held SQLite write lock prevents overlapping ticks as well as overlapping pollers. It carries
