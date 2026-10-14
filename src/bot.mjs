@@ -15,6 +15,7 @@ export async function operate(config) {
   const log = logger(config);
   const rpc = new Starknet(config, signal, log);
   const telegram = new Telegram(config, signal, log);
+  let state;
   let incompatible;
   const heads = new HeadReader(rpc, signal, log, (error) => {
     incompatible = error;
@@ -32,7 +33,7 @@ export async function operate(config) {
     }
     let head = config.mode === 'tick' ? await heads.read() : null;
     signal.throwIfAborted();
-    const state = new State(config.data, me.id);
+    state = new State(config.data, me.id);
     if (config.mode === 'run') await telegram.call('deleteWebhook', { drop_pending_updates: false });
     const fingerprint = JSON.stringify(COMMANDS);
     if (state.value.commands !== fingerprint) {
@@ -78,6 +79,7 @@ export async function operate(config) {
     log('info', 'shutdown');
   } finally {
     shutdown.abort();
+    state?.close();
     process.removeListener('SIGTERM', stop);
     process.removeListener('SIGINT', stop);
   }

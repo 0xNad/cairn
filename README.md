@@ -81,6 +81,8 @@ The starter registry addresses and decimals come from the tables in `ARCHITECTUR
 
 Cairn stores only a format version, Telegram bot id, next update offset and the registered command list in `CAIRN_DATA/state.json`. The directory has mode 700 and state files have mode 600. State replacement writes and fsyncs a temporary file, renames it, then fsyncs the directory. Invalid state or a directory reused by another bot causes an error; it is not silently reset. Back up this directory to preserve update progress.
 
+An empty SQLite file, `CAIRN_DATA/instance.db`, holds a process lock while `run` or `tick` owns the directory. A second instance exits 1 before polling or handling updates. The operating system releases the lock after a crash, including SIGKILL; keep the file in place and restart normally. `doctor` remains available while the bot runs. The lock uses Node's built-in SQLite support and contains no command or user data.
+
 The bot saves an update's offset before sending its reply. A crash after Telegram accepts a message therefore does not replay that update. There is a delivery tradeoff: a crash between saving the offset and Telegram accepting the reply can lose that reply, and a crash during a split reply can leave it incomplete. Send the command again to obtain a fresh response. Telegram's Bot API offers no send idempotency key, so this entry does not claim lossless exactly-once delivery. Future rounds need a separate alert ledger and a defined treatment of ambiguous sends.
 
 RPC retries share one rolling per-second call budget. A timeout, HTTP 429 or 5xx receives up to three attempts, with exponential backoff and at least the endpoint's `Retry-After`. Telegram 429 waits its `retry_after` before retrying; 403 skips the blocked chat. Explicit server failures receive bounded retries. An ambiguous network failure during `sendMessage` exits without retrying that send, because Telegram might already have accepted it. A 409 tells the operator to stop the other polling instance.
@@ -96,6 +98,7 @@ Cairn contacts only the configured Telegram and RPC endpoints. Redirects are ref
 - `src/commands.mjs` parses commands and assembles replies from chain results.
 - `src/format.mjs` handles exact amounts, escaping, links and message splitting.
 - `src/state.mjs` persists progress before delivery.
+- `src/instance.mjs` prevents concurrent processes from handling the same update.
 - `src/bot.mjs` coordinates the shared tick/run loop and shutdown.
 
 The network transports do not read environment variables or write state. Command handlers receive their dependencies explicitly. Later scanners can share the RPC transport and add their own state and delivery tables without copying the command loop.

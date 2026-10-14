@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { post } from '../src/http.mjs';
 import { Telegram } from '../src/telegram.mjs';
-import { fakeStarknet, feltOf, hex64, SEL } from '../.launchpad/checks/round-1/fake-starknet.mjs';
+import { fakeStarknet, erc20, feltOf, hex64, SEL } from '../.launchpad/checks/round-1/fake-starknet.mjs';
 import { fakeTelegram } from '../.launchpad/checks/round-1/fake-telegram.mjs';
 
 async function listen(handler) {
@@ -51,8 +51,8 @@ async function scenario(fn, { holdMs = 1000, chainId } = {}) {
     CAIRN_RPC_RPS: '100', CAIRN_RPC_TIMEOUT_MS: '1000' };
   const user = tg.user(101, 'Fixture');
   const chat = tg.dm(user);
-  const run = () => new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ['cairn.mjs', 'tick'], { env, cwd: new URL('..', import.meta.url), stdio: ['ignore', 'pipe', 'pipe'] });
+  const run = (command = 'tick') => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['cairn.mjs', command], { env, cwd: new URL('..', import.meta.url), stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '', stderr = '';
     child.stdout.on('data', (chunk) => { stdout += chunk; });
     child.stderr.on('data', (chunk) => { stderr += chunk; });
@@ -188,3 +188,30 @@ test('run promptly refuses an incompatible chain even while waiting for Telegram
   assert.equal(result?.code, 2, result?.stderr);
   assert.match(result.stderr, /SN_SEPOLIA/);
 }, { chainId: '0x534e5f5345504f4c4941' }));
+
+test('overlapping ticks cannot both answer an update while the first is waiting for a token lookup', () => scenario(async (w) => {
+  w.node.contract(w.address, { calls: {} });
+  w.node.contract(w.contract, erc20({symbol:'STRK',decimals:18,balances:new Map([[w.address,10n**18n]])}));
+  w.node.fail({ when: (call) => call.method === 'starknet_call', delayMs: 1800, times: 1 });
+  w.tg.say(w.chat,w.user,`/balance ${hex64(w.address)}`);
+  const first=w.run();
+  await until(()=>w.node.requests.some((request)=>JSON.parse(request.body).method==='starknet_call'));
+  const second=await w.run();
+  assert.equal(second.code,1,second.stderr);
+  assert.match(second.stderr,/another.*instance/i);
+  assert.equal((await first).code,0);
+  assert.equal(w.tg.to(w.chat.id).length,1);
+}));
+
+test('a SIGKILL releases the local instance lock so the next tick can answer new commands', () => scenario(async (w) => {
+  const bot=w.start();
+  await until(()=>w.tg.holding);
+  // A read-only doctor remains available while the polling instance owns the data directory.
+  assert.equal((await w.run('doctor')).code,0);
+  bot.child.kill('SIGKILL');
+  await bot.exit;
+  w.tg.say(w.chat,w.user,'/help');
+  const tick=await w.run();
+  assert.equal(tick.code,0,tick.stderr);
+  assert.equal(w.tg.to(w.chat.id).length,1);
+}));

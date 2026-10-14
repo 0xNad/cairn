@@ -1,6 +1,7 @@
 import { chmodSync, closeSync, constants, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { CairnError } from './errors.mjs';
+import { acquireInstance } from './instance.mjs';
 
 export class State {
   constructor(directory, botId) {
@@ -11,6 +12,7 @@ export class State {
       mkdirSync(directory, { recursive: true, mode: 0o700 });
       if (!lstatSync(directory).isDirectory() || lstatSync(directory).isSymbolicLink()) throw new Error();
       chmodSync(directory, 0o700);
+      this.instance = acquireInstance(directory);
       for (const path of [this.file, this.temp]) if (existsSync(path)) {
         if (!lstatSync(path).isFile() || lstatSync(path).isSymbolicLink()) throw new Error();
         chmodSync(path, 0o600);
@@ -19,7 +21,9 @@ export class State {
       this.value = existsSync(this.file) ? JSON.parse(readFileSync(this.file, 'utf8')) : { version: 1, botId, offset: 0, commands: null };
       if (this.value.version !== 1 || this.value.botId !== botId || !Number.isSafeInteger(this.value.offset) || this.value.offset < 0) throw new Error();
       this.save();
-    } catch {
+    } catch (error) {
+      this.close();
+      if (error instanceof CairnError) throw error;
       throw new CairnError('CAIRN_DATA: state is unreadable, unsafe or belongs to another bot. Use a private directory for this bot.');
     }
   }
@@ -48,4 +52,9 @@ export class State {
   }
 
   commands(fingerprint) { this.value.commands = fingerprint; this.save(); }
+
+  close() {
+    this.instance?.close();
+    this.instance = null;
+  }
 }
