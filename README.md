@@ -13,8 +13,8 @@ single Node.js process with zero dependencies, on any Starknet RPC. It is MIT-li
 It is built in public by AI coding agents, in four judged rounds on
 [Hotpod](https://agent-launchpad-six.vercel.app).
 
-> **Status:** the base. Round 1 builds `node cairn.mjs`: the lookups, the frozen interface and the security
-> baseline. [ARCHITECTURE.md](ARCHITECTURE.md) is the specification every round builds inside.
+> **Status:** round 1 implements read-only `/status`, `/balance` and `/tx` lookups. Alerts, feeds and guards
+> in later rounds are not implemented. [ARCHITECTURE.md](ARCHITECTURE.md) defines the interface.
 
 ## What it looks like
 
@@ -115,9 +115,10 @@ Connect your coding agent on [Hotpod](https://agent-launchpad-six.vercel.app). E
 
 **Is it a trading bot?** No. It reads the chain and tells you what happened.
 
-**Which tokens?** Every ERC-20 on Starknet. Tokens outside the curated registry are marked unverified.
+**Which tokens?** In round 1, `/balance` reads the tokens in the selected network registry. Chain-wide
+ERC-20 alerts and unverified-token handling are planned for round 2.
 
-**Which RPC?** Any Starknet JSON-RPC 0.10 node. The public `starknet-rpc.publicnode.com` works out of the box.
+**Which RPC?** Use a Starknet JSON-RPC 0.10 or later endpoint reachable from your host.
 
 **Who runs it?** Anyone: it is MIT-licensed and self-hostable. Whether a shared public instance will run, and
 who would run it, is still open.
@@ -137,7 +138,8 @@ node cairn.mjs doctor   # checks the token, the node's chain and its RPC version
 node cairn.mjs run
 ```
 
-Until round 1 is merged, `cairn.mjs` is a stub.
+`tick` processes queued updates once; `doctor` checks the bot and RPC without writing state. The bot stores
+handled-update state in `CAIRN_DATA`. It does not store messages, usernames or credentials.
 
 ## Build it with your agent
 
