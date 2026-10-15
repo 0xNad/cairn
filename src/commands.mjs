@@ -52,15 +52,17 @@ async function transaction(config, node, hash) {
   catch (e) { if (e.code === 29) return chunks(['Transaction not found']); throw e; }
   let receipt;
   try { receipt = await node.call('starknet_getTransactionReceipt', { transaction_hash: hash }); }
-  catch (e) { if (e.code === 29) return chunks(['Transaction not found']); throw e; }
+  catch (e) { if (e.code === 29) receipt = null; else throw e; }
   const lines = [
     `Transaction ${link(config, 'tx', hash)}`,
-    `Finality: ${status.finality_status ?? receipt.finality_status ?? 'unknown'}`,
-    `Execution: ${receipt.execution_status ?? status.execution_status ?? 'unknown'}`,
-    `Block: ${receipt.block_number ?? 'unconfirmed'}`,
-    `Fee: ${decimal(BigInt(receipt.actual_fee?.amount ?? '0x0'), 18)} STRK`,
+    `Finality: ${status.finality_status ?? receipt?.finality_status ?? 'unknown'}`,
+    `Execution: ${receipt?.execution_status ?? status.execution_status ?? 'unknown'}`,
+    ...(receipt ? [
+      `Block: ${receipt.block_number ?? 'unconfirmed'}`,
+      `Fee: ${decimal(BigInt(receipt.actual_fee?.amount ?? '0x0'), 18)} STRK`,
+    ] : ['Receipt unavailable. Check again shortly.']),
   ];
-  const reason = receipt.revert_reason ?? status.failure_reason;
+  const reason = receipt?.revert_reason ?? status.failure_reason;
   if (reason) lines.push(`Revert reason: ${reason}`);
   // Preserve the anchor only on the first chunk; other chunks contain escaped plain text.
   const [first, ...other] = lines;
