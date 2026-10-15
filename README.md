@@ -13,8 +13,9 @@ single Node.js process with zero dependencies, on any Starknet RPC. It is MIT-li
 It is built in public by AI coding agents, in four judged rounds on
 [Hotpod](https://agent-launchpad-six.vercel.app).
 
-> **Status:** the base. Round 1 builds `node cairn.mjs`: the lookups, the frozen interface and the security
-> baseline. [ARCHITECTURE.md](ARCHITECTURE.md) is the specification every round builds inside.
+> **Status:** round 1 entry. `node cairn.mjs` answers lookups (`/status`, `/balance`, `/tx`) and sets the frozen
+> interface and the security baseline. [ARCHITECTURE.md](ARCHITECTURE.md) is the specification every round
+> builds inside.
 
 ## What it looks like
 
@@ -137,7 +138,74 @@ node cairn.mjs doctor   # checks the token, the node's chain and its RPC version
 node cairn.mjs run
 ```
 
-Until round 1 is merged, `cairn.mjs` is a stub.
+`.env` is not read by Cairn itself: load it into the environment (`set -a; . ./.env; set +a`, a systemd
+`EnvironmentFile`, or your container's `--env-file`). There are no flags, because flags show up in `ps`.
+
+### Commands
+
+| Command | What it does |
+| --- | --- |
+| `node cairn.mjs run` | Long-polls Telegram and answers until SIGTERM or SIGINT (exit 0 within 3 s) |
+| `node cairn.mjs tick` | One pass: answers the pending updates, prints `{"updates","sent","head"}` and exits (for cron) |
+| `node cairn.mjs doctor` | Checks the token and the node, prints `{"bot","chain","block","spec"}` |
+
+Exit codes: `0` done, `1` Telegram or the node unreachable (or another instance is running), `2` a bad
+environment value, network file or command line, or a node on the wrong chain or an old RPC spec,
+`3` Telegram rejected the token. Reasons are JSON lines on standard error; standard output carries only the
+command's own JSON line.
+
+### In chat
+
+`/start` and `/help` list the commands. `/status` shows the chain, the head block and its time, the gas prices in
+FRI and the node's spec version. `/balance <address>` shows every registry token's balance, exactly. `/tx <hash>`
+shows finality, execution status, block, fee in STRK, the revert reason and an explorer link. In groups, Cairn
+answers `/cmd` and `/cmd@<its username>`, and nothing else.
+
+### Environment
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `TELEGRAM_BOT_TOKEN` | required | The BotFather token (a secret) |
+| `STARKNET_RPC_URL` | required | Any Starknet JSON-RPC 0.10 node. A secret: providers put keys in the path |
+| `TELEGRAM_API_ROOT` | `https://api.telegram.org` | An http(s) origin, for a local Bot API server |
+| `CAIRN_CHAIN` | `SN_MAIN` | `SN_MAIN` or `SN_SEPOLIA`; the node must be on this chain |
+| `CAIRN_NETWORK_FILE` | `networks/<CAIRN_CHAIN>.json` | The token registry that `/balance` reads, in order |
+| `CAIRN_DATA` | `./data` | State (mode 700, files 600); nothing is written anywhere else |
+| `CAIRN_EXPLORER_URL` | `https://voyager.online` | Builds links only, never fetched (Sepolia: `https://sepolia.voyager.online`) |
+| `CAIRN_POLL_MS` | `10000` | At least 50. The shortest time between two empty polls |
+| `CAIRN_TG_TIMEOUT` | `30` | Long-poll seconds in `run`, 0 to 50 |
+| `CAIRN_RPC_RPS` | `5` | 1 to 100: the most JSON-RPC calls in any one second |
+| `CAIRN_RPC_TIMEOUT_MS` | `10000` | At least 100 |
+| `CAIRN_LOG` | `info` | `error`, `warn`, `info` or `debug` |
+
+### What it keeps
+
+`CAIRN_DATA/state.db` holds the update offset, the command list last sent to Telegram, and the id and type of
+each chat that wrote. It never holds message text, names, usernames, the token or the RPC URL, and the logs
+never show either secret (the RPC URL appears as its origin only). Cairn contacts `TELEGRAM_API_ROOT` and your
+RPC, and nothing else.
+
+### Tests
+
+```sh
+npm test      # unit tests (node --test)
+npm run check # round 1's checks, against a fake Telegram and a fake node on 127.0.0.1
+```
+
+### Layout
+
+```text
+cairn.mjs            the entry point
+src/cli/             main, run, tick, doctor, and the wiring they share
+src/chat/            the bot (one update to one reply) and src/chat/commands/ (one module per command)
+src/config.mjs       the environment and the network file, validated before any network call
+src/telegram.mjs     the Bot API client: retries, 429/403/409/401
+src/rpc.mjs          JSON-RPC: rate limit, retries, errors told apart
+src/chain.mjs        what Cairn asks the chain: identity, head, balances, transactions
+src/store.mjs        state in CAIRN_DATA (node:sqlite)
+src/felt.mjs         addresses, hashes, u256; src/format.mjs: HTML, amounts, times, message splitting
+networks/            the starter token registries
+```
 
 ## Build it with your agent
 

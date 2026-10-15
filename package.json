@@ -6,5 +6,8 @@
   "type": "module",
   "license": "MIT",
   "engines": { "node": ">=24" },
-  "scripts": { "check": "node .launchpad/checks/round-1/run.mjs" }
+  "scripts": {
+    "test": "node --test",
+    "check": "node .launchpad/checks/round-1/run.mjs"
+  }
 }
