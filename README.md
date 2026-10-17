@@ -1,11 +1,10 @@
 # Cairn
 
-**Every Starknet token, every wallet, in Telegram, and never your keys.**
+**Exact Starknet balances and transaction facts in Telegram, without your keys.**
 
-Cairn is an open-source Telegram bot for Starknet:
-- **Wallet alerts:** watch any wallet across every token on the chain, with transfer and approval alerts.
-- **Whale and buy feeds:** big-move alerts, and a live buy feed for your project's group.
-- **Lookups:** balances and transactions, right in the chat.
+Cairn is an open-source Telegram bot for Starknet. Round 1 provides chain status, registry token
+balances and transaction lookups in private chats and groups. Wallet alerts, whale alerts and buy
+feeds are planned for later rounds; their illustrations below are the roadmap.
 
 It only reads the chain. It holds no keys, signs nothing, never trades and has no Mini App. It runs as a
 single Node.js process with zero dependencies, on any Starknet RPC. It is MIT-licensed, so anyone can host it.
@@ -13,8 +12,9 @@ single Node.js process with zero dependencies, on any Starknet RPC. It is MIT-li
 It is built in public by AI coding agents, in four judged rounds on
 [Hotpod](https://agent-launchpad-six.vercel.app).
 
-> **Status:** the base. Round 1 builds `node cairn.mjs`: the lookups, the frozen interface and the security
-> baseline. [ARCHITECTURE.md](ARCHITECTURE.md) is the specification every round builds inside.
+> **Status:** round 1 lookups are implemented: `/start`, `/help`, `/status`, `/balance` and `/tx`.
+> Wallet alerts, group feeds and guards below describe later rounds.
+> [ARCHITECTURE.md](ARCHITECTURE.md) specifies the frozen interface.
 
 ## What it looks like
 
@@ -107,15 +107,16 @@ Connect your coding agent on [Hotpod](https://agent-launchpad-six.vercel.app). E
 - **No custody, no trading, no Mini App.** Holding user keys is what caused the big Telegram-bot losses on
   other chains.
 - **Two hosts only.** It talks to Telegram and your RPC, and nothing else: no telemetry, no price API.
-- **It keeps very little.** It stores chat ids, settings and the addresses you watch, never message text or
-  usernames. `/export` shows everything stored for a chat, and `/forget` erases it.
+- **It keeps very little.** Round 1 stores only an update offset, schema version and registered command
+  list. Chat ids, settings and watched addresses, with `/export` and `/forget`, belong to later rounds.
 - **Facts, not advice.** No rankings, no trending lists, no buy buttons.
 
 ## FAQ
 
 **Is it a trading bot?** No. It reads the chain and tells you what happened.
 
-**Which tokens?** Every ERC-20 on Starknet. Tokens outside the curated registry are marked unverified.
+**Which tokens?** Round 1 reads every token in the configured registry: STRK, ETH, USDC, USDC.e, USDT
+and WBTC on mainnet. Watching arbitrary ERC-20 tokens and marking unverified tokens arrive in round 2.
 
 **Which RPC?** Any Starknet JSON-RPC 0.10 node. The public `starknet-rpc.publicnode.com` works out of the box.
 
@@ -137,7 +138,79 @@ node cairn.mjs doctor   # checks the token, the node's chain and its RPC version
 node cairn.mjs run
 ```
 
-Until round 1 is merged, `cairn.mjs` is a stub.
+`doctor` prints one JSON line with the bot username, decoded chain, block number and RPC version.
+`tick` drains updates once and prints `{ "updates": n, "sent": n, "head": n }` (a busy node gives
+`head: null`). `run` polls continuously; SIGINT and SIGTERM cancel polling, RPC calls and backoff waits.
+Exit codes are 0 for completion, 1 for connectivity or an instance conflict, 2 for configuration or
+an incompatible chain/spec, and 3 for a rejected Telegram token. Logs are JSON on stderr.
+
+### Round 1 commands
+
+| Command | Reply |
+| --- | --- |
+| `/start`, `/help` | Commands, privacy, and a link to add the bot to a group |
+| `/status` | Chain, head, UTC block time, L1/L1-data/L2 gas in FRI, RPC spec |
+| `/balance 0x…` | Exact balances of every registry token, in registry order |
+| `/tx 0x…` | Finality, execution, block, fee, escaped revert reason, explorer link |
+
+In groups, use `/command` or `/command@your_bot_username`. Plain text and commands for other bots
+are ignored. Zero or out-of-range addresses and hashes are refused before a lookup. Registry token
+failures are independent, so one failing token does not hide the other balances. Native USDC and
+bridged USDC.e are distinct tokens. Mainnet has six starter tokens; Sepolia has four.
+Every balance and deployment check uses the same numbered block shown in the reply, with its UTC
+timestamp. A head advancing during a lookup cannot mix balances from different blocks.
+
+All environment settings, bounds and defaults are in [ARCHITECTURE.md](ARCHITECTURE.md#the-environment).
+For Sepolia set both `CAIRN_CHAIN=SN_SEPOLIA` and
+`CAIRN_EXPLORER_URL=https://sepolia.voyager.online`. Do not pass credentials in command arguments.
+The explorer is used only for links. Redirects from either configured endpoint are refused.
+
+### State and recovery
+
+Use a dedicated `CAIRN_DATA` directory per bot. It is mode 700 and files are mode 600. Round 1 stores
+only the update offset, schema version and registered command list. No message text, lookup inputs,
+usernames, bot token or RPC URL are persisted. A process lock rejects a second owner of the same data
+directory using a separate SQLite exclusive transaction; the OS releases it after a kill, with no
+PID-file recovery race. State itself is an atomic JSON file. Corrupt state is refused, never reset.
+State and lock files reject symbolic links and hard links; a recovery file is checked before it is
+truncated, so an outside file cannot be overwritten through a linked directory entry.
+
+Each update's claim is fsynced and atomically renamed **before** its reply is sent. This prevents
+duplicate handling after SIGKILL, including a kill immediately after Telegram accepts a reply.
+Telegram supplies no idempotency key for `sendMessage`: a crash between the durable claim and the
+send can lose that reply, and a crash during a split reply can leave it incomplete. Send a new command
+to retry. This is an at-most-once policy, not a promise of exactly-once delivery. Explicit Telegram
+429/5xx rejections are retried; ambiguous transport failures (including HTTP 500 without a Telegram
+rejection body) are never resent. Back up the data
+directory while the process is stopped; preserve state when restarting.
+
+### Operator troubleshooting
+
+| Symptom | Action |
+| --- | --- |
+| Exit 2 before any requests | Check the named setting or token-registry entry; all configuration comes from the environment. |
+| Exit 2 naming another chain or an old RPC spec | Use a node on `CAIRN_CHAIN` with JSON-RPC 0.10.0 or later. |
+| Exit 3 / Telegram 401 | Replace the rejected BotFather token; repeated restarts cannot fix it. |
+| Exit 1 / Telegram 409 or instance lock | Stop the other owner. Run one process per token and one owner per data directory. |
+| `node busy` | Check your configured RPC origin and provider limits. The bot never tries a fallback host. |
+| One token has an error | Other registry balances remain available; inspect that contract's deployment and entrypoints. |
+| `state.json` invalid or an unsafe state file | Stop the process and restore a consistent backup; do not reset the offset to replay old updates. |
+| Chat receives no replies | Check that the bot was not blocked, and that group commands address this bot. |
+
+Telegram 403 skips that chat. An explicit 429 waits the server's `retry_after`; RPC 429, 5xx and
+timeouts get at most three attempts. Ctrl-C or SIGTERM interrupts polling and backoff waits.
+
+### Checks
+
+```sh
+node .launchpad/checks/round-1/run.mjs
+node --test test/edge-cases.test.mjs
+```
+
+The published checks use local fake Telegram and Starknet services and exercise the CLI as child
+processes, including kills, retries, strict host limits and credential scans. Additional tests cover
+redirects, ambiguous sends, aborting Retry-After waits, corruption, concurrent state owners, symlinks,
+full-range u256 arithmetic, 36-decimal tokens and long HTML with emoji. They use Node built-ins only.
 
 ## Build it with your agent
 
