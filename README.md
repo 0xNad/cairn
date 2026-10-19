@@ -2,9 +2,10 @@
 
 **Exact Starknet balances and transaction facts in Telegram, without your keys.**
 
-Cairn is an open-source Telegram bot for Starknet. Round 1 provides chain status, registry token
-balances and transaction lookups in private chats and groups. Wallet alerts, whale alerts and buy
-feeds are planned for later rounds; their illustrations below are the roadmap.
+Cairn is an open-source Telegram bot for Starknet. It answers chain status, balance and transaction
+lookups, and alerts a chat when a watched wallet moves any token on Starknet or grants an approval,
+when a token moves in whale size, and as a tracked transaction is accepted. Group buy feeds and the
+network guard are planned for later rounds.
 
 It only reads the chain. It holds no keys, signs nothing, never trades and has no Mini App. It runs as a
 single Node.js process with zero dependencies, on any Starknet RPC. It is MIT-licensed, so anyone can host it.
@@ -12,35 +13,40 @@ single Node.js process with zero dependencies, on any Starknet RPC. It is MIT-li
 It is built in public by AI coding agents, in four judged rounds on
 [Hotpod](https://agent-launchpad-six.vercel.app).
 
-> **Status:** round 1 lookups are implemented: `/start`, `/help`, `/status`, `/balance` and `/tx`.
-> Wallet alerts, group feeds and guards below describe later rounds.
-> [ARCHITECTURE.md](ARCHITECTURE.md) specifies the frozen interface.
+> **Status:** rounds 1 and 2 are implemented: the lookups, and wallet alerts on every token, with whale
+> thresholds, floors, mutes, `/track`, buttons, `/export` and `/forget`. Group feeds and guards below
+> describe later rounds. [ARCHITECTURE.md](ARCHITECTURE.md) specifies the frozen interface.
 
 ## What it looks like
 
-These messages are illustrative: the exact copy and layout are what the agents compete on.
+Alerts as round 2 sends them (every address and transaction is a link to the explorer; USD values come in
+round 3):
 
 ```
-⬇️ In · treasury
-+12,500 STRK (≈ $1,067.50)
-from 0x05a3…77e1
-2026-10-13 10:42:07 UTC · view on Voyager
-```
-
-```
-⚠️ Approval · hot wallet
-Unlimited USDC to spender 0x02f1…c09a
-2026-10-13 10:44:51 UTC · view on Voyager
+⬇️ In · treasury 0x05a3…77e1 · 12,500 STRK from 0x0412…9be2
+Block 2741001 · 2026-10-20 10:42:07 UTC · tx 0x07c1…a9e0
 ```
 
 ```
-⬇️ In · cold wallet
-+1,000 USDC  unverified token 0x07ab…3f10
-from 0x0412…9be2
+🔑 Approval · hot wallet 0x02f1…c09a lets spender 0x0611…4b2e spend unlimited USDC
+Block 2741020 · 2026-10-20 10:44:51 UTC · tx 0x03aa…19f4
+```
+
+```
+⬇️ In · cold wallet 0x0412…9be2 · 1,000 USDC (unverified token 0x07ab…3f10, not the verified USDC) from 0x0661…0c2d
+Block 2741033 · 2026-10-20 10:45:17 UTC · tx 0x0129…7e55
 ```
 
 The last one is an airdropped fake. Cairn sees every token, but anything outside its curated registry is marked
-**unverified**: it shows no dollar value and no clickable symbol, and one `/mute` silences it.
+**unverified**: its symbol is plain text in a code span, never a link, followed by its contract, and one `/mute`
+silences it.
+
+```
+🐋 Whale · 2,000,000 STRK from 0x0377…b1a2 to 0x05d0…9e61
+Block 2741102 · 2026-10-20 10:47:35 UTC · tx 0x0731…44cd
+```
+
+A group's buy feed is round 3's; this one is illustrative:
 
 ```
 🟢 Buy · 2,450,000 MYTOKEN
@@ -107,16 +113,17 @@ Connect your coding agent on [Hotpod](https://agent-launchpad-six.vercel.app). E
 - **No custody, no trading, no Mini App.** Holding user keys is what caused the big Telegram-bot losses on
   other chains.
 - **Two hosts only.** It talks to Telegram and your RPC, and nothing else: no telemetry, no price API.
-- **It keeps very little.** Round 1 stores only an update offset, schema version and registered command
-  list. Chat ids, settings and watched addresses, with `/export` and `/forget`, belong to later rounds.
+- **It keeps very little.** A chat's subscriptions and its recent alerts, never a name, a username or a
+  message. `/export` shows everything stored for a chat and `/forget` deletes it.
 - **Facts, not advice.** No rankings, no trending lists, no buy buttons.
 
 ## FAQ
 
 **Is it a trading bot?** No. It reads the chain and tells you what happened.
 
-**Which tokens?** Round 1 reads every token in the configured registry: STRK, ETH, USDC, USDC.e, USDT
-and WBTC on mainnet. Watching arbitrary ERC-20 tokens and marking unverified tokens arrive in round 2.
+**Which tokens?** Every ERC-20 on Starknet. The configured registry (STRK, ETH, USDC, USDC.e, USDT and WBTC
+on mainnet) is the list of verified tokens: `/balance` lists them, and any other token is read from its
+contract and marked unverified.
 
 **Which RPC?** Any Starknet JSON-RPC 0.10 node. The public `starknet-rpc.publicnode.com` works out of the box.
 
@@ -139,8 +146,10 @@ node cairn.mjs run
 ```
 
 `doctor` prints one JSON line with the bot username, decoded chain, block number and RPC version.
-`tick` drains updates once and prints `{ "updates": n, "sent": n, "head": n }` (a busy node gives
-`head: null`). `run` polls continuously; SIGINT and SIGTERM cancel polling, RPC calls and backoff waits.
+`tick` makes one pass (it drains updates, scans the new blocks and delivers the alerts due) and prints
+`{ "updates": n, "sent": n, "alerts": n, "head": n, "cursor": n }`: `sent` counts every message
+Telegram accepted, `alerts` the alerts among them, and `cursor` is the last block scanned (a busy node
+gives `head: null`). `run` polls continuously; SIGINT and SIGTERM cancel polling, RPC calls and backoff waits.
 Exit codes are 0 for completion, 1 for connectivity or an instance conflict, 2 for configuration or
 an incompatible chain/spec, and 3 for a rejected Telegram token. Logs are JSON on stderr.
 
@@ -160,6 +169,84 @@ bridged USDC.e are distinct tokens. Mainnet has six starter tokens; Sepolia has 
 Every balance and deployment check uses the same numbered block shown in the reply, with its UTC
 timestamp. A head advancing during a lookup cannot mix balances from different blocks.
 
+### Round 2 commands
+
+| Command | What it does |
+| --- | --- |
+| `/watch <address> [label]` | Alerts for every token the address sends or receives, and every approval it grants, from the next block. A label has at most 32 characters. |
+| `/unwatch <address\|label>` | Stops a watch |
+| `/list` | Everything the chat subscribes to, each with a Remove button |
+| `/whale <SYMBOL\|token address> <amount>` | Posts every transfer of that token at or above the amount, mints and burns labelled; again with a new amount updates it |
+| `/unwhale <SYMBOL\|token address>` | Stops it |
+| `/min <SYMBOL\|token address> <amount>` | Hides the watch alerts for transfers of that token under the amount (`0` removes the floor) |
+| `/mute <token address>`, `/unmute <token address>` | Silences a token in the chat (an airdropped fake, say), and undoes it |
+| `/balance <address> [SYMBOL\|token address]` | One token's balance, any ERC-20; without one, the registry, then the non-zero balances of the tokens seen moving for the address since the chat began watching it |
+| `/track <hash>` | One post when the transaction is accepted on L2 (execution status and fee), one on L1 or, instead, on a revert with its reason; "not found" after 600 s of chain time |
+| `/export` | Everything stored for the chat, as JSON |
+| `/forget` | Deletes it all |
+
+In a private chat, a pasted address gets the `/balance` reply with a Watch button, and a pasted
+transaction hash the `/tx` reply with a Track button. Caps per chat: `CAIRN_MAX_WATCHES` watches (20),
+5 whale thresholds, 10 tracks, 50 floors and 50 mutes. A user's commands beyond 10 in 60 s of
+`message.date` get one slow-down notice, then are ignored until the minute has passed.
+
+**Groups.** Everything above but `/list` needs an administrator: `getChatMember` says `creator` or
+`administrator`, or the message comes from an anonymous administrator (its `sender_chat` is the group).
+Members get a reply saying so. The lookups and `/list` stay open to everyone. A Remove button checks
+the person who presses it again, every time.
+
+### How alerts work
+
+Each pass reads the blocks after the cursor, at most `CAIRN_MAX_BLOCKS` (500), with one chain-wide
+`starknet_getEvents` filter on `Transfer` and `Approval`, page after page (`src/scanner.mjs`). Each event
+is decoded by its shape: a modern ERC-20 event, a legacy one when its contract answers `decimals`, or
+something else (an NFT) that is ignored. The alert rules (`src/alerts.mjs`) then decide what each chat sees:
+
+- **In, Out, Between:** a transfer from or to a watched address (Between when both are watched in the
+  chat), each address shown with its label;
+- **Approval:** an approval granted by a watched owner, with the spender and the amount, or "unlimited"
+  from 2^128 − 1 up; a revocation (0) says so;
+- **Whale:** a transfer at or above a whale threshold, with "mint" and "burn" when one side is 0x0.
+
+Never alerted: a zero transfer (address poisoning), the fee payment (the STRK transfer from the
+transaction's sender to the block's sequencer, its last event), a transfer under the chat's floor, a
+muted token, and a contract that is not a coin. One message per chat per transaction, in chain order,
+lists its events (as many as fit: the rest are counted) above the block, its time and the transaction.
+
+A token outside the registry is read the first time one of its events matters (`decimals`, then
+`symbol`, a short string or a ByteArray), and cached for 7 days of chain time. It is shown as its
+symbol in a code span, escaped and cut to 11 characters, then "(unverified token <contract>)"; a symbol
+that copies a verified one adds "not the verified USDC". Only the events some chat would see cost calls:
+their block header, their token's metadata and, for a possible fee payment, the sender.
+
+**Exactly once.** The delivery ledger (`src/ledger.mjs`) keys every alerted event by chat, transaction
+hash and `event_index` (a tracked transaction's stage stands for the index). A range's alerts are
+recorded as pending in the same atomic write as the cursor that covers them, then sent in order; each
+message is marked sent, with its `message_id`, once Telegram accepts it. After a kill, the pending ones
+are sent and the sent ones are not, and a failed page leaves the cursor where it was, so the whole
+range is read again. One window remains: a kill after Telegram accepts a message and before the ledger
+records it sends that message again on restart (Telegram's `sendMessage` has no idempotency key).
+
+A chat that blocks the bot (403), removes it, or that Telegram no longer finds is paused: its alerts
+wait until it writes again or adds the bot back. A group that becomes a supergroup takes its
+subscriptions and its pending alerts to the new chat id, and the alert is sent again there.
+
+**Where it lives:**
+
+```
+src/scanner.mjs    the block ranges: one chain-wide Transfer/Approval filter, paging, decoding by shape
+src/alerts.mjs     the alert rules: what a range means for each chat, and its messages
+src/ledger.mjs     the delivery ledger: pending, then sent with its message_id
+src/tokens.mjs     the registry and the metadata of every other token
+src/tracks.mjs     /track's posts
+src/chats.mjs      the chats' subscriptions, /export, /forget, migration, pauses
+src/settings.mjs   round 2's commands, /list and the buttons
+src/updates.mjs    what each update does: commands, pasted inputs, button presses, membership
+src/bot.mjs        the loop: one pass = head, updates, scan, tracks, delivery
+```
+
+Round 3's venue filters read the same ranges, and its posts go through the same ledger.
+
 All environment settings, bounds and defaults are in [ARCHITECTURE.md](ARCHITECTURE.md#the-environment).
 For Sepolia set both `CAIRN_CHAIN=SN_SEPOLIA` and
 `CAIRN_EXPLORER_URL=https://sepolia.voyager.online`. Do not pass credentials in command arguments.
@@ -167,9 +254,14 @@ The explorer is used only for links. Redirects from either configured endpoint a
 
 ### State and recovery
 
-Use a dedicated `CAIRN_DATA` directory per bot. It is mode 700 and files are mode 600. Round 1 stores
-only the update offset, schema version and registered command list. No message text, lookup inputs,
-usernames, bot token or RPC URL are persisted. A process lock rejects a second owner of the same data
+Use a dedicated `CAIRN_DATA` directory per bot. It is mode 700 and files are mode 600. It stores the
+update offset, the schema version and the registered command list; per chat, its subscriptions (watched
+addresses and their labels, whale thresholds, floors, mutes, tracked hashes, and the tokens seen moving
+for each watched address) and a pause flag; the scanner's cursor; the delivery ledger (keys, state and
+`message_id`, with an alert's text only until it is sent), kept for 7 days of chain time; token metadata,
+kept 7 days; an address or hash pasted in a private chat, for a day, for its button; and, for the rate
+limit, a user's id with the dates of their commands of the last minute. No message text, usernames,
+names, bot token or RPC URL are persisted. State written by round 1 is upgraded in place. A process lock rejects a second owner of the same data
 directory using a separate SQLite exclusive transaction; the OS releases it after a kill, with no
 PID-file recovery race. State itself is an atomic JSON file. Corrupt state is refused, never reset.
 State and lock files reject symbolic links and hard links; a recovery file is checked before it is
@@ -196,21 +288,28 @@ directory while the process is stopped; preserve state when restarting.
 | One token has an error | Other registry balances remain available; inspect that contract's deployment and entrypoints. |
 | `state.json` invalid or an unsafe state file | Stop the process and restore a consistent backup; do not reset the offset to replay old updates. |
 | Chat receives no replies | Check that the bot was not blocked, and that group commands address this bot. |
+| A chat gets no alerts | A chat that blocked or removed the bot is paused until it writes again; `/list` shows what it watches and `/export` whether it is paused. |
+| Alerts arrive late after downtime | Each pass catches up `CAIRN_MAX_BLOCKS` blocks; the alerts carry their block time. |
+| `node busy: blocks … will be scanned again` | The range is read again on the next pass; nothing is lost. |
 
-Telegram 403 skips that chat. An explicit 429 waits the server's `retry_after`; RPC 429, 5xx and
-timeouts get at most three attempts. Ctrl-C or SIGTERM interrupts polling and backoff waits.
+Telegram 403 skips that chat and pauses its alerts. An explicit 429 waits the server's `retry_after`;
+alerts still refused after that wait for the next pass. RPC 429, 5xx and timeouts get at most three
+attempts. Ctrl-C or SIGTERM interrupts polling and backoff waits.
 
 ### Checks
 
 ```sh
 node .launchpad/checks/round-1/run.mjs
-node --test test/edge-cases.test.mjs
+node .launchpad/checks/round-2/run.mjs
+npm test                                  # node --test: test/*.test.mjs
 ```
 
 The published checks use local fake Telegram and Starknet services and exercise the CLI as child
 processes, including kills, retries, strict host limits and credential scans. Additional tests cover
 redirects, ambiguous sends, aborting Retry-After waits, corruption, concurrent state owners, symlinks,
-full-range u256 arithmetic, 36-decimal tokens and long HTML with emoji. They use Node built-ins only.
+full-range u256 arithmetic, 36-decimal tokens and long HTML with emoji, and, for round 2, decoding by
+shape, paging, the alert rules and their noise filters, the ledger, the rate limit, buttons, `/export`,
+`/forget` and `/track`. They use Node built-ins only.
 
 ## Build it with your agent
 

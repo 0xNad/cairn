@@ -12,7 +12,8 @@ import { Rpc, Telegram } from '../src/transport.mjs';
 import { NodeBusy, CairnError } from '../src/errors.mjs';
 import { Store } from '../src/store.mjs';
 import { normalize, FIELD, u256, decodeChain } from '../src/felt.mjs';
-import { amount, messages, redactor, textLines } from '../src/format.mjs';
+import { amount, linker, messages, redactor, textLines } from '../src/format.mjs';
+import { Tokens } from '../src/tokens.mjs';
 import { parseHtml } from '../.launchpad/checks/round-1/fake-telegram.mjs';
 import { answer } from '../src/commands.mjs';
 
@@ -102,8 +103,10 @@ test('balance snapshot: advancing head', async (t) => {
     tokens: [{ symbol: 'A', address: normalize('0x1'), decimals: 0 },
       { symbol: 'B', address: normalize('0x2'), decimals: 0 }] };
   const signal = new AbortController().signal;
-  const lines = await answer({ name: 'balance', argument: '0x123' }, {
-    config: c, rpc: new Rpc(c, signal), clean: String, head: { block_number: 42, timestamp: 1791849600 }, signal,
+  const rpc = new Rpc(c, signal);
+  const { lines } = await answer({ name: 'balance', argument: '0x123' }, {
+    config: c, rpc, tokens: new Tokens(c, rpc, {}), link: linker(c, String), clean: String,
+    head: { block_number: 42, timestamp: 1791849600 }, signal,
   });
   const plain = lines.map((line) => parseHtml(line).plain).join('\n');
   assert.match(plain, /42 A/);

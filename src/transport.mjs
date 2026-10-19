@@ -39,7 +39,9 @@ async function post(url, body, timeout, signal) {
 }
 const READ_METHODS = new Set(['starknet_chainId', 'starknet_specVersion', 'starknet_blockNumber',
   'starknet_getBlockWithTxHashes', 'starknet_getClassHashAt', 'starknet_call',
-  'starknet_getTransactionStatus', 'starknet_getTransactionReceipt']);
+  'starknet_getTransactionStatus', 'starknet_getTransactionReceipt',
+  // Round 2: the chain-wide event scan, and a transaction's sender for the fee rule.
+  'starknet_getEvents', 'starknet_getTransactionByHash']);
 
 function validBlockId(value) {
   if (value === 'latest') return true;
@@ -96,6 +98,20 @@ export class Rpc {
     throw new NodeBusy();
   }
 }
+// Telegram kept answering 429: what was to be sent waits for a later pass.
+export class TelegramLimited extends CairnError {
+  constructor() { super('Telegram rate limit; retry_after missing or retries exhausted.'); }
+}
+// Telegram refused a request for a reason the caller may handle: a group that became a supergroup
+// (parameters.migrate_to_chat_id), an edit that changes nothing, a button that expired.
+export class TelegramRefusal extends CairnError {
+  constructor(method, code, description, parameters) {
+    super(`Telegram request ${method} failed (${code}).`);
+    this.code = code;
+    this.description = typeof description === 'string' ? description : '';
+    this.parameters = parameters ?? {};
+  }
+}
 export class Telegram {
   constructor(config, signal) { this.config = config; this.signal = signal; }
   async call(method, params = {}) {
@@ -118,7 +134,7 @@ export class Telegram {
         case 403: return null;
         case 429: {
           const seconds = json?.parameters?.retry_after;
-          if (!Number.isFinite(seconds) || seconds < 0 || attempt === 2) throw new CairnError('Telegram rate limit; retry_after missing or retries exhausted.');
+          if (!Number.isFinite(seconds) || seconds < 0 || attempt === 2) throw new TelegramLimited();
           await sleep(seconds * 1000, this.signal);
           break;
         }
@@ -127,6 +143,7 @@ export class Telegram {
             await sleep(200 * 2 ** attempt, this.signal);
             break;
           }
+          if (Number.isInteger(code) && code >= 400 && code < 500) throw new TelegramRefusal(method, code, json?.description, json?.parameters);
           throw new CairnError(`Telegram request ${method} failed (${Number.isInteger(code) ? code : 'invalid response'}).`);
       }
     }
