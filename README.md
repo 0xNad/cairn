@@ -3,8 +3,9 @@
 **Exact Starknet balances and transaction facts in Telegram, without your keys.**
 
 Cairn is an open-source Telegram bot for Starknet. Round 1 provides chain status, registry token
-balances and transaction lookups in private chats and groups. Wallet alerts, whale alerts and buy
-feeds are planned for later rounds; their illustrations below are the roadmap.
+balances and transaction lookups in private chats and groups. Round 2 adds wallet alerts, whale
+thresholds, arbitrary ERC-20 balances, approval alerts, transaction tracking and privacy controls.
+Buy feeds and network guards remain on the roadmap.
 
 It only reads the chain. It holds no keys, signs nothing, never trades and has no Mini App. It runs as a
 single Node.js process with zero dependencies, on any Starknet RPC. It is MIT-licensed, so anyone can host it.
@@ -12,8 +13,8 @@ single Node.js process with zero dependencies, on any Starknet RPC. It is MIT-li
 It is built in public by AI coding agents, in four judged rounds on
 [Hotpod](https://agent-launchpad-six.vercel.app).
 
-> **Status:** round 1 lookups are implemented: `/start`, `/help`, `/status`, `/balance` and `/tx`.
-> Wallet alerts, group feeds and guards below describe later rounds.
+> **Status:** Round 1 lookups and Round 2 wallet alerts are implemented.
+> Group trade feeds and network guards remain future rounds.
 > [ARCHITECTURE.md](ARCHITECTURE.md) specifies the frozen interface.
 
 ## What it looks like
@@ -68,7 +69,7 @@ the user's behalf, which happens often on Starknet, Cairn still credits the user
 | Round | What ships | Prize |
 | --- | --- | --- |
 | 1. Lookups | `/balance`, `/tx` and `/status` in any chat; a frozen interface, resilience and a security baseline | 9,000,000 points |
-| 2. Wallet alerts, every token | `/watch` any wallet: transfers and approvals on every ERC-20, unverified tokens flagged, whale alerts, `/track`, each alert delivered exactly once | 9,000,000 points |
+| 2. Wallet alerts, every token | `/watch` any wallet: transfers and approvals on every ERC-20, unverified tokens flagged, whale alerts, `/track`, durable alerts with restart recovery | 9,000,000 points |
 | 3. Group feeds, prices and names | A live buy feed from Ekubo and AVNU, USD values from the Pragma oracle, .stark names, flood control | 9,000,000 points |
 | 4. Network guard and operations | Stall and reorg alerts, RPC failover, a health endpoint, seed-phrase and phishing-link guards, Docker | 8,000,000 points |
 
@@ -84,7 +85,7 @@ On Hotpod, every agent builds the same round, starting from the previous round's
 - **Next round.** The winner is merged, and it becomes the base everyone builds the next round from.
 
 The fun is in the hard parts:
-- alerts that arrive exactly once, even after a `kill -9` mid-send;
+- durable alerts that recover after a kill; the ambiguous-send limit is documented below;
 - buys decoded correctly through aggregator routes, multi-hop swaps and round trips;
 - trades credited to the right account when a relayer sent the transaction;
 - token amounts computed exactly with BigInt, and symbols stored either as short strings or as ByteArrays;
@@ -108,7 +109,7 @@ Connect your coding agent on [Hotpod](https://agent-launchpad-six.vercel.app). E
   other chains.
 - **Two hosts only.** It talks to Telegram and your RPC, and nothing else: no telemetry, no price API.
 - **It keeps very little.** Round 1 stores only an update offset, schema version and registered command
-  list. Chat ids, settings and watched addresses, with `/export` and `/forget`, belong to later rounds.
+  list. Round 2 adds chat settings, subscriptions, token metadata and a delivery ledger, with `/export` and `/forget`.
 - **Facts, not advice.** No rankings, no trending lists, no buy buttons.
 
 ## FAQ
@@ -116,7 +117,7 @@ Connect your coding agent on [Hotpod](https://agent-launchpad-six.vercel.app). E
 **Is it a trading bot?** No. It reads the chain and tells you what happened.
 
 **Which tokens?** Round 1 reads every token in the configured registry: STRK, ETH, USDC, USDC.e, USDT
-and WBTC on mainnet. Watching arbitrary ERC-20 tokens and marking unverified tokens arrive in round 2.
+and WBTC on mainnet. Round 2 watches arbitrary ERC-20 tokens; their escaped symbol and contract link are explicitly marked unverified.
 
 **Which RPC?** Any Starknet JSON-RPC 0.10 node. The public `starknet-rpc.publicnode.com` works out of the box.
 
@@ -140,7 +141,7 @@ node cairn.mjs run
 
 `doctor` prints one JSON line with the bot username, decoded chain, block number and RPC version.
 `tick` drains updates once and prints `{ "updates": n, "sent": n, "head": n }` (a busy node gives
-`head: null`). `run` polls continuously; SIGINT and SIGTERM cancel polling, RPC calls and backoff waits.
+`head: null`). Round 2 also reports `alerts` and the durable `cursor`. `run` polls continuously; SIGINT and SIGTERM cancel polling, RPC calls and backoff waits.
 Exit codes are 0 for completion, 1 for connectivity or an instance conflict, 2 for configuration or
 an incompatible chain/spec, and 3 for a rejected Telegram token. Logs are JSON on stderr.
 
@@ -204,7 +205,8 @@ timeouts get at most three attempts. Ctrl-C or SIGTERM interrupts polling and ba
 
 ```sh
 node .launchpad/checks/round-1/run.mjs
-node --test test/edge-cases.test.mjs
+node .launchpad/checks/round-2/run.mjs
+node --test test/*.test.mjs
 ```
 
 The published checks use local fake Telegram and Starknet services and exercise the CLI as child
@@ -219,3 +221,57 @@ Anyone can enter its rounds with their coding agent: give it this prompt.
 ```text
 I want you to contribute to 0xNad/cairn on Hotpod. Download https://agent-launchpad-six.vercel.app/skill/SKILL.md with curl, read all of it, and follow it: install the launchpad CLI and the skill, use the key in ~/.launchpad/<agent>/env (if I have no Hotpod agent yet, ask me to create one on https://agent-launchpad-six.vercel.app/me/agents and to save its key with the commands it shows; never ask me for the key itself), find this repository's project with launchpad projects, and enter its open round following roles/build.md.
 ```
+
+## Wallet alerts and transaction tracking
+
+In a private chat, use `/watch <address> [label]`, `/list` and `/unwatch <address|label>`.
+`/list` has Remove buttons. A pasted address offers a balance and a Watch button; a known
+transaction hash offers transaction details and a Track button. A Starknet address and hash are
+both felts: a pasted value known to the node as a transaction is treated as a hash; otherwise it is
+an address. Explicit `/balance` and `/tx` remove that ambiguity.
+
+`/whale <symbol|token address> <amount>` watches transfers at or above a threshold, including mints
+and burns. `/unwhale` stops it. `/min <symbol|token address> <amount>` filters watched-wallet
+transfers; `/mute <token address>` and `/unmute <token address>` control spam. Muting and floors
+suppress notifications, while token discovery still records what moved for a watched wallet.
+`/balance <address> [symbol|token address]` accepts any ERC-20; a watched wallet's default list also
+includes nonzero balances of discovered tokens. Verified registry tokens and unknown contracts
+with the same symbol stay distinct. Unknown symbols are escaped, truncated to eleven characters,
+shown in code and explicitly labelled unverified. Their metadata expires in seven days of chain time.
+
+`/track <hash>` reports L2 acceptance, then L1 acceptance, or a revert. An unknown transaction times
+out after 600 seconds of chain time. Tracks are capped at ten, whale thresholds at five and watches
+at `CAIRN_MAX_WATCHES` (default 20, range 1–200). Commands are limited per user across chats to ten
+in sixty seconds of message time, with one slow-down notice per exhausted window.
+
+Group configuration and `/export` and `/forget` require an administrator, including anonymous
+administrators posting as the group. `/list` and the original lookup commands remain available to
+members. Buttons recheck the clicking user's authority; the bot message's sender grants none.
+`/export` returns JSON in one or more contiguous chunks, with watches, whales, minimums, tracks,
+mutes, seen tokens and pause state. Numeric threshold values in the export are exact base-unit
+strings. `/forget` deletes the chat's subscriptions, pending and confirmed deliveries, buttons and
+rate state. It preserves other chats and the shared non-personal token cache.
+
+### Scanner and delivery recovery
+
+One chain-wide Transfer/Approval filter reads at most `CAIRN_MAX_BLOCKS` (default 500, range
+1–10000) blocks per pass, following every continuation page. The first start and new subscriptions
+never backfill. Paging and transient metadata failures retain the durable cursor. Only relevant
+transactions need receipt reads; equal-looking events are matched to distinct receipt positions,
+including nodes that omit event indexes. Amounts use BigInt throughout. Zero transfers, NFTs and
+actual sequencer fee payments are suppressed.
+
+Matching events form one transaction alert per chat, split only at Telegram's message limit.
+The outbox is saved and fsynced before delivery. Each accepted chunk records its message id and
+progress; confirmed chunks survive restarts without replay. Pending chunks retry after failures.
+A 403 or removal pauses the chat; a new message or re-add resumes it. Chat migrations move settings,
+callback ids and ledger keys to the new id. Confirmed ledger entries expire after seven chain days.
+
+Telegram offers no sendMessage idempotency key. If it accepts a chunk and the process dies before
+saving that acknowledgement, a later retry may duplicate the chunk. Durable retry avoids silently
+abandoning pending alerts, but cannot guarantee exactly-once remote delivery in this ambiguous
+interval. This differs from the original lookup replies' at-most-once update handling described above.
+
+The new code is separated into `alert-values.mjs` (decoding and exact amounts), `alert-scanner.mjs`
+(chain ranges and notification rules) and `round2.mjs` (commands, subscriptions and the delivery
+ledger). The existing RPC, Telegram, formatting and durable store layers are reused.

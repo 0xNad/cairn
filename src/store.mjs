@@ -23,7 +23,7 @@ export class Store {
         const saved = JSON.parse(readFileSync(this.file, 'utf8'));
         if (saved.version !== 1 || !Number.isSafeInteger(saved.offset) || saved.offset < 0 ||
             !(saved.commands === null || typeof saved.commands === 'string')) throw new Error('invalid state');
-        this.state = { version: 1, offset: saved.offset, commands: saved.commands };
+        this.state = { version: 1, offset: saved.offset, commands: saved.commands, ...(saved.round2 ? { round2: saved.round2 } : {}) };
       }
     } catch {
       this.close();
