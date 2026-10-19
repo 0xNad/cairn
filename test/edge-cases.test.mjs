@@ -5,7 +5,7 @@ import { once } from 'node:events';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { linkSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { linkSync, mkdtempSync, readFileSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Rpc, Telegram } from '../src/transport.mjs';
@@ -155,18 +155,34 @@ test('state excludes concurrent owners and preserves a durable offset', () => {
   const directory = mkdtempSync(join(tmpdir(), 'cairn-store-'));
   const first = new Store(directory);
   try {
-    first.state.offset = 123;
-    first.save();
+    first.transaction(() => { first.offset = 123; });
     assert.throws(() => new Store(directory), /instance is running/i);
   } finally { first.close(); }
   const reopened = new Store(directory);
-  try { assert.equal(reopened.state.offset, 123); } finally { reopened.close(); }
+  try { assert.equal(reopened.offset, 123); } finally { reopened.close(); }
 });
 
 test('state rejects corruption instead of replaying old updates', () => {
   const directory = mkdtempSync(join(tmpdir(), 'cairn-corrupt-'));
   writeFileSync(join(directory, 'state.json'), '{broken');
   assert.throws(() => new Store(directory), /state.json is invalid/);
+  const other = mkdtempSync(join(tmpdir(), 'cairn-corrupt-db-'));
+  writeFileSync(join(other, 'state.db'), 'not a database, but not empty either'.repeat(40));
+  assert.throws(() => new Store(other), /state.db is invalid/);
+});
+
+test("round 1's state.json is carried over once, then removed", () => {
+  const directory = mkdtempSync(join(tmpdir(), 'cairn-upgrade-'));
+  writeFileSync(join(directory, 'state.json'), JSON.stringify({ version: 1, offset: 4242, commands: '[]' }), { mode: 0o600 });
+  const store = new Store(directory);
+  try {
+    assert.equal(store.offset, 4242);
+    assert.equal(store.get('commands'), '[]');
+    assert.equal(store.cursor, null);
+  } finally { store.close(); }
+  assert.throws(() => statSync(join(directory, 'state.json')), { code: 'ENOENT' });
+  const again = new Store(directory);
+  try { assert.equal(again.offset, 4242); } finally { again.close(); }
 });
 
 test('state refuses a symlink without modifying its target', () => {
@@ -179,7 +195,7 @@ test('state refuses a symlink without modifying its target', () => {
 });
 
 test('state refuses hard links without changing data or permissions outside CAIRN_DATA', () => {
-  for (const file of ['state.json', 'instance.sqlite', 'state.next']) {
+  for (const file of ['state.json', 'instance.sqlite', 'state.db']) {
     const root = mkdtempSync(join(tmpdir(), 'cairn-hardlink-'));
     const target = join(root, 'outside');
     writeFileSync(target, '{"version":1,"offset":0,"commands":null}', { mode: 0o644 });
@@ -194,13 +210,10 @@ test('state refuses hard links without changing data or permissions outside CAIR
       assert.throws(() => new Store(directory), /instance lock/);
       continue;
     }
+    if (file === 'state.db') unlinkSync(join(directory, file));
     linkSync(target, join(directory, file));
     const original = readFileSync(target, 'utf8'), mode = statSync(target).mode;
-    if (file === 'state.json') assert.throws(() => new Store(directory), /state.json is invalid/);
-    else {
-      const store = new Store(directory);
-      try { assert.throws(() => store.save(), /state.next/); } finally { store.close(); }
-    }
+    assert.throws(() => new Store(directory), file === 'state.json' ? /state.json is invalid/ : /Unsafe CAIRN_DATA state.db/);
     assert.equal(readFileSync(target, 'utf8'), original);
     assert.equal(statSync(target).mode, mode);
   }

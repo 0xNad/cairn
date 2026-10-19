@@ -1,6 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { performance } from 'node:perf_hooks';
-import { CairnError, NodeBusy, RpcError } from './errors.mjs';
+import { CairnError, NodeBusy, RpcError, TelegramRefused } from './errors.mjs';
 import { normalize } from './felt.mjs';
 
 const TIMER_MAX = 2147483647;
@@ -37,9 +37,11 @@ async function post(url, body, timeout, signal) {
     return { response, json };
   } finally { limit.clear(); }
 }
+// getEvents is the scanner's one chain-wide filter; getTransactionByHash gives the sender for the fee rule.
 const READ_METHODS = new Set(['starknet_chainId', 'starknet_specVersion', 'starknet_blockNumber',
   'starknet_getBlockWithTxHashes', 'starknet_getClassHashAt', 'starknet_call',
-  'starknet_getTransactionStatus', 'starknet_getTransactionReceipt']);
+  'starknet_getTransactionStatus', 'starknet_getTransactionReceipt', 'starknet_getTransactionByHash',
+  'starknet_getEvents']);
 
 function validBlockId(value) {
   if (value === 'latest') return true;
@@ -127,6 +129,7 @@ export class Telegram {
             await sleep(200 * 2 ** attempt, this.signal);
             break;
           }
+          if (Number.isInteger(code) && code >= 400 && code < 500 && json?.ok === false) throw new TelegramRefused(method, code, json);
           throw new CairnError(`Telegram request ${method} failed (${Number.isInteger(code) ? code : 'invalid response'}).`);
       }
     }

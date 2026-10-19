@@ -7,6 +7,17 @@ export class CairnError extends Error {
 export class NodeBusy extends CairnError {
   constructor() { super('node busy: check the RPC origin or retry later.'); }
 }
+/** A request Telegram refused with a 4xx other than 401, 403, 409 and 429: the caller decides what it means. */
+export class TelegramRefused extends CairnError {
+  constructor(method, code, json) {
+    super(`Telegram request ${method} failed (${code}).`);
+    this.code = code;
+    this.description = typeof json?.description === 'string' ? json.description : '';
+    this.parameters = json?.parameters ?? {};
+  }
+  get migratedTo() { return Number.isSafeInteger(this.parameters.migrate_to_chat_id) ? this.parameters.migrate_to_chat_id : null; }
+  get notModified() { return /message is not modified/i.test(this.description); }
+}
 export class RpcError extends Error {
   constructor(code) {
     super(`RPC error ${Number.isSafeInteger(code) ? code : 'unknown'}`);
