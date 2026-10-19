@@ -18,6 +18,8 @@ const ALLOWED_UPDATES = ['message', 'callback_query', 'my_chat_member'];
 const FEEDS = [walletAlerts];
 const ADMINS = new Set(['creator', 'administrator']);
 const LOUD_ALERTS = 3; // alerts per chat and pass with a notification; later ones in the same pass arrive silently
+/** A 400 that means the bot may not write to the chat for now, rather than that one message was bad. */
+const NO_WRITE = /not enough rights|have no rights|chat not found/i;
 const SLOW_DOWN = 'Slow down: Cairn answers at most 10 commands a minute from one person, and ignores the rest until that minute has passed.';
 /** Chain failures that leave the work for the next pass. */
 const retriable = (error) => error instanceof NodeBusy || error instanceof RpcError || error instanceof NodeValueError;
@@ -194,11 +196,12 @@ class Bot {
       return { callback: query.id, ...r, ...(r.reply ? { reply: { chat_id: chat.id, ...r.reply } } : {}) };
     };
   }
-  /** Kicked or left: the chat's alerts wait; added back: they resume. */
+  /** Kicked, left or barred from writing: the chat's alerts wait; added back or allowed again: they resume. */
   onMembership(update) {
     const chat = update.chat, member = update.new_chat_member;
     if (!Number.isSafeInteger(chat?.id) || member?.user?.id !== this.me.id) return () => null;
-    if (['kicked', 'left'].includes(member.status)) return () => { this.subs.pause(chat.id); return null; };
+    const barred = member.status === 'restricted' && (member.is_member === false || member.can_send_messages === false);
+    if (['kicked', 'left'].includes(member.status) || barred) return () => { this.subs.pause(chat.id); return null; };
     if (['member', 'administrator', 'creator', 'restricted'].includes(member.status)) return () => { this.subs.resume(chat.id); return null; };
     return () => null;
   }
@@ -248,17 +251,20 @@ class Bot {
     }
   }
   /**
-   * sendMessage with round 2's rules: a 403 pauses the chat, a migration moves the chat's data and resends to
-   * the new id, and any other refusal is logged and skipped. Returns { message, chatId }, { blocked } or { refused }.
+   * sendMessage with round 2's rules: a 403 pauses the chat, and so does a 400 saying the bot may not write
+   * there (restricted, or the chat is gone), so that its alerts wait instead of being dropped; a migration
+   * moves the chat's data and resends to the new id; any other refusal is logged and skipped. Returns
+   * { message, chatId }, { blocked } or { refused }.
    */
   async send(chatId, text, extra = {}) {
+    const block = () => {
+      this.store.transaction(() => this.subs.pause(chatId));
+      return { blocked: true };
+    };
     for (let hop = 0; hop < 2; hop++) {
       try {
         const message = await this.tg.call('sendMessage', { chat_id: chatId, text, parse_mode: 'HTML', link_preview_options: { is_disabled: true }, ...extra });
-        if (message === null) {
-          this.store.transaction(() => this.subs.pause(chatId));
-          return { blocked: true };
-        }
+        if (message === null) return block();
         this.counts.sent++;
         return { message, chatId };
       } catch (error) {
@@ -269,6 +275,7 @@ class Bot {
           chatId = to;
           continue;
         }
+        if (error.code === 400 && NO_WRITE.test(error.description)) return block();
         log('warn', `Telegram refused a message (${error.code}).`);
         return { refused: true };
       }
@@ -283,7 +290,7 @@ class Bot {
     await this.scan();
     await this.trackPass();
     const now = this.head.timestamp;
-    this.store.transaction(() => { this.ledger.prune(now); this.subs.prune(now); this.tokens.prune(now); });
+    this.store.transaction(() => { this.ledger.prune(now); this.subs.prune(now); this.tokens.prune(now); this.rate.prune(now); });
   }
   /** The next range: alerts found in it are saved as pending in the transaction that moves the cursor. */
   async scan() {

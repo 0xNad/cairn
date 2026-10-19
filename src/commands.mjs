@@ -59,7 +59,7 @@ This chat:
 On-chain facts, not financial advice.
 Public balances and transfers only.
 Tokens outside Cairn's registry are marked unverified: anyone can deploy a token with any symbol.
-The operator stores this chat's id and type, its settings (watched addresses and labels, whale alerts, floors, mutes, tracked transactions), the tokens seen moving for a watched address, alert delivery records for 7 days, and the update offset. Never message text, names or usernames. /export shows it; /forget deletes it.`;
+The operator stores this chat's id and type, its settings (watched addresses and labels, whale alerts, floors, mutes, tracked transactions), the tokens seen moving for a watched address, alert delivery records for 7 days, a pasted address or hash for a day (for its button), and the update offset. /export shows all of it; /forget deletes it. For the rate limit, each person's id and command times are kept for one minute. Never message text, names or usernames.`;
 const GROUP_SETUP = `Cairn is in this group. To set it up, as an administrator:
 1. /watch <address> <label> for each wallet the group follows.
 2. /whale <token> <amount> for large transfers of a token.
@@ -124,7 +124,13 @@ export async function answer(command, context) {
           lines.push(...text('Also seen moving since this chat began watching it:'));
           const before = lines.length;
           for (const address of extra) {
-            const token = await context.tokens.get(address, head.timestamp);
+            let token;
+            try { token = await context.tokens.get(address, head.timestamp); }
+            catch (error) {
+              if (context.signal.aborted || !(error instanceof NodeBusy)) throw error;
+              lines.push(`${fmt.contract(address)}: node busy. Other tokens are shown independently.`);
+              continue;
+            }
             if (token) await show(token, true);
           }
           if (lines.length === before) lines.pop();

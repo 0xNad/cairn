@@ -26,6 +26,8 @@ export class RateLimit {
     this.store.sql(`INSERT INTO rate (sender, dates, noticed, last) VALUES (?, ?, ?, ?)
       ON CONFLICT (sender) DO UPDATE SET dates = excluded.dates, noticed = excluded.noticed, last = excluded.last`)
       .run(sender, JSON.stringify(dates), verdict === 'ok' ? 0 : 1, date);
-    this.store.sql('DELETE FROM rate WHERE last < ?').run(date - RATE.seconds);
+    this.prune(date);
   }
+  /** Forgets everyone whose last command is more than a minute old (each pass runs it on chain time). */
+  prune(now) { this.store.sql('DELETE FROM rate WHERE last < ?').run(now - RATE.seconds); }
 }

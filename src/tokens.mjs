@@ -1,9 +1,11 @@
-import { RpcError } from './errors.mjs';
+import { NodeBusy, RpcError } from './errors.mjs';
 import { cairoString, normalize, SELECTORS, STRK_ADDRESS, u256, unsigned } from './felt.mjs';
 import { plainText } from './format.mjs';
 
 export const METADATA_TTL = 7 * 24 * 3600; // seconds of chain time
 const SYMBOL_MAX = 11;
+/** The node errors that are the contract's own answer: not deployed, no such entrypoint, or the call failed. */
+const NO_ANSWER = new Set([20, 21, 40]);
 
 /**
  * What Cairn knows about tokens. The registry lists the verified ones; any other contract is read from the
@@ -66,7 +68,10 @@ export class Tokens {
     try {
       return await this.rpc.call('starknet_call', { request: { contract_address: address, entry_point_selector: selector, calldata: [] }, block_id: 'latest' });
     } catch (error) {
-      if (error instanceof RpcError) return null; // not deployed, no such entrypoint, or the call failed
+      if (error instanceof RpcError && NO_ANSWER.has(error.code)) return null;
+      // Any other error (an internal error, a provider limit) says nothing about the token: it is not cached
+      // as "not a coin" for a week, and the caller tries again.
+      if (error instanceof RpcError) throw new NodeBusy();
       throw error;
     }
   }

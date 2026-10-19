@@ -102,8 +102,10 @@ Connect your coding agent on [Hotpod](https://agent-launchpad-six.vercel.app). E
   other chains.
 - **Two hosts only.** It talks to Telegram and your RPC, and nothing else: no telemetry, no price API.
 - **It keeps little, and shows all of it.** Per chat: its id and type, its settings, the tokens seen moving
-  for a watched address, and alert delivery records for 7 days. Never message text, names or usernames.
-  `/export` shows everything stored for a chat; `/forget` deletes it.
+  for a watched address, alert delivery records for 7 days, and a pasted address or hash for a day (the
+  value behind its button). Per person, only their id and command times for one minute, for the rate limit.
+  Never message text, names or usernames. `/export` shows everything stored for a chat; `/forget` deletes
+  it, and in a private chat the person's rate-limit entry too.
 - **Groups are run by their administrators.** Members can look things up and read `/list`; only an
   administrator can change what the group watches, and every button press is checked again.
 - **Facts, not advice.** No rankings, no trending lists, no buy buttons.
@@ -159,7 +161,7 @@ configuration or an incompatible chain/spec, and 3 for a rejected Telegram token
 | `/min <token> <amount>` | administrators | Skips watch alerts below the amount on that token (`0` removes it) |
 | `/mute 0x…`, `/unmute 0x…` | administrators | Silences one token in the chat, by contract address |
 | `/track 0x…` | administrators | One message on L2 acceptance (execution and fee), one on L1 acceptance or a revert with its reason; "not found" after 600 s of chain time (10 per chat) |
-| `/export` | administrators | Everything stored for the chat, as JSON |
+| `/export` | administrators | Everything stored for the chat, as JSON: `chat_id`, `watches` (each with the tokens `seen` moving for it), `whales`, `minimums`, `tracks` and `muted`, then `chat` (type, paused), `buttons` (pasted values, kept a day) and `deliveries` (its delivery records, counted by state) |
 | `/forget` | administrators | Deletes everything stored for the chat |
 
 In a private chat, pasting an address gives its `/balance` with a **Watch** button, and pasting a
@@ -189,7 +191,10 @@ covers only the blocks after the head read when it was made, and the first start
 Extra calls happen only for events some chat cares about: `symbol` and `decimals` of a token outside the
 registry (cached for 7 days of chain time, "not a coin" included), the block header (time and
 `sequencer_address`), and, for a STRK transfer to the sequencer, the receipt and the transaction to confirm
-the fee rule. When nobody subscribes, a pass reads nothing.
+the fee rule. When nobody subscribes, a pass reads nothing. Only the contract's own answers (not deployed, no
+such entrypoint, a failed call) make a token "not a coin"; any other node error, like a failed header or fee
+lookup, fails the range, which the next pass reads again, so a busy node neither hides a token for a week
+nor turns a fee into an alert.
 
 The code keeps the scanner (`src/scanner.mjs`: ranges, paging, decoding by shape) apart from the alert rules
 (`src/alerts.mjs`) and the delivery ledger (`src/ledger.mjs`). A feed is a filter plus the function that turns
@@ -215,8 +220,9 @@ Telegram accepts an alert leaves it pending, and the next pass sends it; a confi
 again, across restarts, rescans and failed pages. Telegram's `sendMessage` has no idempotency key, so one
 window remains: a kill after Telegram accepted a message but before Cairn recorded it sends that one
 alert again on restart. A 403 or a `my_chat_member` update to kicked or left pauses the chat (its alerts
-wait) until it writes again or re-adds the bot. A `migrate_to_chat_id` moves the chat's data to the new id
-and resends there. Any other refusal drops that one alert with a warning in the logs.
+wait) until it writes again or re-adds the bot; so do a restriction that bars the bot from writing and a 400
+saying it may not write there. A `migrate_to_chat_id` moves the chat's data to the new id and resends there.
+Any other refusal drops that one alert with a warning in the logs.
 
 ### Operator troubleshooting
 

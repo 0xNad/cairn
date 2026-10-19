@@ -141,8 +141,14 @@ export class Subscriptions {
 
   // ---- the whole chat ------------------------------------------------------------------------------------
 
-  /** Everything stored for the chat, as /export shows it. */
+  /**
+   * Everything stored for the chat, as /export shows it: the brief's six keys, then what else CAIRN_DATA
+   * holds for it (its type and pause state, the values behind its buttons, and its delivery records, counted).
+   */
   export(chatId) {
+    const chat = this.#q('SELECT type, paused FROM chats WHERE chat_id = ?').get(chatId);
+    const deliveries = { pending: 0, sent: 0, dropped: 0 };
+    for (const r of this.#q('SELECT state, count(*) AS n FROM deliveries WHERE chat_id = ? GROUP BY state').all(chatId)) deliveries[r.state] = r.n;
     return {
       chat_id: chatId,
       watches: this.watches(chatId).map((w) => ({ address: w.address, label: w.label, since_block: w.since_block, seen: this.seen(chatId, w.address) })),
@@ -150,12 +156,20 @@ export class Subscriptions {
       minimums: Object.fromEntries(this.minimums(chatId).map((m) => [m.token, m.amount])),
       tracks: this.tracks(chatId).map((t) => ({ hash: t.hash, since_block: t.since_block })),
       muted: this.muted(chatId),
+      chat: chat ? { type: chat.type, paused: chat.paused === 1 } : null,
+      buttons: this.#q('SELECT kind, value, chain_time FROM offers WHERE chat_id = ? ORDER BY id').all(chatId)
+        .map((o) => ({ kind: o.kind, value: o.value, chain_time: o.chain_time })),
+      deliveries,
     };
   }
-  /** Deletes every row about the chat, its delivery ledger included; returns what each table held. */
+  /**
+   * Deletes every row about the chat, its delivery ledger included, and in a private chat (whose id is the
+   * person's) their rate-limit entry too; returns what each table held.
+   */
   forget(chatId) {
     const counts = {};
     for (const table of CHAT_TABLES) counts[table] = this.#q(`DELETE FROM ${table} WHERE chat_id = ?`).run(chatId).changes;
+    this.#q('DELETE FROM rate WHERE sender = ?').run(chatId);
     return counts;
   }
   /** Moves a chat's data to the id Telegram gave it after an upgrade to a supergroup. */

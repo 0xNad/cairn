@@ -85,7 +85,7 @@ const HANDLERS = {
     if (token.error) return say(escapeHtml(token.error));
     return () => {
       const removed = ctx.subs.unwhale(ctx.chat.id, { token: token.address });
-      return say(removed ? `Whale alert on ${escapeHtml(removed.symbol)} stopped.` : 'No whale alert on that token here. /list shows them.')();
+      return say(removed ? `Whale alert on ${tokenName(ctx, removed.token)} stopped.` : 'No whale alert on that token here. /list shows them.')();
     };
   },
 
@@ -143,7 +143,8 @@ const HANDLERS = {
     return () => {
       const c = ctx.subs.forget(ctx.chat.id);
       return say(`🗑 Deleted everything Cairn stored for this chat: ${plural(c.watches, 'watch', 'watches')}, ${plural(c.whales, 'whale alert')}, ` +
-        `${plural(c.minimums, 'floor')}, ${plural(c.muted, 'mute')}, ${plural(c.tracks, 'track')} and ${plural(c.deliveries, 'alert record')}.`)();
+        `${plural(c.minimums, 'floor')}, ${plural(c.muted, 'mute')}, ${plural(c.tracks, 'track')}, ${plural(c.offers, 'button')} and ` +
+        `${plural(c.deliveries, 'alert record')}.`)();
     };
   },
 };
@@ -175,6 +176,8 @@ function tokenName(ctx, address) {
   const known = ctx.tokens.registry.get(address) ?? ctx.tokens.cached(address);
   return known ? ctx.fmt.token(known) : ctx.fmt.contract(address);
 }
+/** A whale alert's symbol where no markup is allowed (buttons, button answers), still marked when unverified. */
+const plainSymbol = (ctx, whale) => `${plainText(whale.symbol, 11)}${ctx.tokens.registry.has(whale.token) ? '' : ' (unverified)'}`;
 
 /** Splits text into pieces of at most `size` UTF-16 units, never inside a character. */
 function chunks(text, size) {
@@ -212,7 +215,7 @@ export function listView(chatId, ctx) {
   }
   section(`Whale alerts · ${whales.length} of ${LIMITS.whales}`, whales.length);
   for (const w of whales) {
-    add(`• ${tokenName(ctx, w.token)} at or above ${escapeHtml(w.min)}`, { text: `Stop whale ${plainText(w.symbol, 11)}`, callback_data: `rh:${w.id}` });
+    add(`• ${tokenName(ctx, w.token)} at or above ${escapeHtml(w.min)}`, { text: `Stop whale ${plainSymbol(ctx, w)}`, callback_data: `rh:${w.id}` });
   }
   section('Floors for watch alerts', floors.length);
   for (const f of floors) add(`• ${tokenName(ctx, f.token)} below ${escapeHtml(f.amount)} is skipped`);
@@ -250,7 +253,7 @@ export async function callback(query, ctx) {
     case 'rh': {
       const w = ctx.subs.whaleById(id);
       if (w?.chat_id !== chat.id) return elsewhere;
-      return () => { ctx.subs.unwhale(chat.id, { id }); return refreshed(`Whale alert on ${plainText(w.symbol, 11)} stopped.`); };
+      return () => { ctx.subs.unwhale(chat.id, { id }); return refreshed(`Whale alert on ${plainSymbol(ctx, w)} stopped.`); };
     }
     case 'rt': {
       const t = ctx.subs.trackById(id);

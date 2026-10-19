@@ -4,7 +4,7 @@ import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { findAlerts } from '../src/alerts.mjs';
-import { RpcError } from '../src/errors.mjs';
+import { NodeBusy, RpcError } from '../src/errors.mjs';
 import { cairoString, hex64, SELECTORS } from '../src/felt.mjs';
 import { links, parseDecimal, plainText } from '../src/format.mjs';
 import { Ledger } from '../src/ledger.mjs';
@@ -136,7 +136,8 @@ test('forget leaves no trace of a label in CAIRN_DATA, and migration moves every
     assert.equal(subs.export(-100).watches.length, 0);
     assert.equal(subs.export(-200).watches[0].label, 'SECRET-LABEL-4711');
     store.transaction(() => subs.forget(-200));
-    assert.deepEqual(subs.export(-200), { chat_id: -200, watches: [], whales: [], minimums: {}, tracks: [], muted: [] });
+    assert.deepEqual(subs.export(-200), { chat_id: -200, watches: [], whales: [], minimums: {}, tracks: [], muted: [],
+      chat: null, buttons: [], deliveries: { pending: 0, sent: 0, dropped: 0 } });
   } finally { store.close(); }
   for (const file of readdirSync(directory)) assert.ok(!readFileSync(join(directory, file)).includes('SECRET-LABEL-4711'), file);
 });
@@ -154,6 +155,60 @@ test('rate limits count commands on message.date and notice once', () => {
     assert.deepEqual(verdicts, [...Array(10).fill('ok'), 'notice', 'ignore', 'ignore']);
     assert.equal(rate.verdict(43, 1013), 'ok');
     assert.equal(rate.verdict(42, 1061), 'ok');
+    store.transaction(() => rate.prune(1012 + 60));
+    assert.equal(store.sql('SELECT count(*) AS n FROM rate').get().n, 1);
+    store.transaction(() => rate.prune(1012 + 61));
+    assert.equal(store.sql('SELECT count(*) AS n FROM rate').get().n, 0);
+  } finally { store.close(); }
+});
+
+test('export lists what else is stored for a chat, and forget in a private chat leaves no rate entry', () => {
+  const { store, subs, ledger } = open();
+  try {
+    const p = { id: 42, type: 'private' }, rate = new RateLimit(store);
+    store.transaction(() => {
+      subs.watch(p, A, null, 10);
+      subs.offer(p, 'track', hex64('0x99'), 1000);
+      ledger.add({ chatId: 42, txHash: hex64('0x1'), eventIndex: 0, kind: 'alert', chainTime: 1000, body: 'x' });
+      rate.note(42, 1000, 'ok');
+    });
+    const e = subs.export(42);
+    assert.deepEqual(e.chat, { type: 'private', paused: false });
+    assert.deepEqual(e.buttons, [{ kind: 'track', value: hex64('0x99'), chain_time: 1000 }]);
+    assert.deepEqual(e.deliveries, { pending: 1, sent: 0, dropped: 0 });
+    store.transaction(() => subs.forget(42));
+    assert.equal(store.sql('SELECT count(*) AS n FROM rate').get().n, 0);
+    assert.deepEqual(subs.export(42), { chat_id: 42, watches: [], whales: [], minimums: {}, tracks: [], muted: [],
+      chat: null, buttons: [], deliveries: { pending: 0, sent: 0, dropped: 0 } });
+  } finally { store.close(); }
+});
+
+test('only the contract\'s own answers make a token "not a coin"; other node errors are retried, never cached', async () => {
+  const { store } = open();
+  try {
+    let failure = new RpcError(-32603);
+    const rpc = { async call(_, { request }) {
+      if (failure) throw failure;
+      return request.entry_point_selector === SELECTORS.decimals ? ['0x6'] : [short('OUT')];
+    } };
+    const tokens = new Tokens(config, store, rpc);
+    await assert.rejects(tokens.get(OTHER, 100), NodeBusy);
+    assert.equal(store.sql('SELECT count(*) AS n FROM tokens').get().n, 0);
+    failure = null;
+    assert.deepEqual(await tokens.get(OTHER, 100), { address: OTHER, symbol: 'OUT', decimals: 6, verified: false });
+    failure = new RpcError(40);
+    assert.equal(await tokens.get(B, 100), null);
+    assert.equal(store.sql('SELECT decimals FROM tokens WHERE address = ?').get(B).decimals, null);
+  } finally { store.close(); }
+});
+
+test('a failed fee lookup fails the range instead of alerting the fee', async () => {
+  const { store, subs } = open();
+  try {
+    store.transaction(() => subs.watch({ id: 1, type: 'private' }, A, null, 10));
+    const rpc = fakeRpc({ starknet_getBlockWithTxHashes: header, starknet_getTransactionReceipt: () => { throw new RpcError(29); } });
+    const events = decodeTokenEvents([transfer(STRK, A, SEQUENCER, 9n)]);
+    await assert.rejects(findAlerts(events, { interests: subs.interests(), tokens: new Tokens(config, store, rpc), rpc, now: 1_792_454_422, fmt }), RpcError);
   } finally { store.close(); }
 });
 
