@@ -249,3 +249,13 @@ test("outbox saves before sending and resumes only unfinished chunks", async () 
   assert.equal(sends, 3);
   assert.equal(await r.deliver(), 0);
 });
+
+test("an older callback timestamp cannot reset an exhausted rate window", () => {
+  const { r } = context();
+  for (let i = 0; i < 10; i++)
+    r.limited({ chat: { id: 1 }, from: { id: 4 }, date: 100 + i });
+  assert.match(
+    r.limited({ chat: { id: 1 }, from: { id: 4 }, date: 90 }).lines[0],
+    /Slow down/,
+  );
+});

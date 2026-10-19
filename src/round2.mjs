@@ -85,7 +85,7 @@ export class RoundTwo {
     if (!Number.isSafeInteger(now))
       return packet("Message has no valid timestamp.");
     for (const [key, r] of Object.entries(this.state.rates)) {
-      r.dates = r.dates.filter((t) => now - t < 60 && now >= t);
+      r.dates = r.dates.filter((t) => now - t < 60);
       if (!r.dates.length && (!r.notified || now - (r.notice_at ?? 0) >= 60))
         delete this.state.rates[key];
     }
