@@ -7,6 +7,9 @@ export class CairnError extends Error {
 export class NodeBusy extends CairnError {
   constructor() { super('node busy: check the RPC origin or retry later.'); }
 }
+export class Migration extends CairnError {
+  constructor(chatId) { super('Telegram chat migrated.'); this.chatId = chatId; }
+}
 export class RpcError extends Error {
   constructor(code) {
     super(`RPC error ${Number.isSafeInteger(code) ? code : 'unknown'}`);

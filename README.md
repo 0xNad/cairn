@@ -2,9 +2,9 @@
 
 **Exact Starknet balances and transaction facts in Telegram, without your keys.**
 
-Cairn is an open-source Telegram bot for Starknet. Round 1 provides chain status, registry token
-balances and transaction lookups in private chats and groups. Wallet alerts, whale alerts and buy
-feeds are planned for later rounds; their illustrations below are the roadmap.
+Cairn is an open-source Telegram bot for Starknet. It provides wallet transfers and approvals across
+ERC-20 tokens, whale thresholds, transaction tracking, exact balances and transaction lookups.
+Buy feeds and network guards remain planned for later rounds.
 
 It only reads the chain. It holds no keys, signs nothing, never trades and has no Mini App. It runs as a
 single Node.js process with zero dependencies, on any Starknet RPC. It is MIT-licensed, so anyone can host it.
@@ -12,8 +12,9 @@ single Node.js process with zero dependencies, on any Starknet RPC. It is MIT-li
 It is built in public by AI coding agents, in four judged rounds on
 [Hotpod](https://agent-launchpad-six.vercel.app).
 
-> **Status:** round 1 lookups are implemented: `/start`, `/help`, `/status`, `/balance` and `/tx`.
-> Wallet alerts, group feeds and guards below describe later rounds.
+> **Status:** wallet alerts and lookups are implemented. Start with `/watch <address> [label]`;
+> use `/min`, `/mute`, and `/list` to control notifications. Group setup requires an administrator.
+> [Wallet alerts and recovery](docs/ROUND2.md) documents commands, storage and delivery limits.
 > [ARCHITECTURE.md](ARCHITECTURE.md) specifies the frozen interface.
 
 ## What it looks like
@@ -84,7 +85,7 @@ On Hotpod, every agent builds the same round, starting from the previous round's
 - **Next round.** The winner is merged, and it becomes the base everyone builds the next round from.
 
 The fun is in the hard parts:
-- alerts that arrive exactly once, even after a `kill -9` mid-send;
+- durable pending alerts and confirmed-delivery deduplication after a `kill -9` (see the delivery limits below);
 - buys decoded correctly through aggregator routes, multi-hop swaps and round trips;
 - trades credited to the right account when a relayer sent the transaction;
 - token amounts computed exactly with BigInt, and symbols stored either as short strings or as ByteArrays;
@@ -107,16 +108,18 @@ Connect your coding agent on [Hotpod](https://agent-launchpad-six.vercel.app). E
 - **No custody, no trading, no Mini App.** Holding user keys is what caused the big Telegram-bot losses on
   other chains.
 - **Two hosts only.** It talks to Telegram and your RPC, and nothing else: no telemetry, no price API.
-- **It keeps very little.** Round 1 stores only an update offset, schema version and registered command
-  list. Chat ids, settings and watched addresses, with `/export` and `/forget`, belong to later rounds.
+- **Data control.** `/export` includes all chat records. `/forget` removes subscriptions, settings,
+  tracks, callback capabilities, rate records and pending/confirmed deliveries. Telegram names,
+  usernames and incoming message text are never stored.
 - **Facts, not advice.** No rankings, no trending lists, no buy buttons.
 
 ## FAQ
 
 **Is it a trading bot?** No. It reads the chain and tells you what happened.
 
-**Which tokens?** Round 1 reads every token in the configured registry: STRK, ETH, USDC, USDC.e, USDT
-and WBTC on mainnet. Watching arbitrary ERC-20 tokens and marking unverified tokens arrive in round 2.
+**Which tokens?** Any ERC-20 with valid decimals from 0 to 36. The registry marks verified assets:
+STRK, ETH, USDC, USDC.e, USDT and WBTC on mainnet. Other symbols appear in code, followed by
+“unverified” and a linked contract address. Token addresses work with `/balance`, `/whale` and `/min`.
 
 **Which RPC?** Any Starknet JSON-RPC 0.10 node. The public `starknet-rpc.publicnode.com` works out of the box.
 
@@ -139,18 +142,18 @@ node cairn.mjs run
 ```
 
 `doctor` prints one JSON line with the bot username, decoded chain, block number and RPC version.
-`tick` drains updates once and prints `{ "updates": n, "sent": n, "head": n }` (a busy node gives
-`head: null`). `run` polls continuously; SIGINT and SIGTERM cancel polling, RPC calls and backoff waits.
+`tick` drains updates, scans a bounded range and delivers pending alerts once, then prints
+`{ "updates": n, "sent": n, "head": n, "alerts": n, "cursor": n }` (a busy node gives `head: null`). `run` polls continuously; SIGINT and SIGTERM cancel polling, RPC calls and backoff waits.
 Exit codes are 0 for completion, 1 for connectivity or an instance conflict, 2 for configuration or
 an incompatible chain/spec, and 3 for a rejected Telegram token. Logs are JSON on stderr.
 
-### Round 1 commands
+### Lookup commands
 
 | Command | Reply |
 | --- | --- |
 | `/start`, `/help` | Commands, privacy, and a link to add the bot to a group |
 | `/status` | Chain, head, UTC block time, L1/L1-data/L2 gas in FRI, RPC spec |
-| `/balance 0x…` | Exact balances of every registry token, in registry order |
+| `/balance 0x… [SYMBOL|token address]` | Exact balances of a selected token, or registry tokens and nonzero discovered holdings |
 | `/tx 0x…` | Finality, execution, block, fee, escaped revert reason, explorer link |
 
 In groups, use `/command` or `/command@your_bot_username`. Plain text and commands for other bots
@@ -167,22 +170,23 @@ The explorer is used only for links. Redirects from either configured endpoint a
 
 ### State and recovery
 
-Use a dedicated `CAIRN_DATA` directory per bot. It is mode 700 and files are mode 600. Round 1 stores
-only the update offset, schema version and registered command list. No message text, lookup inputs,
-usernames, bot token or RPC URL are persisted. A process lock rejects a second owner of the same data
-directory using a separate SQLite exclusive transaction; the OS releases it after a kill, with no
-PID-file recovery race. State itself is an atomic JSON file. Corrupt state is refused, never reset.
-State and lock files reject symbolic links and hard links; a recovery file is checked before it is
-truncated, so an outside file cannot be overwritten through a linked directory entry.
+Use a dedicated `CAIRN_DATA` directory per bot. It is mode 700 and files are mode 600. A SQLite
+exclusive transaction holds the process lock; state uses an fsynced atomic JSON replacement. Existing
+Round 1 offsets and registered commands migrate automatically. Corrupt state is refused, never reset.
 
-Each update's claim is fsynced and atomically renamed **before** its reply is sent. This prevents
-duplicate handling after SIGKILL, including a kill immediately after Telegram accepts a reply.
-Telegram supplies no idempotency key for `sendMessage`: a crash between the durable claim and the
-send can lose that reply, and a crash during a split reply can leave it incomplete. Send a new command
-to retry. This is an at-most-once policy, not a promise of exactly-once delivery. Explicit Telegram
-429/5xx rejections are retried; ambiguous transport failures (including HTTP 500 without a Telegram
-rejection body) are never resent. Back up the data
-directory while the process is stopped; preserve state when restarting.
+A completed event range commits its cursor, discovered tokens and pending alerts together before any
+alert is sent. Failed pages or RPC lookups leave the cursor unchanged. An alert is marked confirmed
+only after Telegram returns its `message_id`. Confirmed records survive restarts and remain for seven
+chain days; pending alerts remain until accepted or the chat is forgotten. Telegram 403 pauses a chat;
+a new message or re-addition resumes it. Migrations move data and retry at the new chat ID.
+
+**Delivery limit:** Telegram `sendMessage` has no idempotency key or receipt lookup. If Telegram accepts
+an alert and its reply is lost, or Cairn dies before saving the acknowledgement, the pending alert is
+retried and may arrive twice. This is an at-least-once outbox with confirmed-delivery deduplication,
+not universal exactly-once delivery. Ordinary command replies retain Round 1's at-most-once policy:
+the update is saved before replying, so a crash can lose a command reply. Send a new command to retry.
+
+[The design notes](docs/ROUND2.md) describe crash boundaries, export, deletion and retention.
 
 ### Operator troubleshooting
 
@@ -204,13 +208,16 @@ timeouts get at most three attempts. Ctrl-C or SIGTERM interrupts polling and ba
 
 ```sh
 node .launchpad/checks/round-1/run.mjs
-node --test test/edge-cases.test.mjs
+node .launchpad/checks/round-2/run.mjs
+node --test --test-concurrency=1 test/*.test.mjs
 ```
 
 The published checks use local fake Telegram and Starknet services and exercise the CLI as child
 processes, including kills, retries, strict host limits and credential scans. Additional tests cover
 redirects, ambiguous sends, aborting Retry-After waits, corruption, concurrent state owners, symlinks,
-full-range u256 arithmetic, 36-decimal tokens and long HTML with emoji. They use Node built-ins only.
+full-range u256 arithmetic, 36-decimal tokens, long HTML with emoji, failed pagination, metadata outages,
+callback boundaries, migration, retention, deletion and the ambiguous-delivery interval. They use Node
+built-ins only. Run the suites sequentially on small servers.
 
 ## Build it with your agent
 

@@ -3,6 +3,7 @@ import { chmodSync, closeSync, constants, existsSync, fchmodSync, fstatSync, fsy
 import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
 import { CairnError } from './errors.mjs';
+import { validState } from './state-schema.mjs';
 
 export class Store {
   constructor(directory) {
@@ -13,7 +14,7 @@ export class Store {
     this.file = join(directory, 'state.json');
     this.lock = join(directory, 'instance.sqlite');
     this.owner = null;
-    this.state = { version: 1, offset: 0, commands: null };
+    this.state = { version: 2, offset: 0, commands: null, cursor: null, chats: {}, metadata: {} };
     this.acquire();
     try {
       if (existsSync(this.file)) {
@@ -21,9 +22,13 @@ export class Store {
         if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) throw new Error('unsafe state');
         chmodSync(this.file, 0o600);
         const saved = JSON.parse(readFileSync(this.file, 'utf8'));
-        if (saved.version !== 1 || !Number.isSafeInteger(saved.offset) || saved.offset < 0 ||
+        if (![1, 2].includes(saved.version) || !Number.isSafeInteger(saved.offset) || saved.offset < 0 ||
             !(saved.commands === null || typeof saved.commands === 'string')) throw new Error('invalid state');
-        this.state = { version: 1, offset: saved.offset, commands: saved.commands };
+        if (saved.version === 1) Object.assign(this.state, { offset: saved.offset, commands: saved.commands });
+        else {
+          if (!validState(saved)) throw new Error('invalid state');
+          this.state = saved;
+        }
       }
     } catch {
       this.close();

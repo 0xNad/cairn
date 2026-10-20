@@ -1,6 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { performance } from 'node:perf_hooks';
-import { CairnError, NodeBusy, RpcError } from './errors.mjs';
+import { CairnError, Migration, NodeBusy, RpcError } from './errors.mjs';
 import { normalize } from './felt.mjs';
 
 const TIMER_MAX = 2147483647;
@@ -39,7 +39,8 @@ async function post(url, body, timeout, signal) {
 }
 const READ_METHODS = new Set(['starknet_chainId', 'starknet_specVersion', 'starknet_blockNumber',
   'starknet_getBlockWithTxHashes', 'starknet_getClassHashAt', 'starknet_call',
-  'starknet_getTransactionStatus', 'starknet_getTransactionReceipt']);
+  'starknet_getTransactionStatus', 'starknet_getTransactionReceipt', 'starknet_getEvents',
+  'starknet_getTransactionByHash']);
 
 function validBlockId(value) {
   if (value === 'latest') return true;
@@ -68,6 +69,8 @@ export class Rpc {
     if (params.block_id !== undefined && !validBlockId(params.block_id)) {
       throw new CairnError('Unsupported block identifier.');
     }
+    if (method === 'starknet_getEvents' && (!validBlockId(params.filter?.from_block) ||
+        !validBlockId(params.filter?.to_block))) throw new CairnError('Unsupported event block range.');
     for (let attempt = 0; attempt < 3; attempt++) {
       await this.#slot();
       let wait = 200 * 2 ** attempt;
@@ -112,6 +115,10 @@ export class Telegram {
       const { response, json } = result;
       if (response.ok && json?.ok === true) return json.result;
       const code = json?.error_code ?? response.status;
+      if (code === 400 && Number.isSafeInteger(json?.parameters?.migrate_to_chat_id)) {
+        throw new Migration(json.parameters.migrate_to_chat_id);
+      }
+      if (code === 400 && method === 'editMessageText' && /message is not modified/i.test(json?.description ?? '')) return true;
       switch (code) {
         case 401: throw new CairnError('Telegram rejected the token (401); replace it through BotFather.', 3);
         case 409: throw new CairnError('Telegram conflict (409): another instance is running.');
