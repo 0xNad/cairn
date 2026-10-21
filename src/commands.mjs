@@ -1,13 +1,22 @@
 import { NodeBusy, RpcError } from './errors.mjs';
-import { normalize, SELECTORS, u256, unsigned } from './felt.mjs';
+import { normalize, unsigned } from './felt.mjs';
 import { amount, escapeHtml, short, textLines, utc } from './format.mjs';
+import { balanceOf, tokenAmount } from './tokens.mjs';
 
 export const COMMANDS = Object.freeze([
   { command: 'start', description: 'Welcome and privacy' },
   { command: 'help', description: 'Commands and privacy' },
   { command: 'status', description: 'Chain head and gas prices' },
-  { command: 'balance', description: 'Registry token balances for an address' },
+  { command: 'balance', description: 'Wallet balances, optionally any ERC-20 token' },
   { command: 'tx', description: 'Transaction status, fee and revert reason' },
+  ...[
+    ['watch', 'Watch a wallet, optionally with a label'], ['unwatch', 'Remove a wallet by address or label'],
+    ['list', 'Watched wallets and Remove buttons'], ['whale', 'Alert on large transfers of a token'],
+    ['unwhale', 'Remove a whale threshold'], ['min', 'Set a minimum wallet transfer amount'],
+    ['mute', 'Silence one token'], ['unmute', 'Restore alerts for a token'],
+    ['track', 'Track L2 execution and L1 finality'], ['export', 'Export all stored chat data as JSON'],
+    ['forget', 'Permanently delete this chat’s data'],
+  ].map(([command, description]) => ({ command, description })),
 ]);
 export function parseCommand(message, username) {
   const match = /^\/(\w+)(?:@(\w+))?(?=\s|$)(?:\s+([\s\S]*))?$/.exec(message?.text ?? '');
@@ -19,13 +28,21 @@ export async function answer(command, context) {
   const text = (value) => textLines(value, clean);
   const link = (kind, value) => `<a href="${escapeHtml(clean(`${config.explorer}/${kind}/${value}`))}">${short(value)}</a>`;
   if (command.name === 'start' || command.name === 'help') {
-    return [...text('Cairn · Starknet lookups\n/start — Welcome and privacy\n/help — Command guide\n/status — Chain head and gas prices\n/balance <address> — Registry token balances\n/tx <hash> — Status, fee and revert reason\n\nOn-chain facts, not financial advice.\nPublic balances and transfers only.\nThe operator stores the update offset and registered command list, never message text, names or usernames.\nLookups do not store addresses or hashes.'),
+    return [...text('Cairn · Starknet wallets\n/start — Welcome and privacy\n/help — Command guide\n/status — Chain head and gas prices\n/balance <address> [SYMBOL|token address] — Exact balances\n/tx <hash> — Status, fee and revert reason\n/watch <address> [label] — New wallet activity\n/unwatch <address|label> — Remove a watch\n/list — Watches and Remove buttons\n/whale <SYMBOL|token address> <amount> — Large transfers\n/unwhale <SYMBOL|token address> — Stop whale alerts\n/min <SYMBOL|token address> <amount> — Watch transfer floor\n/mute <token address> · /unmute <token address> — Control noise\n/track <hash> — L2 execution, then L1 finality or failure\n/export — All stored chat data as JSON\n/forget — Delete this chat’s data\n\nGroup settings, export and deletion require an admin; /list and lookups are public. Limits: 5 whales, 10 tracks, 10 commands per user per 60 seconds.\nOn-chain facts, not financial advice. Public balances and transfers only. No keys, signing or trading.\nStored: chat IDs, user IDs for rate limits, settings, watches, tracks, button actions and alert delivery records. Never Telegram names, usernames or incoming message text. A private pasted address/hash offers a Watch/Track button. Use /forget to erase these records.'),
       `<a href="https://t.me/${escapeHtml(clean(username))}?startgroup=setup">Add Cairn to a group</a>`];
   }
   if (!['status', 'balance', 'tx'].includes(command.name)) return text('Unknown command. Use /help for available commands.');
-  let input;
+  let input, requested;
   if (command.name !== 'status') {
-    try { input = normalize(command.argument, command.name === 'tx' ? 'hash' : 'address'); }
+    try {
+      const words = command.argument.split(/\s+/);
+      if (command.name === 'balance' && words.length > 2) return text('Usage: /balance <address> [SYMBOL|token address]');
+      input = normalize(command.name === 'balance' ? words[0] : command.argument, command.name === 'tx' ? 'hash' : 'address');
+      if (command.name === 'balance') {
+        requested = words[1];
+        if (requested && !config.tokens.some(t => t.symbol.toLowerCase() === requested.toLowerCase())) normalize(requested);
+      }
+    }
     catch (error) { return text(error.message); }
   } else if (command.argument) return text('Usage: /status (no arguments).');
   if (!head) return text('node busy — the lookup is unavailable. Please try again shortly.');
@@ -43,23 +60,36 @@ export async function answer(command, context) {
           else if (error instanceof RpcError) lines.push(...text(`Account deployment unavailable (${error.message}).`));
           else throw error;
         }
-        for (const token of config.tokens) {
-          try {
-            const params = { request: { contract_address: token.address, entry_point_selector: SELECTORS.balance_of, calldata: [input] }, block_id };
-            let result;
-            try { result = await rpc.call('starknet_call', params); }
-            catch (error) {
-              if (!(error instanceof RpcError && error.code === 21)) throw error;
-              params.request.entry_point_selector = SELECTORS.balanceOf;
-              result = await rpc.call('starknet_call', params);
+        const metadataErrors = [];
+        let selection = config.tokens.map(t => ({ ...t, verified: true }));
+        if (requested) {
+          const token = await context.tokens.get(requested);
+          if (!token) return text('This token does not expose valid ERC-20 decimals (0–36).');
+          selection = [token];
+        } else if (context.tokens) {
+          const watch = context.chat?.watches.find(w => w.address === input);
+          for (const address of watch?.seen ?? []) {
+            if (selection.some(t => t.address === address)) continue;
+            try {
+              const token = await context.tokens.get(address);
+              if (token) selection.push({ ...token, nonzeroOnly: true });
+              else metadataErrors.push(`${link('contract', address)} · ERC-20 metadata unavailable.`);
+            } catch (error) {
+              if (context.signal.aborted) throw error;
+              metadataErrors.push(`${link('contract', address)} · node busy; other balances are shown independently.`);
             }
-            lines.push(...text(amount(u256(result), token.decimals, token.symbol)));
-          } catch (error) {
-            if (context.signal.aborted) throw error;
-            lines.push(...text(`${token.symbol}: ${error instanceof NodeBusy ? 'node busy' : error instanceof RpcError ? error.message : 'error: invalid balance response'}. Other tokens are shown independently.`));
           }
         }
-        return lines;
+        for (const token of selection) {
+          try {
+            const value = await balanceOf(rpc, input, token, head.block_number);
+            if (!token.nonzeroOnly || value !== 0n) lines.push(tokenAmount(value, token, context));
+          } catch (error) {
+            if (context.signal.aborted) throw error;
+            lines.push(`${tokenAmount(0n, token, context).replace(/^0 /, '')}: ${escapeHtml(error instanceof NodeBusy ? 'node busy' : error instanceof RpcError ? error.message : 'error: invalid balance response')}. Other tokens are shown independently.`);
+          }
+        }
+        return [...lines, ...metadataErrors];
       }
       case 'tx': {
         const params = { transaction_hash: input };

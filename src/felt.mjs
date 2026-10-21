@@ -29,6 +29,10 @@ export function decodeChain(value) {
   return /^[A-Z0-9_]{1,32}$/.test(text) ? text : 'unknown chain';
 }
 export const SELECTORS = Object.freeze({
+  Transfer: '0x0099cd8bde557814842a3121e8ddfd433a539b8c9f14bf31ebf108d12e6196e9',
+  Approval: '0x0134692b230b9e1ffa39098904722134159652b09c5bc41d88d6698779d228ff',
+  decimals: '0x004c4fb1ab068f6039d5780c68dd0fa2f8742cceb3426d19667778ca7f3518a9',
+  symbol: '0x0216b05c387bab9ac31918a3e61672f4618601f3c598a2f3f2710f37053e1ea4',
   balance_of: '0x035a73cd311a05d46deda634c5ee045db92f811b4e74bca4437fcb5302b7af33',
   balanceOf: '0x02e4263afad30923c891518314c3c95dbe830a16874e8abc5777a9a20b54c76e',
 });
