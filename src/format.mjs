@@ -1,3 +1,4 @@
+import { unsigned } from './felt.mjs';
 export const escapeHtml = (value) => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 export function amount(value, decimals, symbol) {
   const scale = 10n ** BigInt(decimals);
@@ -6,6 +7,14 @@ export function amount(value, decimals, symbol) {
   return `${whole}${fraction ? `.${fraction}` : ''} ${symbol}`;
 }
 export const short = (value) => `${value.slice(0, 6)}…${value.slice(-4)}`;
+// Explorer links (`${CAIRN_EXPLORER_URL}/<kind>/<value>`, never fetched), shown as the short value by default.
+export const linker = (config, clean) => (kind, value, html = short(value)) =>
+  `<a href="${escapeHtml(clean(`${config.explorer}/${kind}/${value}`))}">${html}</a>`;
+// A receipt's actual_fee, in STRK (FRI) or ETH (WEI).
+export function feeText(fee) {
+  if (fee?.unit !== 'FRI' && fee?.unit !== 'WEI') return 'not yet available';
+  return amount(unsigned(fee.amount), 18, fee.unit === 'FRI' ? 'STRK' : 'ETH');
+}
 export const utc = (seconds) => new Date(seconds * 1000).toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC');
 export function redactor(config) {
   const rpc = new URL(config.rpcUrl);
