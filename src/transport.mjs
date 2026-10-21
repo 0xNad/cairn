@@ -39,7 +39,7 @@ async function post(url, body, timeout, signal) {
 }
 const READ_METHODS = new Set(['starknet_chainId', 'starknet_specVersion', 'starknet_blockNumber',
   'starknet_getBlockWithTxHashes', 'starknet_getClassHashAt', 'starknet_call',
-  'starknet_getTransactionStatus', 'starknet_getTransactionReceipt']);
+  'starknet_getTransactionStatus', 'starknet_getTransactionReceipt', 'starknet_getTransactionByHash', 'starknet_getEvents']);
 
 function validBlockId(value) {
   if (value === 'latest') return true;
@@ -113,6 +113,14 @@ export class Telegram {
       if (response.ok && json?.ok === true) return json.result;
       const code = json?.error_code ?? response.status;
       switch (code) {
+        case 400:
+          if (json?.description?.includes('message is not modified')) return true;
+          if (Number.isSafeInteger(json?.parameters?.migrate_to_chat_id)) {
+            const error = new CairnError('Telegram chat migrated.');
+            error.migrate = json.parameters.migrate_to_chat_id;
+            throw error;
+          }
+          throw new CairnError('Telegram refused the message (400).');
         case 401: throw new CairnError('Telegram rejected the token (401); replace it through BotFather.', 3);
         case 409: throw new CairnError('Telegram conflict (409): another instance is running.');
         case 403: return null;
