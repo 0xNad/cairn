@@ -35,7 +35,7 @@ export class Subscriptions {
   watchById(id) { return this.#q('SELECT id, chat_id, address, label, since_block, thread_id FROM watches WHERE id = ?').get(id) ?? null; }
   /**
    * Adds a watch, or relabels an existing one; asked again from another forum topic, its alerts move there.
-   * Returns { status: added|exists|cap, watch, relabelled, moved }.
+   * Returns { status: added|exists|cap, watch, relabelled, moved, before } (before: the topic it was in).
    */
   watch(chat, address, label, sinceBlock, thread = null) {
     const all = this.watches(chat.id);
@@ -44,7 +44,7 @@ export class Subscriptions {
       const relabelled = Boolean(label) && label !== existing.label, moved = existing.thread_id !== thread;
       if (relabelled) this.#q('UPDATE watches SET label = ? WHERE id = ?').run(label, existing.id);
       if (moved) this.#q('UPDATE watches SET thread_id = ? WHERE id = ?').run(thread, existing.id);
-      return { status: 'exists', watch: { ...existing, label: relabelled ? label : existing.label, thread_id: thread }, relabelled, moved };
+      return { status: 'exists', watch: { ...existing, label: relabelled ? label : existing.label, thread_id: thread }, relabelled, moved, before: existing.thread_id };
     }
     if (all.length >= this.maxWatches) return { status: 'cap' };
     this.chat(chat);

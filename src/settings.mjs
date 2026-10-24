@@ -1,7 +1,7 @@
 import { NodeBusy } from './errors.mjs';
 import { normalize } from './felt.mjs';
 import { dollars, escapeHtml, parseDecimal, plainText, short, unescapeHtml } from './format.mjs';
-import { looksLikeName } from './names.mjs';
+import { addressInput, looksLikeName } from './names.mjs';
 import { usdPair } from './prices.mjs';
 import { LIMITS } from './subscriptions.mjs';
 import { VENUES } from './venues.mjs';
@@ -20,7 +20,9 @@ const FEED_USAGE = 'Usage: /feed &lt;SYMBOL|token address&gt; [&lt;min&gt;|$&lt;
   'The floor is a token amount or a dollar value; buys (the default) posts buys only, all posts sells too.';
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const say = (html, keyboard) => () => ({ lines: html.split('\n'), keyboard });
-const IN_TOPIC = ' Its posts go to this topic.';
+/** Where a subscription posts, said whenever it is in a forum topic or has just left one. */
+const where = (before, thread) => (thread !== null ? ' Its posts go to this topic.'
+  : before !== null && before !== undefined ? ' Its posts now go to the main thread.' : '');
 
 export async function setting(command, ctx) {
   if (ctx.chat.type !== 'private' && !OPEN_IN_GROUPS.has(command.name) && !(await ctx.admin())) return say(ADMIN_ONLY);
@@ -57,9 +59,9 @@ const HANDLERS = {
       // A watch set up by name shows the address it resolved to, so the group can check it.
       const via = !name ? '' : r.watch.label ? ` (${escapeHtml(name)}, ${short(address)})` : ` (${short(address)})`;
       if (r.status === 'exists') {
-        return say(`Already watching ${watchName(ctx, r.watch, name)}${via}${r.relabelled ? '; its label is updated' : ''}.${r.moved && ctx.thread !== null ? ' Its alerts now post in this topic.' : ''}`)();
+        return say(`Already watching ${watchName(ctx, r.watch, name)}${via}${r.relabelled ? '; its label is updated' : ''}.${r.moved ? where(r.before, ctx.thread) : ''}`)();
       }
-      return say(`👁 Watching ${watchName(ctx, r.watch, name)}${via} from block ${since + 1}: every transfer in or out, on any token, and every approval it grants.${ctx.thread !== null ? IN_TOPIC : ''}\n` +
+      return say(`👁 Watching ${watchName(ctx, r.watch, name)}${via} from block ${since + 1}: every transfer in or out, on any token, and every approval it grants.${where(null, ctx.thread)}\n` +
         'Skip small transfers with /min, silence a spam token with /mute, and manage it in /list.')();
     };
   },
@@ -83,16 +85,16 @@ const HANDLERS = {
     const m = /^(\S+)\s+(\S+)$/.exec(arg);
     if (!m) return say('Usage: /whale &lt;SYMBOL|token address&gt; &lt;amount&gt;, for example /whale STRK 1000000.');
     if (!ctx.head) return say(BUSY);
-    const { token, error } = await ctx.tokens.resolve(m[1], ctx.head.timestamp);
+    const { token, error } = await ctx.tokens.resolve(m[1], ctx.head.timestamp, ctx.names);
     if (error) return say(escapeHtml(error));
     const amount = parseDecimal(m[2], token.decimals);
     if (amount.error) return say(`${escapeHtml(amount.error)} Nothing was changed.`);
     if (amount.units === 0n) return say('Use an amount above zero: zero-amount transfers are never alerted. Nothing was changed.');
     const since = ctx.head.block_number;
-    const topic = ctx.thread !== null ? IN_TOPIC : '';
     return () => {
+      const before = ctx.subs.whales(ctx.chat.id).find((w) => w.token === token.address)?.thread_id;
       const r = ctx.subs.whale(ctx.chat, token.address, token.symbol, amount.text, amount.units, since, ctx.thread);
-      const name = ctx.fmt.token(token);
+      const name = ctx.fmt.token(token), topic = where(before, ctx.thread);
       if (r === 'cap') return say(`This chat already has ${LIMITS.whales} whale alerts, the most it can. Stop one with /unwhale or in /list.`)();
       if (r === 'updated') return say(`🐋 Whale alert on ${name} updated: every transfer of at least ${escapeHtml(amount.text)} ${name}.${topic}`)();
       return say(`🐋 Whale alert on ${name}: every transfer of at least ${escapeHtml(amount.text)} ${name} from block ${since + 1}, mints and burns labelled.${topic}`)();
@@ -111,7 +113,7 @@ const HANDLERS = {
   async min(arg, ctx) {
     const m = /^(\S+)\s+(\S+)$/.exec(arg);
     if (!m) return say('Usage: /min &lt;SYMBOL|token address&gt; &lt;amount&gt;, for example /min STRK 5. Use 0 to remove a floor.');
-    const { token, error } = await ctx.tokens.resolve(m[1], ctx.head?.timestamp ?? 0);
+    const { token, error } = await ctx.tokens.resolve(m[1], ctx.head?.timestamp ?? 0, ctx.names);
     if (error) return say(escapeHtml(error));
     const amount = parseDecimal(m[2], token.decimals);
     if (amount.error) return say(`${escapeHtml(amount.error)} Nothing was changed.`);
@@ -163,7 +165,7 @@ const HANDLERS = {
     const [first, ...options] = arg.split(/\s+/).filter(Boolean);
     if (!first || options.length > 2) return say(FEED_USAGE);
     if (!ctx.head) return say(BUSY);
-    const { token, error } = await ctx.tokens.resolve(first, ctx.head.timestamp);
+    const { token, error } = await ctx.tokens.resolve(first, ctx.head.timestamp, ctx.names);
     if (error) return say(escapeHtml(error));
     let mode = null, floor;
     for (const option of options) {
@@ -195,7 +197,7 @@ const HANDLERS = {
       const r = ctx.subs.feed(ctx.chat, { token: token.address, symbol: token.symbol, min: floor?.text ?? null,
         minUnits: floor?.units ?? null, minUsd: floor?.usd ?? null, mode }, since, ctx.thread);
       const replaced = r.status === 'replaced' ? ` It replaces the feed on ${tokenName(ctx, r.previous.token)}: one feed per chat.` : '';
-      return say(`📈 Trade feed on ${name}${r.status === 'updated' ? ' updated' : ''}: every ${sides}${least} on ${venues}, from block ${(r.status === 'updated' ? r.previous.since_block : since) + 1}.${replaced}${ctx.thread !== null ? IN_TOPIC : ''}\n` +
+      return say(`📈 Trade feed on ${name}${r.status === 'updated' ? ' updated' : ''}: every ${sides}${least} on ${venues}, from block ${(r.status === 'updated' ? r.previous.since_block : since) + 1}.${replaced}${where(r.previous?.thread_id, ctx.thread)}\n` +
         `Each post shows the trader (a verified .stark name or the address) and flags a new holder. ${valued} /unfeed stops it.`)();
     };
   },
@@ -238,6 +240,7 @@ function trackCommit(ctx, chat, hash, reply = say, thread = null) {
 /** A token address for /mute, /unmute and /unwhale: a registry symbol works for /unwhale only. */
 async function tokenAddress(arg, ctx, command) {
   if (!arg) return { error: command ? `Usage: /${command} <token address>.` : 'Usage: /unwhale <SYMBOL|token address>.' };
+  if (looksLikeName(arg)) return addressInput(arg, ctx.names);
   if (!/^0x/i.test(arg)) {
     if (command) return { error: `Use the token's contract address: /${command} 0x… (any token can claim any symbol).` };
     const token = ctx.tokens.bySymbol(arg);

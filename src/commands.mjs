@@ -111,7 +111,7 @@ export async function answer(command, context) {
         }
         let chosen = null;
         if (tokenArgument !== undefined) {
-          const resolved = await context.tokens.resolve(tokenArgument, head.timestamp);
+          const resolved = await context.tokens.resolve(tokenArgument, head.timestamp, context.names);
           if (resolved.error) return text(resolved.error);
           chosen = resolved.token;
         }
@@ -193,7 +193,8 @@ async function price(argument, context) {
   const asked = argument.split(/[\s,]+/).filter(Boolean);
   if (asked.length > 20) return text('Usage: /price [SYMBOL…], at most 20 symbols, such as /price STRK ETH.');
   if (!head) return text('node busy — the lookup is unavailable. Please try again shortly.');
-  const wanted = asked.length ? [...new Set(asked.map((s) => s.toLowerCase()))] : config.tokens.filter((t) => t.pragma_pair).map((t) => t.symbol);
+  const once = (list) => list.filter((s, i) => list.findIndex((t) => t.toLowerCase() === s.toLowerCase()) === i);
+  const wanted = asked.length ? once(asked) : config.tokens.filter((t) => t.pragma_pair).map((t) => t.symbol);
   if (!wanted.length) return text('No token in this network file has a pragma_pair, so there is no price to show.');
   const lines = [`<b>Pragma prices</b> · block ${head.block_number} · ${utc(head.timestamp)}`];
   for (const symbol of wanted) {
