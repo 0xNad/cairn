@@ -1,4 +1,8 @@
 import { performance } from 'node:perf_hooks';
+import { Names } from './names.mjs';
+import { Prices } from './prices.mjs';
+import { findTrades } from './feed.mjs';
+import { venues, decodeVenue } from './venues.mjs';
 import { walletAlerts } from './alerts.mjs';
 import { callback, COMMANDS, parseCommand, parsePaste, respond } from './commands.mjs';
 import { CairnError, log, NodeBusy, RpcError, TelegramRefused } from './errors.mjs';
@@ -6,7 +10,7 @@ import { decodeChain, NodeValueError } from './felt.mjs';
 import { links, messages, redactor, textLines } from './format.mjs';
 import { Ledger } from './ledger.mjs';
 import { RateLimit } from './rate.mjs';
-import { Scanner } from './scanner.mjs';
+import { decodeTokenEvents, Scanner } from './scanner.mjs';
 import { Store } from './store.mjs';
 import { Subscriptions } from './subscriptions.mjs';
 import { Tokens } from './tokens.mjs';
@@ -14,10 +18,9 @@ import { trackStep } from './tracks.mjs';
 import { Rpc, Telegram, sleep } from './transport.mjs';
 
 const ALLOWED_UPDATES = ['message', 'callback_query', 'my_chat_member'];
-/** What the scanner reads from each range; round 3 adds its venue feeds here. */
-const FEEDS = [walletAlerts];
+
 const ADMINS = new Set(['creator', 'administrator']);
-const LOUD_ALERTS = 3; // alerts per chat and pass with a notification; later ones in the same pass arrive silently
+const LOUD_ALERTS = 3; // private-chat messages after the third arrive silently; groups use the delivery budget
 /** A 400 that means the bot may not write to the chat for now, rather than that one message was bad. */
 const NO_WRITE = /not enough rights|have no rights|chat not found/i;
 const SLOW_DOWN = 'Slow down: Cairn answers at most 10 commands a minute from one person, and ignores the rest until that minute has passed.';
@@ -68,12 +71,16 @@ export async function serve(config, signal) {
  * scan the next range for alerts and step the tracked transactions, saving what they find as pending; then
  * deliver the pending alerts, each marked sent only once Telegram accepts it.
  */
-class Bot {
+export class Bot {
   constructor(o) {
     Object.assign(this, o);
     this.subs = new Subscriptions(o.store, o.config);
     this.ledger = new Ledger(o.store);
     this.tokens = new Tokens(o.config, o.store, o.rpc);
+    this.names = new Names(o.config, o.store, o.rpc);
+    this.prices = new Prices(o.config, o.rpc);
+    this.tokens.names = this.names;
+    this.venues = venues(o.config.contracts);
     this.rate = new RateLimit(o.store);
     this.scanner = new Scanner(o.rpc, o.config);
     this.fmt = links(o.config, o.clean);
@@ -122,6 +129,8 @@ class Bot {
   }
 
   async readHead() {
+    this.prices.reset();
+    this.names.reset();
     try {
       this.identity ??= await handshake(this.rpc, this.config, this.clean);
       const block = await this.rpc.call('starknet_getBlockWithTxHashes', { block_id: 'latest' });
@@ -210,6 +219,7 @@ class Bot {
     return {
       config: this.config, rpc: this.rpc, username: this.username, clean: this.clean, head: this.head, spec: this.identity?.spec,
       signal: this.signal, subs: this.subs, tokens: this.tokens, fmt: this.fmt, chat,
+      names: this.names, prices: this.prices, topic: message?.message_thread_id ?? null,
       admin: (user) => (admin ??= this.isAdmin(chat, message, user)),
     };
   }
@@ -299,14 +309,22 @@ class Bot {
     this.behind = false;
     if (!range) return;
     const interests = this.subs.interests();
-    const context = { interests, tokens: this.tokens, rpc: this.rpc, now: this.head.timestamp, fmt: this.fmt };
+    const context = { interests, tokens: this.tokens, rpc: this.rpc, now: this.head.timestamp, fmt: this.fmt,
+      subs: this.subs, config: this.config, prices: this.prices, names: this.names, headers: new Map(), facts: new Map() };
     const found = { deliveries: [], seen: [] };
     try {
-      // A feed nobody subscribes to reads nothing: no subscription can cover these blocks.
-      for (const feed of FEEDS.filter((f) => f.wanted(interests))) {
-        const result = await feed.find(await this.scanner.events(range, feed.filter), context);
+      const hasFeed = this.subs.feeds().length > 0 && this.venues.length > 0;
+      // Token transfers are shared by wallet rules and trader selection, never fetched twice.
+      const raw = walletAlerts.wanted(interests) || hasFeed ? await this.scanner.events(range, walletAlerts.filter) : [];
+      if (walletAlerts.wanted(interests)) {
+        const result = await walletAlerts.find(raw, context);
         found.deliveries.push(...result.deliveries);
-        found.seen.push(...(result.seen ?? []));
+        found.seen.push(...result.seen);
+      }
+      if (hasFeed) {
+        const swaps = [];
+        for (const venue of this.venues) swaps.push(...decodeVenue(await this.scanner.events(range, venue.filter), venue));
+        found.deliveries.push(...await findTrades(swaps, decodeTokenEvents(raw), context));
       }
     } catch (error) {
       if (this.signal.aborted || !retriable(error)) throw error;
@@ -314,6 +332,11 @@ class Bot {
       return;
     }
     this.store.transaction(() => {
+      const txOrder = new Map();
+      for (const [, h] of [...context.headers].sort(([a], [b]) => a - b)) for (const tx of h.transactions) txOrder.set(tx, txOrder.size);
+      for (const delivery of found.deliveries) if (!txOrder.has(delivery.txHash)) txOrder.set(delivery.txHash, txOrder.size);
+      found.deliveries.sort((a, b) => a.block - b.block || txOrder.get(a.txHash) - txOrder.get(b.txHash)
+        || Number(b.kind === 'feed') - Number(a.kind === 'feed'));
       for (const delivery of found.deliveries) this.ledger.add(delivery);
       for (const [chatId, address, token] of found.seen) this.subs.noteSeen(chatId, address, token);
       this.store.cursor = range.to;
@@ -340,19 +363,36 @@ class Bot {
   /** Pending alerts, oldest first, skipping chats that are paused or were blocked during this pass. */
   async deliver() {
     const sentTo = new Map(), blocked = new Set(), moved = new Map();
-    for (const row of this.ledger.pending()) {
+    const pending = this.ledger.pending();
+    const due = new Map();
+    for (const row of pending) {
+      if (!due.has(row.chat_id)) due.set(row.chat_id, []);
+      due.get(row.chat_id).push(row);
+    }
+    const summarized = new Set();
+    for (const row of pending) {
       if (this.signal.aborted) return;
       const chatId = moved.get(row.chat_id) ?? row.chat_id;
-      if (blocked.has(chatId)) continue;
+      if (blocked.has(chatId) || summarized.has(row.seq)) continue;
       const count = sentTo.get(chatId) ?? 0;
-      sentTo.set(chatId, count + 1);
-      const r = await this.send(chatId, row.body, count >= LOUD_ALERTS ? { disable_notification: true } : {});
+      const rows = due.get(row.chat_id);
+      const group = chatId < 0 || ['group', 'supergroup'].includes(row.chat_type);
+      const remainder = group && rows.length > 3 && count === 2 ? rows.filter(item => !summarized.has(item.seq)) : [row];
+      const text = remainder.length > 1 ? `…and ${remainder.length} more trades/alerts.` : row.body;
+      const r = await this.send(chatId, text, {
+        ...(row.topic === null ? {} : { message_thread_id: row.topic }),
+        ...(count >= LOUD_ALERTS ? { disable_notification: true } : {}),
+      });
       if (r.message) {
+        sentTo.set(chatId, count + 1);
         if (r.chatId !== chatId) moved.set(row.chat_id, r.chatId);
-        this.store.transaction(() => this.ledger.sent(row.seq, r.message.message_id));
+        this.store.transaction(() => { for (const item of remainder) this.ledger.sent(item.seq, r.message.message_id); });
+        for (const item of remainder) summarized.add(item.seq);
         this.counts.alerts++;
-      } else if (r.refused) this.store.transaction(() => this.ledger.dropped(row.seq));
-      else blocked.add(chatId);
+      } else if (r.refused) {
+        this.store.transaction(() => { for (const item of remainder) this.ledger.dropped(item.seq); });
+        for (const item of remainder) summarized.add(item.seq);
+      } else blocked.add(chatId);
     }
   }
 }

@@ -61,6 +61,11 @@ export function cairoString(felts) {
   } catch { return null; }
 }
 export const SELECTORS = Object.freeze({
+  Swapped: '0x0157717768aca88da4ac4279765f09f4d0151823d573537fbbeb950cdbd9a870',
+  Swap: '0x00e316f0d9d2a3affa97de1d99bb2aac0538e2666d0d8545545ead241ef0ccab',
+  get_data_median: '0x0024b869ce68dd257b370701ca16e4aaf9c6483ff6805d04ba7661f3a0b6ce59',
+  domain_to_address: '0x02e269d930f6d7ab92b15ce8ff9f5e63709391617e3465fff79ba6baf278ce60',
+  address_to_domain: '0x038b679fb029cc3f953635ed16ae4123da8214e726943920ba7706a0473e326a',
   Transfer: '0x0099cd8bde557814842a3121e8ddfd433a539b8c9f14bf31ebf108d12e6196e9',
   Approval: '0x0134692b230b9e1ffa39098904722134159652b09c5bc41d88d6698779d228ff',
   balance_of: '0x035a73cd311a05d46deda634c5ee045db92f811b4e74bca4437fcb5302b7af33',

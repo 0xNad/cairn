@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
 import { CairnError } from './errors.mjs';
 
-// Round 2's state, in one SQLite file. Rollback journal (not WAL) with secure_delete, so that a deleted
+// Durable state, in one SQLite file. Rollback journal (not WAL) with secure_delete, so that a deleted
 // label or alert leaves no copy in CAIRN_DATA once its transaction commits; temp_store in memory, so that
 // nothing is written outside CAIRN_DATA.
 const SCHEMA = `
@@ -24,6 +24,9 @@ CREATE TABLE IF NOT EXISTS tracks (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id
 CREATE TABLE IF NOT EXISTS offers (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, kind TEXT NOT NULL,
   value TEXT NOT NULL, chain_time INTEGER NOT NULL) STRICT;
 CREATE TABLE IF NOT EXISTS tokens (address TEXT PRIMARY KEY, symbol TEXT, decimals INTEGER, checked_at INTEGER NOT NULL) STRICT;
+CREATE TABLE IF NOT EXISTS feeds (chat_id INTEGER PRIMARY KEY, token TEXT NOT NULL, minimum TEXT NOT NULL,
+  usd INTEGER NOT NULL, side TEXT NOT NULL, since_block INTEGER NOT NULL, topic INTEGER) STRICT;
+CREATE TABLE IF NOT EXISTS names (address TEXT PRIMARY KEY, labels TEXT NOT NULL, checked_at INTEGER NOT NULL) STRICT;
 CREATE TABLE IF NOT EXISTS rate (sender INTEGER PRIMARY KEY, dates TEXT NOT NULL, noticed INTEGER NOT NULL DEFAULT 0,
   last INTEGER NOT NULL) STRICT;
 CREATE TABLE IF NOT EXISTS deliveries (seq INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, tx_hash TEXT NOT NULL,
@@ -31,7 +34,7 @@ CREATE TABLE IF NOT EXISTS deliveries (seq INTEGER PRIMARY KEY AUTOINCREMENT, ch
   state TEXT NOT NULL, message_id INTEGER, body TEXT, UNIQUE (chat_id, tx_hash, event_index)) STRICT;
 CREATE INDEX IF NOT EXISTS deliveries_state ON deliveries (state, seq);
 `;
-const SCHEMA_VERSION = '2';
+const SCHEMA_VERSION = '3';
 
 function safeFile(path, what) {
   if (!existsSync(path)) return;
@@ -60,8 +63,13 @@ export class Store {
       this.db.exec('PRAGMA journal_mode = DELETE; PRAGMA synchronous = FULL; PRAGMA secure_delete = ON; PRAGMA temp_store = MEMORY;');
       this.db.exec(SCHEMA);
       const version = this.get('schema');
-      if (version !== null && version !== SCHEMA_VERSION) throw new Error('unknown schema');
-      this.transaction(() => this.set('schema', SCHEMA_VERSION));
+      if (version !== null && !['2', SCHEMA_VERSION].includes(version)) throw new Error('unknown schema');
+      this.transaction(() => {
+        for (const table of ['watches', 'whales', 'deliveries']) {
+          if (!this.db.prepare(`PRAGMA table_info(${table})`).all().some(c => c.name === 'topic')) this.db.exec(`ALTER TABLE ${table} ADD COLUMN topic INTEGER`);
+        }
+        this.set('schema', SCHEMA_VERSION);
+      });
       this.importRoundOne();
     } catch (error) {
       this.close();

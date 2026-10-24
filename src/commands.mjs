@@ -1,3 +1,4 @@
+import { feedCommand } from './feed.mjs';
 import { NodeBusy, RpcError } from './errors.mjs';
 import { normalize, unsigned } from './felt.mjs';
 import { amount, decimal, escapeHtml, links, textLines, utc } from './format.mjs';
@@ -10,6 +11,9 @@ export const COMMANDS = Object.freeze([
   { command: 'status', description: 'Chain head and gas prices' },
   { command: 'balance', description: 'Exact token balances for an address' },
   { command: 'tx', description: 'Transaction status, fee and revert reason' },
+  { command: 'feed', description: 'Token trade feed with optional token or USD floor' },
+  { command: 'unfeed', description: 'Stop this chat’s trade feed' },
+  { command: 'price', description: 'Pragma prices, age and sources' },
   { command: 'watch', description: 'Alert on every transfer and approval of an address' },
   { command: 'unwatch', description: 'Stop watching an address' },
   { command: 'list', description: 'This chat\'s watches and alerts, with Remove buttons' },
@@ -30,17 +34,22 @@ export function parseCommand(message, username) {
 /** In a private chat, a pasted address or transaction hash is looked up as if it were a command. */
 export function parsePaste(message) {
   if (message?.chat?.type !== 'private') return null;
+  if (/^\S+\.stark$/.test(message.text?.trim() ?? '')) return { name: 'balance', argument: message.text.trim() };
   const match = /^\s*(0x[0-9a-fA-F]{1,64})\s*$/.exec(message.text ?? '');
   return match ? { name: 'paste', argument: match[1] } : null;
 }
 
 const HELP = `Cairn · Starknet lookups and wallet alerts
 Lookups, for everyone:
+/price [SYMBOL…] — Oracle prices, age and sources
 /status — Chain head and gas prices
 /balance <address> [token] — Exact balances, one token or every verified one
 /tx <hash> — Status, fee and revert reason
 In a private chat, paste an address or a transaction hash to look it up.
 Alerts, set by group administrators (anyone in a private chat):
+/feed <token> [minimum|$usd] [buys|all] — Token trades (one feed per chat)
+/unfeed — Stop trades
+Names such as ben.stark work as addresses.
 /watch <address> [label] — Every transfer in or out, on any token, and every approval
 /unwatch <address|label> — Stop watching
 /whale <token> <amount> — Every transfer of a token at or above an amount
@@ -59,7 +68,7 @@ This chat:
 On-chain facts, not financial advice.
 Public balances and transfers only.
 Tokens outside Cairn's registry are marked unverified: anyone can deploy a token with any symbol.
-The operator stores this chat's id and type, its settings (watched addresses and labels, whale alerts, floors, mutes, tracked transactions), the tokens seen moving for a watched address, alert delivery records for 7 days, a pasted address or hash for a day (for its button), and the update offset. /export shows all of it; /forget deletes it. For the rate limit, each person's id and command times are kept for one minute. Never message text, names or usernames.`;
+The operator stores this chat's id and type, its settings (watched addresses and labels, whale alerts, feeds and forum topics, floors, mutes, tracked transactions), the tokens seen moving for a watched address, alert delivery records for 7 days, a pasted address or hash for a day (for its button), and the update offset. /export shows all of it; /forget deletes it. For the rate limit, each person's id and command times are kept for one minute. Reverse-name candidates are cached for an hour of chain time and verified before display. Never Telegram message text, names or usernames.`;
 const GROUP_SETUP = `Cairn is in this group. To set it up, as an administrator:
 1. /watch <address> <label> for each wallet the group follows.
 2. /whale <token> <amount> for large transfers of a token.
@@ -79,7 +88,7 @@ export async function answer(command, context) {
   let input, tokenArgument;
   if (command.name === 'balance') {
     const [address = '', token, ...extra] = command.argument.split(/\s+/).filter(Boolean);
-    try { input = normalize(address, 'address'); } catch (error) { return text(error.message); }
+    try { input = context.names ? await context.names.address(address) : normalize(address, 'address'); } catch (error) { return text(error.message); }
     if (extra.length) return text('Usage: /balance <address> [SYMBOL|token address].');
     tokenArgument = token;
   } else if (command.name === 'tx') {
@@ -187,6 +196,27 @@ async function paste(value, context) {
 
 /** Routes a command to its handler and returns its commit, as settings handlers do. */
 export async function respond(command, context) {
+  if (['feed', 'unfeed'].includes(command.name)) {
+    try { return await feedCommand(command, context); }
+    catch (error) {
+      if (!(error instanceof NodeBusy) || context.signal.aborted) throw error;
+      return () => ({ lines: ['node busy: feed settings are unavailable. Please try again shortly.'] });
+    }
+  }
+  if (command.name === 'price') {
+    const { config, prices, tokens, head } = context;
+    const line = s => textLines(s, context.clean);
+    if (!config.contracts.pragma) return () => ({ lines: line('/price is unavailable: no Pragma contract is configured.') });
+    const chosen = command.argument ? command.argument.split(/\s+/).map(s => tokens.bySymbol(s) ?? { symbol: s })
+      : [...tokens.registry.values()].filter(t => t.pragma_pair);
+    const lines = [];
+    for (const token of chosen) {
+      const p = head ? await prices.get(token, head.timestamp) : null;
+      lines.push(...line(p ? `${token.symbol}: $${decimal(p.price, p.decimals)} · ${p.age} seconds old · ${p.sources} sources${p.fresh ? '' : ' · stale'}`
+        : `${token.symbol}: no price / unavailable`));
+    }
+    return () => ({ lines: lines.length ? lines : line('No oracle pairs are configured.') });
+  }
   if (command.name === 'paste') return paste(command.argument, context);
   if (SETTINGS.has(command.name)) return setting(command, context);
   const lines = await answer(command, context);
