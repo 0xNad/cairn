@@ -224,8 +224,8 @@ For a transaction containing an AVNU Swap involving the feed token, Cairn nets t
 Ekubo. Otherwise it nets Ekubo Swapped deltas, reversing the pool signs to the trader’s perspective.
 Positive token net is a buy, negative a sell, and zero is silent. Intermediate route flows cancel; the
 remaining counter-token nets supply the Paid line (absolute amounts, joined if there is more than one).
-The size row has one to ten dots: one extra dot per $100 when a fresh price exists, otherwise per token
-minimum, or per whole token when the minimum is zero.
+The size row scales logarithmically with fresh USD (1 dot at $10, 3 at $100, 5 at $1k, 7 at $10k, 9 at
+$100k, capped at 10), or adds one dot per doubling above the token minimum; without either, it shows one dot.
 
 The trader is the largest net gainer of the feed token on a buy, or largest net loser on a sell, computed
 from that transaction’s modern or legacy Transfer events. Ties use the earliest event index. The fee
@@ -236,7 +236,9 @@ adds “new holder”; failed historical calls never add it.
 `/price [SYMBOL…]` reads Pragma independently for each pair, reporting the exact price, source count and
 age measured against the chain head. `CAIRN_PRICE_MAX_AGE` defaults to 900 seconds; equality is fresh.
 Oracle samples are shared within a pass. Feed, watch and whale USD values require fresh verified prices,
-round half up to cents and show `<$0.01` below a cent. Unknown pairs cannot hide other pairs.
+round half up to two decimal places and show `<$0.01` below a cent. An oracle zero price and timestamp
+means “no price”; read failures, unknown symbols and missing pairs report “unavailable” with a reason,
+without hiding other pairs.
 
 One lowercase label of letters, digits or hyphens followed by `.stark` works wherever a contract or wallet
 address is accepted. Subdomain inputs, uppercase, underscores, unknown names and labels that overflow a
@@ -246,7 +248,7 @@ them again before display. Labels set by `/watch` take precedence over reverse n
 
 Feed, watch and whale subscriptions retain their setup command’s forum topic. Per group per pass, at most
 three non-reply messages are sent across the shared ledger: if more than three are due, two detailed
-messages and “...and N more trades/alerts” cover them all. Summarized entries are marked sent with the
+messages and “...and N more: X trades, Y alerts” cover them all. Summarized entries are marked sent with the
 summary’s message id and never replayed. The summary uses the first summarized alert’s topic. Command
 replies are exempt; private chats are unbudgeted.
 

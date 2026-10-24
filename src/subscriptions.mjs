@@ -8,6 +8,11 @@ const CHAT_TABLES = ['feeds', 'watches', 'seen', 'whales', 'minimums', 'muted', 
 
 const same = (a, b) => String(a ?? '').toLowerCase() === String(b ?? '').toLowerCase();
 
+/** A missing topic preserves the watch's destination; a supplied topic moves it. */
+export function rewatch(watch, label, topic) {
+  return { ...watch, label: label || watch.label, topic: topic ?? watch.topic };
+}
+
 export class Subscriptions {
   constructor(store, config) {
     this.store = store;
@@ -44,10 +49,10 @@ export class Subscriptions {
     const all = this.watches(chat.id);
     const existing = all.find((w) => w.address === address);
     if (existing) {
-      this.#q('UPDATE watches SET topic = ? WHERE id = ?').run(topic, existing.id);
-      if (!label || label === existing.label) return { status: 'exists', watch: existing };
-      this.#q('UPDATE watches SET label = ? WHERE id = ?').run(label, existing.id);
-      return { status: 'exists', watch: { ...existing, label }, relabelled: true };
+      const updated = rewatch(existing, label, topic), relabelled = updated.label !== existing.label;
+      if (relabelled || updated.topic !== existing.topic) this.#q('UPDATE watches SET label = ?, topic = ? WHERE id = ?')
+        .run(updated.label, updated.topic, existing.id);
+      return { status: 'exists', watch: updated, ...(relabelled ? { relabelled: true } : {}) };
     }
     if (all.length >= this.maxWatches) return { status: 'cap' };
     this.chat(chat);

@@ -30,6 +30,7 @@ export function decodeLabel(value) {
 export class Names {
   constructor(config, store, rpc) { this.contract = config.contracts?.naming; this.store = store; this.rpc = rpc; this.reset(); }
   reset() { this.verified = new Map(); }
+  prune(now) { this.store.sql('DELETE FROM names WHERE checked_at <= ?').run(now - NAME_TTL); }
   call(selector, calldata) {
     return this.rpc.call('starknet_call', { request: { contract_address: this.contract, entry_point_selector: selector, calldata }, block_id: 'latest' });
   }

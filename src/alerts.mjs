@@ -81,7 +81,7 @@ export async function findAlerts(events, { interests, tokens, rpc, now, fmt, pri
   for (const g of groups.values()) {
     const labels = new Map(interests.labels.get(g.chatId) ?? []);
     for (const item of g.items) {
-      item.usd = prices ? await prices.usd(item.token, item.ev.amount, now) : '';
+      item.usd = item.ev.kind === 'Transfer' && prices ? await prices.usd(item.token, item.ev.amount, now) : '';
       if (names) for (const address of [item.ev.a, item.ev.b]) {
         if (address === ZERO || labels.get(address)) continue;
         const name = await names.reverse(address, now);
@@ -134,7 +134,7 @@ function render(group, time, labels, fmt) {
     ? fmt.contract(address, labels.get(address) ? escapeHtml(labels.get(address)) : short(address))
     : fmt.contract(address);
   const items = routes(group.items);
-  const lines = items.slice(0, MAX_ITEMS).map((item) => line(item, name, fmt));
+  const lines = items.slice(0, MAX_ITEMS).map((item) => alertLine(item, name, fmt));
   if (items.length > MAX_ITEMS) lines.push(`… and ${items.length - MAX_ITEMS} more in this transaction.`);
   lines.push(`Block ${group.block} · ${utc(time)} · ${fmt.tx(group.tx, 'View transaction')}`);
   return lines.join('\n');
@@ -157,8 +157,8 @@ function routes(items) {
   return out;
 }
 
-function line({ ev, token, role, to: end = ev.b, hops = 1, usd = '' }, name, fmt) {
-  const symbol = `${fmt.token(token)}${usd ? ` ≈ ${escapeHtml(usd)}` : ''}`, value = decimal(ev.amount, token.decimals);
+export function alertLine({ ev, token, role, to: end = ev.b, hops = 1, usd = '' }, name, fmt) {
+  const symbol = `${fmt.token(token)}${ev.kind === 'Transfer' && usd ? ` ≈ ${escapeHtml(usd)}` : ''}`, value = decimal(ev.amount, token.decimals);
   if (ev.kind === 'Approval') {
     if (ev.amount === 0n) return `🔑 <b>Approval</b> revoked: ${name(ev.a)} no longer lets spender ${name(ev.b)} spend ${symbol}`;
     return `🔑 <b>Approval</b>: ${name(ev.a)} lets spender ${name(ev.b)} spend ${ev.amount >= UNLIMITED ? 'unlimited' : value} ${symbol}`;

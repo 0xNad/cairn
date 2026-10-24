@@ -47,6 +47,18 @@ export async function feedCommand(command, ctx) {
   };
 }
 
+/** Logarithmic size dots from rational USD, or from doublings of the token minimum. */
+export function sizeDots(amount, minimum = 0n, usd = null) {
+  let dots = 1;
+  if (usd) {
+    const squared = usd.numerator * usd.numerator;
+    for (let threshold = 1000n * usd.denominator * usd.denominator; dots < 10 && squared >= threshold; threshold *= 10n) dots++;
+  } else if (minimum > 0n) {
+    for (let threshold = minimum * 2n; dots < 10 && amount >= threshold; threshold *= 2n) dots++;
+  }
+  return dots;
+}
+
 /** Turns venue trades and the range's existing token events into deliveries for the shared ledger. */
 export async function findTrades(swaps, transfers, ctx) {
   const { subs, tokens, rpc, now, fmt, config, prices, names } = ctx;
@@ -62,37 +74,48 @@ export async function findTrades(swaps, transfers, ctx) {
   }
   for (const [tx, events] of byTx) {
     const block = events[0].block;
+    // These caches live for one transaction: enrichment is per token, trader facts also include the side.
+    const trades = new Map(), details = new Map(), traders = new Map();
     for (const feed of feeds) {
       if (block <= feed.since_block) continue;
-      const trade = netTrade(events, feed.token), amount = trade.net < 0n ? -trade.net : trade.net;
-      if (!amount || (trade.net < 0n && feed.side !== 'all')) continue;
-      const token = await tokens.get(feed.token, now);
-      if (!token) continue;
-      const sample = await prices.get(token, now);
+      if (!trades.has(feed.token)) {
+        const trade = netTrade(events, feed.token), amount = trade.net < 0n ? -trade.net : trade.net;
+        const token = amount ? await tokens.get(feed.token, now) : null;
+        const sample = token ? await prices.get(token, now) : null;
+        trades.set(feed.token, { trade, amount, token, sample });
+      }
+      const { trade, amount, token, sample } = trades.get(feed.token);
+      if (!amount || !token || (trade.net < 0n && feed.side !== 'all')) continue;
       if (feed.usd) {
         if (!sample?.fresh || amount * sample.price * 10n ** 18n < BigInt(feed.minimum) * 10n ** BigInt(token.decimals + sample.decimals)) continue;
       } else if (amount < BigInt(feed.minimum)) continue;
       if (!headers.has(block)) headers.set(block, await header(rpc, block));
-      const h = headers.get(block), clean = [];
-      for (const ev of transfersByTx.get(tx) ?? []) if (ev.token === feed.token && !(await isFee(ev, h, tokens.strk, rpc, facts))) clean.push(ev);
-      const trader = selectTrader(clean, feed.token, trade.net, [config.contracts.ekubo_core, config.contracts.avnu_exchange].filter(Boolean));
-      let freshHolder = false, name;
-      if (trader) {
-        try { freshHolder = await balanceOf(rpc, feed.token, trader, { block_number: block - 1 }) === 0n; } catch { /* no flag without proof */ }
-        name = await names.reverse(trader, now);
+      const h = headers.get(block);
+      if (!details.has(feed.token)) {
+        const clean = [], paid = [];
+        for (const ev of transfersByTx.get(tx) ?? []) if (ev.token === feed.token && !(await isFee(ev, h, tokens.strk, rpc, facts))) clean.push(ev);
+        for (const [address, delta] of trade.deltas) {
+          if (address === feed.token || delta === 0n) continue;
+          const counter = await tokens.get(address, now);
+          if (counter) paid.push(`${decimal(delta < 0n ? -delta : delta, counter.decimals)} ${fmt.token(counter)}`);
+        }
+        details.set(feed.token, { clean, paid: paid.join(' + ') || 'unavailable', usd: await prices.usd(token, amount, now) });
       }
-      const usd = await prices.usd(token, amount, now);
-      const size = usd ? amount * sample.price / 10n ** BigInt(token.decimals + sample.decimals) / 100n
-        : amount / (BigInt(feed.minimum) > 0n && !feed.usd ? BigInt(feed.minimum) : 10n ** BigInt(token.decimals));
-      const marks = '●'.repeat(Number(size > 9n ? 10n : size + 1n));
-      const lines = [`${trade.net > 0n ? '🟢 Buy' : '🔴 Sell'} <b>${decimal(amount, token.decimals)} ${fmt.token(token)}</b>${usd ? ` ≈ ${escapeHtml(usd)}` : ''}`, marks];
-      const paid = [];
-      for (const [address, delta] of trade.deltas) {
-        if (address === feed.token || delta === 0n) continue;
-        const counter = await tokens.get(address, now);
-        if (counter) paid.push(`${decimal(delta < 0n ? -delta : delta, counter.decimals)} ${fmt.token(counter)}`);
+      const { clean, paid, usd } = details.get(feed.token), traderKey = `${feed.token} ${trade.net > 0n ? 'buy' : 'sell'}`;
+      if (!traders.has(traderKey)) {
+        const trader = selectTrader(clean, feed.token, trade.net, [config.contracts.ekubo_core, config.contracts.avnu_exchange].filter(Boolean));
+        let freshHolder = false, name;
+        if (trader) {
+          try { freshHolder = await balanceOf(rpc, feed.token, trader, { block_number: block - 1 }) === 0n; } catch { /* no flag without proof */ }
+          name = await names.reverse(trader, now);
+        }
+        traders.set(traderKey, { trader, freshHolder, name });
       }
-      lines.push(`Paid: ${paid.join(' + ') || 'unavailable'}`);
+      const { trader, freshHolder, name } = traders.get(traderKey);
+      const dots = sizeDots(amount, feed.usd ? 0n : BigInt(feed.minimum), sample?.fresh
+        ? { numerator: amount * sample.price, denominator: 10n ** BigInt(token.decimals + sample.decimals) } : null);
+      const lines = [`${trade.net > 0n ? '🟢 Buy' : '🔴 Sell'} <b>${decimal(amount, token.decimals)} ${fmt.token(token)}</b>${usd ? ` ≈ ${escapeHtml(usd)}` : ''}`, '●'.repeat(dots)];
+      lines.push(`Paid: ${paid}`);
       if (trader) lines.push(`Trader: ${fmt.contract(trader, name ? escapeHtml(name) : undefined)}${freshHolder ? ' · new holder' : ''}`);
       lines.push(`${trade.venue} · ${utc(h.timestamp)} · ${fmt.tx(tx, 'tx')}`);
       // A reserved index separates the per-transaction feed from token-event alerts and track stages.

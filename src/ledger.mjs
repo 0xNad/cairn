@@ -17,7 +17,7 @@ export class Ledger {
   }
   /** Pending alerts of chats that are not paused, in the order they were found (chain order). */
   pending(limit = Number.MAX_SAFE_INTEGER) {
-    return this.#q(`SELECT d.seq, d.chat_id, d.body, d.topic, c.type AS chat_type FROM deliveries d LEFT JOIN chats c ON c.chat_id = d.chat_id
+    return this.#q(`SELECT d.seq, d.chat_id, d.body, d.topic, d.kind, c.type AS chat_type FROM deliveries d LEFT JOIN chats c ON c.chat_id = d.chat_id
       WHERE d.state = 'pending' AND coalesce(c.paused, 0) = 0 ORDER BY d.seq LIMIT ?`).all(limit);
   }
   sent(seq, messageId) { this.#q("UPDATE deliveries SET state = 'sent', message_id = ?, body = NULL WHERE seq = ?").run(messageId, seq); }

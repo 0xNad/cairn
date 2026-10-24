@@ -1,3 +1,4 @@
+import { priceLine, unavailable } from './prices.mjs';
 import { feedCommand } from './feed.mjs';
 import { NodeBusy, RpcError } from './errors.mjs';
 import { normalize, unsigned } from './felt.mjs';
@@ -211,9 +212,8 @@ export async function respond(command, context) {
       : [...tokens.registry.values()].filter(t => t.pragma_pair);
     const lines = [];
     for (const token of chosen) {
-      const p = head ? await prices.get(token, head.timestamp) : null;
-      lines.push(...line(p ? `${token.symbol}: $${decimal(p.price, p.decimals)} · ${p.age} seconds old · ${p.sources} sources${p.fresh ? '' : ' · stale'}`
-        : `${token.symbol}: no price / unavailable`));
+      const p = head ? await prices.get(token, head.timestamp) : unavailable('node busy');
+      lines.push(...line(priceLine(token, p)));
     }
     return () => ({ lines: lines.length ? lines : line('No oracle pairs are configured.') });
   }

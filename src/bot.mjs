@@ -27,6 +27,13 @@ const SLOW_DOWN = 'Slow down: Cairn answers at most 10 commands a minute from on
 /** Chain failures that leave the work for the next pass. */
 const retriable = (error) => error instanceof NodeBusy || error instanceof RpcError || error instanceof NodeValueError;
 
+/** Count the messages represented by a budget summary, retaining the full remainder total. */
+export function deliverySummary(rows) {
+  const trades = rows.filter(r => r.kind === 'feed').length, alerts = rows.filter(r => r.kind === 'alert').length;
+  const counts = [[trades, 'trade'], [alerts, 'alert'], [rows.length - trades - alerts, 'update']];
+  return `…and ${rows.length} more: ${counts.filter(([n]) => n).map(([n, kind]) => `${n} ${kind}${n === 1 ? '' : 's'}`).join(', ')}.`;
+}
+
 async function handshake(rpc, config, clean) {
   const chain = decodeChain(await rpc.call('starknet_chainId'));
   if (chain !== config.chain) throw new CairnError(`Node reports ${clean(chain)}; expected ${config.chain}.`, 2);
@@ -300,7 +307,7 @@ export class Bot {
     await this.scan();
     await this.trackPass();
     const now = this.head.timestamp;
-    this.store.transaction(() => { this.ledger.prune(now); this.subs.prune(now); this.tokens.prune(now); this.rate.prune(now); });
+    this.store.transaction(() => { this.ledger.prune(now); this.subs.prune(now); this.tokens.prune(now); this.names.prune(now); this.rate.prune(now); });
   }
   /** The next range: alerts found in it are saved as pending in the transaction that moves the cursor. */
   async scan() {
@@ -378,7 +385,7 @@ export class Bot {
       const rows = due.get(row.chat_id);
       const group = chatId < 0 || ['group', 'supergroup'].includes(row.chat_type);
       const remainder = group && rows.length > 3 && count === 2 ? rows.filter(item => !summarized.has(item.seq)) : [row];
-      const text = remainder.length > 1 ? `…and ${remainder.length} more trades/alerts.` : row.body;
+      const text = remainder.length > 1 ? deliverySummary(remainder) : row.body;
       const r = await this.send(chatId, text, {
         ...(row.topic === null ? {} : { message_thread_id: row.topic }),
         ...(count >= LOUD_ALERTS ? { disable_notification: true } : {}),

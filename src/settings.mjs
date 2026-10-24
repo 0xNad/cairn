@@ -277,7 +277,8 @@ export async function callback(query, ctx) {
       if (m[1] === 'ot') return trackCommit(ctx, chat, offer.value, asReply);
       const since = ctx.head.block_number;
       return () => {
-        const r = ctx.subs.watch(chat, offer.value, null, since);
+        const topic = query.message?.message_thread_id;
+        const r = ctx.subs.watch(chat, offer.value, null, since, Number.isSafeInteger(topic) ? topic : null);
         if (r.status === 'cap') return asReply(`This chat already watches ${ctx.config.maxWatches} addresses, the most it can.`)();
         if (r.status === 'exists') return asReply(`Already watching ${watchName(ctx, r.watch)}.`)();
         return asReply(`👁 Watching ${watchName(ctx, r.watch)} from block ${since + 1}. Add a label with /watch ${r.watch.address} &lt;label&gt;; /list manages it.`)();
