@@ -8,6 +8,11 @@ export function decimal(value, decimals) {
   return `${whole}${fraction ? `.${fraction}` : ''}`;
 }
 export const amount = (value, decimals, symbol) => `${decimal(value, decimals)} ${symbol}`;
+/** US dollars from cents (round 3): $1,234.57, or <$0.01 for a value above zero that rounds to no cent. */
+export function dollars(cents, aboveZero = cents > 0n) {
+  if (cents === 0n && aboveZero) return '<$0.01';
+  return `$${decimal(cents / 100n, 0)}.${(cents % 100n).toString().padStart(2, '0')}`;
+}
 /**
  * Base units from a decimal a person typed ("1000000", "2.000001", "1,000.5"), or a reason. No sign, no
  * exponent, no more fraction digits than the token has, and below 2^256.

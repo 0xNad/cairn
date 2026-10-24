@@ -1,10 +1,14 @@
 // What each chat asked Cairn to follow, in CAIRN_DATA. Every function is synchronous and runs inside the
-// caller's transaction, so that a change and the update that asked for it are saved together.
+// caller's transaction, so that a change and the update that asked for it are saved together. From round 3,
+// a feed, watch, whale or track keeps the forum topic it was set up in (thread_id), and posts there.
 
 export const LIMITS = Object.freeze({ whales: 5, tracks: 10, minimums: 20, muted: 100, label: 32 });
 const OFFER_TTL = 24 * 3600; // seconds of chain time a Watch or Track button keeps working
 /** Every table holding a chat's data, children before the chat itself: /forget and migrations walk it. */
-const CHAT_TABLES = ['watches', 'seen', 'whales', 'minimums', 'muted', 'tracks', 'offers', 'deliveries', 'chats'];
+const CHAT_TABLES = ['watches', 'seen', 'whales', 'minimums', 'muted', 'tracks', 'offers', 'feeds', 'deliveries', 'chats'];
+const FEED_COLUMNS = 'id, chat_id, token, symbol, min, min_units, min_usd, mode, since_block, thread_id';
+/** A topic for export: only chats with forum topics show one. */
+const topic = (row) => (row.thread_id === null || row.thread_id === undefined ? {} : { thread_id: row.thread_id });
 
 const same = (a, b) => String(a ?? '').toLowerCase() === String(b ?? '').toLowerCase();
 
@@ -27,21 +31,25 @@ export class Subscriptions {
 
   // ---- watches -------------------------------------------------------------------------------------
 
-  watches(chatId) { return this.#q('SELECT id, chat_id, address, label, since_block FROM watches WHERE chat_id = ? ORDER BY id').all(chatId); }
-  watchById(id) { return this.#q('SELECT id, chat_id, address, label, since_block FROM watches WHERE id = ?').get(id) ?? null; }
-  /** Adds a watch, or relabels an existing one: { status: added|exists|cap, watch, relabelled }. */
-  watch(chat, address, label, sinceBlock) {
+  watches(chatId) { return this.#q('SELECT id, chat_id, address, label, since_block, thread_id FROM watches WHERE chat_id = ? ORDER BY id').all(chatId); }
+  watchById(id) { return this.#q('SELECT id, chat_id, address, label, since_block, thread_id FROM watches WHERE id = ?').get(id) ?? null; }
+  /**
+   * Adds a watch, or relabels an existing one; asked again from another forum topic, its alerts move there.
+   * Returns { status: added|exists|cap, watch, relabelled, moved }.
+   */
+  watch(chat, address, label, sinceBlock, thread = null) {
     const all = this.watches(chat.id);
     const existing = all.find((w) => w.address === address);
     if (existing) {
-      if (!label || label === existing.label) return { status: 'exists', watch: existing };
-      this.#q('UPDATE watches SET label = ? WHERE id = ?').run(label, existing.id);
-      return { status: 'exists', watch: { ...existing, label }, relabelled: true };
+      const relabelled = Boolean(label) && label !== existing.label, moved = existing.thread_id !== thread;
+      if (relabelled) this.#q('UPDATE watches SET label = ? WHERE id = ?').run(label, existing.id);
+      if (moved) this.#q('UPDATE watches SET thread_id = ? WHERE id = ?').run(thread, existing.id);
+      return { status: 'exists', watch: { ...existing, label: relabelled ? label : existing.label, thread_id: thread }, relabelled, moved };
     }
     if (all.length >= this.maxWatches) return { status: 'cap' };
     this.chat(chat);
-    const { lastInsertRowid } = this.#q('INSERT INTO watches (chat_id, address, label, since_block) VALUES (?, ?, ?, ?)')
-      .run(chat.id, address, label || null, sinceBlock);
+    const { lastInsertRowid } = this.#q('INSERT INTO watches (chat_id, address, label, since_block, thread_id) VALUES (?, ?, ?, ?, ?)')
+      .run(chat.id, address, label || null, sinceBlock, thread);
     return { status: 'added', watch: this.watchById(Number(lastInsertRowid)) };
   }
   /**
@@ -62,20 +70,20 @@ export class Subscriptions {
 
   // ---- whales, floors and mutes ----------------------------------------------------------------------
 
-  whales(chatId) { return this.#q('SELECT id, chat_id, token, symbol, min, units, since_block FROM whales WHERE chat_id = ? ORDER BY id').all(chatId); }
-  whaleById(id) { return this.#q('SELECT id, chat_id, token, symbol, min, units, since_block FROM whales WHERE id = ?').get(id) ?? null; }
-  /** Sets the chat's threshold on a token, in place when it has one: added|updated|cap. */
-  whale(chat, token, symbol, min, units, sinceBlock) {
+  whales(chatId) { return this.#q('SELECT id, chat_id, token, symbol, min, units, since_block, thread_id FROM whales WHERE chat_id = ? ORDER BY id').all(chatId); }
+  whaleById(id) { return this.#q('SELECT id, chat_id, token, symbol, min, units, since_block, thread_id FROM whales WHERE id = ?').get(id) ?? null; }
+  /** Sets the chat's threshold on a token, in place (and in the asking topic) when it has one: added|updated|cap. */
+  whale(chat, token, symbol, min, units, sinceBlock, thread = null) {
     const all = this.whales(chat.id);
     const existing = all.find((w) => w.token === token);
     if (existing) {
-      this.#q('UPDATE whales SET symbol = ?, min = ?, units = ? WHERE id = ?').run(symbol, min, String(units), existing.id);
+      this.#q('UPDATE whales SET symbol = ?, min = ?, units = ?, thread_id = ? WHERE id = ?').run(symbol, min, String(units), thread, existing.id);
       return 'updated';
     }
     if (all.length >= LIMITS.whales) return 'cap';
     this.chat(chat);
-    this.#q('INSERT INTO whales (chat_id, token, symbol, min, units, since_block) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(chat.id, token, symbol, min, String(units), sinceBlock);
+    this.#q('INSERT INTO whales (chat_id, token, symbol, min, units, since_block, thread_id) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(chat.id, token, symbol, min, String(units), sinceBlock, thread);
     return 'added';
   }
   unwhale(chatId, { token, id }) {
@@ -111,15 +119,15 @@ export class Subscriptions {
 
   // ---- tracks and buttons ------------------------------------------------------------------------------
 
-  tracks(chatId) { return this.#q('SELECT id, chat_id, hash, since_block, since_time, stage FROM tracks WHERE chat_id = ? ORDER BY id').all(chatId); }
-  allTracks() { return this.#q('SELECT id, chat_id, hash, since_block, since_time, stage FROM tracks ORDER BY id').all(); }
-  trackById(id) { return this.#q('SELECT id, chat_id, hash, since_block, since_time, stage FROM tracks WHERE id = ?').get(id) ?? null; }
-  track(chat, hash, sinceBlock, sinceTime) {
+  tracks(chatId) { return this.#q('SELECT id, chat_id, hash, since_block, since_time, stage, thread_id FROM tracks WHERE chat_id = ? ORDER BY id').all(chatId); }
+  allTracks() { return this.#q('SELECT id, chat_id, hash, since_block, since_time, stage, thread_id FROM tracks ORDER BY id').all(); }
+  trackById(id) { return this.#q('SELECT id, chat_id, hash, since_block, since_time, stage, thread_id FROM tracks WHERE id = ?').get(id) ?? null; }
+  track(chat, hash, sinceBlock, sinceTime, thread = null) {
     const all = this.tracks(chat.id);
     if (all.some((t) => t.hash === hash)) return 'exists';
     if (all.length >= LIMITS.tracks) return 'cap';
     this.chat(chat);
-    this.#q('INSERT INTO tracks (chat_id, hash, since_block, since_time) VALUES (?, ?, ?, ?)').run(chat.id, hash, sinceBlock, sinceTime);
+    this.#q('INSERT INTO tracks (chat_id, hash, since_block, since_time, thread_id) VALUES (?, ?, ?, ?, ?)').run(chat.id, hash, sinceBlock, sinceTime, thread);
     return 'added';
   }
   untrack(chatId, { hash, id }) {
@@ -139,23 +147,56 @@ export class Subscriptions {
     return offer && now - offer.chain_time < OFFER_TTL ? offer : null;
   }
 
+  // ---- the trade feed (round 3) --------------------------------------------------------------------------
+
+  feedOf(chatId) { return this.#q(`SELECT ${FEED_COLUMNS} FROM feeds WHERE chat_id = ?`).get(chatId) ?? null; }
+  feedById(id) { return this.#q(`SELECT ${FEED_COLUMNS} FROM feeds WHERE id = ?`).get(id) ?? null; }
+  /**
+   * Sets the chat's one feed: { status: added|updated|replaced, previous }. A feed on another token replaces the
+   * old one and covers the blocks after `sinceBlock`; on the same token its floor, side and topic change in place.
+   * `min` is the floor as typed (a token amount or $ and cents), `minUnits` or `minUsd` (cents) the value compared.
+   */
+  feed(chat, { token, symbol, min = null, minUnits = null, minUsd = null, mode }, sinceBlock, thread = null) {
+    const previous = this.feedOf(chat.id);
+    const values = [symbol, min, minUnits === null ? null : String(minUnits), minUsd === null ? null : String(minUsd), mode, thread];
+    this.chat(chat);
+    if (previous?.token === token) {
+      this.#q('UPDATE feeds SET symbol = ?, min = ?, min_units = ?, min_usd = ?, mode = ?, thread_id = ? WHERE id = ?').run(...values, previous.id);
+      return { status: 'updated', previous };
+    }
+    if (previous) this.#q('DELETE FROM feeds WHERE id = ?').run(previous.id);
+    this.#q('INSERT INTO feeds (chat_id, token, symbol, min, min_units, min_usd, mode, thread_id, since_block) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(chat.id, token, ...values, sinceBlock);
+    return { status: previous ? 'replaced' : 'added', previous };
+  }
+  /** Stops the chat's feed (or the one with `id`, when it is this chat's); returns it, or null. */
+  unfeed(chatId, { id } = {}) {
+    const feed = this.feedOf(chatId);
+    if (!feed || (id !== undefined && feed.id !== id)) return null;
+    this.#q('DELETE FROM feeds WHERE id = ?').run(feed.id);
+    return feed;
+  }
+
   // ---- the whole chat ------------------------------------------------------------------------------------
 
   /**
-   * Everything stored for the chat, as /export shows it: the brief's six keys, then what else CAIRN_DATA
-   * holds for it (its type and pause state, the values behind its buttons, and its delivery records, counted).
+   * Everything stored for the chat, as /export shows it: the brief's six keys, round 3's feed, then what else
+   * CAIRN_DATA holds for it (its type and pause state, the values behind its buttons, and its delivery records,
+   * counted). A subscription set up in a forum topic shows its thread_id.
    */
   export(chatId) {
     const chat = this.#q('SELECT type, paused FROM chats WHERE chat_id = ?').get(chatId);
-    const deliveries = { pending: 0, sent: 0, dropped: 0 };
+    const deliveries = { pending: 0, sent: 0, summarized: 0, dropped: 0 };
     for (const r of this.#q('SELECT state, count(*) AS n FROM deliveries WHERE chat_id = ? GROUP BY state').all(chatId)) deliveries[r.state] = r.n;
+    const feed = this.feedOf(chatId);
     return {
       chat_id: chatId,
-      watches: this.watches(chatId).map((w) => ({ address: w.address, label: w.label, since_block: w.since_block, seen: this.seen(chatId, w.address) })),
-      whales: this.whales(chatId).map((w) => ({ token: w.token, symbol: w.symbol, min: w.min })),
+      watches: this.watches(chatId).map((w) => ({ address: w.address, label: w.label, since_block: w.since_block, seen: this.seen(chatId, w.address), ...topic(w) })),
+      whales: this.whales(chatId).map((w) => ({ token: w.token, symbol: w.symbol, min: w.min, ...topic(w) })),
       minimums: Object.fromEntries(this.minimums(chatId).map((m) => [m.token, m.amount])),
-      tracks: this.tracks(chatId).map((t) => ({ hash: t.hash, since_block: t.since_block })),
+      tracks: this.tracks(chatId).map((t) => ({ hash: t.hash, since_block: t.since_block, ...topic(t) })),
       muted: this.muted(chatId),
+      feed: feed && { token: feed.token, symbol: feed.symbol, min: feed.min, side: feed.mode, since_block: feed.since_block, ...topic(feed) },
       chat: chat ? { type: chat.type, paused: chat.paused === 1 } : null,
       buttons: this.#q('SELECT kind, value, chain_time FROM offers WHERE chat_id = ? ORDER BY id').all(chatId)
         .map((o) => ({ kind: o.kind, value: o.value, chain_time: o.chain_time })),
@@ -180,22 +221,25 @@ export class Subscriptions {
       this.#q(`DELETE FROM ${table} WHERE chat_id = ?`).run(from);
     }
   }
-  /** Every subscription, indexed for the scanner. */
+  /** Every subscription, indexed for the scanner: wallet alerts (round 2) and trade feeds (round 3). */
   interests() {
-    const watchers = new Map(), whales = new Map(), muted = new Set(), floors = new Map(), labels = new Map();
-    for (const w of this.#q('SELECT chat_id, address, label, since_block FROM watches').all()) {
-      if (!watchers.has(w.address)) watchers.set(w.address, []);
-      watchers.get(w.address).push({ chatId: w.chat_id, since: w.since_block });
+    const watchers = new Map(), whales = new Map(), muted = new Set(), floors = new Map(), labels = new Map(), feeds = new Map();
+    const add = (map, key, value) => (map.get(key) ?? map.set(key, []).get(key)).push(value);
+    for (const w of this.#q('SELECT chat_id, address, label, since_block, thread_id FROM watches').all()) {
+      add(watchers, w.address, { chatId: w.chat_id, since: w.since_block, thread: w.thread_id });
       if (!labels.has(w.chat_id)) labels.set(w.chat_id, new Map());
       labels.get(w.chat_id).set(w.address, w.label);
     }
-    for (const w of this.#q('SELECT chat_id, token, units, since_block FROM whales').all()) {
-      if (!whales.has(w.token)) whales.set(w.token, []);
-      whales.get(w.token).push({ chatId: w.chat_id, units: BigInt(w.units), since: w.since_block });
+    for (const w of this.#q('SELECT chat_id, token, units, since_block, thread_id FROM whales').all()) {
+      add(whales, w.token, { chatId: w.chat_id, units: BigInt(w.units), since: w.since_block, thread: w.thread_id });
     }
     for (const m of this.#q('SELECT chat_id, token FROM muted').all()) muted.add(`${m.chat_id} ${m.token}`);
     for (const m of this.#q('SELECT chat_id, token, units FROM minimums').all()) floors.set(`${m.chat_id} ${m.token}`, BigInt(m.units));
-    return { watchers, whales, muted, floors, labels, empty: watchers.size === 0 && whales.size === 0 };
+    for (const f of this.#q(`SELECT ${FEED_COLUMNS} FROM feeds ORDER BY id`).all()) {
+      add(feeds, f.token, { chatId: f.chat_id, id: f.id, mode: f.mode, since: f.since_block, thread: f.thread_id,
+        minUnits: f.min_units === null ? null : BigInt(f.min_units), minUsd: f.min_usd === null ? null : BigInt(f.min_usd) });
+    }
+    return { watchers, whales, muted, floors, labels, feeds, empty: watchers.size === 0 && whales.size === 0 };
   }
   /** Drops buttons older than a day of chain time. */
   prune(now) { this.#q('DELETE FROM offers WHERE chain_time < ?').run(now - OFFER_TTL); }

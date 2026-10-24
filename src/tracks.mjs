@@ -53,4 +53,5 @@ export async function trackStep(track, { rpc, head, fmt }) {
   return null;
 }
 
-const delivery = (track, eventIndex, head, body) => ({ chatId: track.chat_id, txHash: track.hash, eventIndex, kind: 'track', chainTime: head.timestamp, body });
+const delivery = (track, eventIndex, head, body) => ({ chatId: track.chat_id, txHash: track.hash, eventIndex, kind: 'track',
+  chainTime: head.timestamp, body, thread: track.thread_id ?? null });
