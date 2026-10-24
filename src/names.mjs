@@ -180,7 +180,12 @@ export class Names {
     else {
       if (this.lookups >= MAX_LOOKUPS) return null;
       this.lookups++;
-      labels = parseReverse(await this.#call(SELECTORS.address_to_domain, [address, '0x0']));
+      try { labels = parseReverse(await this.#call(SELECTORS.address_to_domain, [address, '0x0'])); }
+      catch (error) {
+        // The contract's own refusal is an answer, kept as "no name"; a node failure is tried again next pass.
+        if (!(error instanceof RpcError && NO_ANSWER.has(error.code))) throw error;
+        labels = [];
+      }
       if (labels === null) return null; // not an answer Cairn can read: nothing cached, tried again later
       this.#save(address, labels, now);
     }

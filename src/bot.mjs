@@ -16,7 +16,7 @@ import { Tokens } from './tokens.mjs';
 import { trackStep } from './tracks.mjs';
 import { tradeFeed } from './trades.mjs';
 import { Rpc, Telegram, sleep } from './transport.mjs';
-import { venuesOf } from './venues.mjs';
+import { VENUES, venuesOf } from './venues.mjs';
 
 const ALLOWED_UPDATES = ['message', 'callback_query', 'my_chat_member'];
 const ADMINS = new Set(['creator', 'administrator']);
@@ -26,7 +26,7 @@ const NO_WRITE = /not enough rights|have no rights|chat not found/i;
 /** A 400 about the forum topic itself (deleted or closed): the message goes to the chat's main thread instead. */
 const NO_TOPIC = /thread|topic/i;
 /** The network file's contracts as alerts name them, in place of a short address. */
-const CONTRACT_NAMES = { avnu_exchange: 'AVNU exchange', ekubo_core: 'Ekubo Core', pragma: 'Pragma oracle', naming: 'Starknet ID naming' };
+const CONTRACT_NAMES = { pragma: 'Pragma oracle', naming: 'Starknet ID naming', ...Object.fromEntries(VENUES.map((v) => [v.contract, v.label])) };
 /** Ledger rows in chain order: block, then transaction, then event. */
 const chainOrder = (a, b) => a.position[0] - b.position[0] || a.position[1] - b.position[1] || a.position[2] - b.position[2];
 const SLOW_DOWN = 'Slow down: Cairn answers at most 10 commands a minute from one person, and ignores the rest until that minute has passed.';
@@ -348,6 +348,7 @@ class Bot {
     if (!range) return;
     const interests = this.subs.interests();
     const feeds = this.feeds.filter((f) => f.wanted(interests));
+    this.prices.horizon(range.to);
     const context = { interests, tokens: this.tokens, rpc: this.rpc, now: this.head.timestamp, fmt: this.fmt,
       header: blockHeaders(this.rpc), prices: this.prices, names: this.names, known: this.known };
     const found = { deliveries: [], seen: [] };

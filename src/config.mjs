@@ -3,9 +3,10 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CairnError } from './errors.mjs';
 import { normalize } from './felt.mjs';
+import { VENUES } from './venues.mjs';
 
-/** Round 3's optional contracts: each one switches its feature on, and a missing one switches it off. */
-export const CONTRACTS = Object.freeze(['pragma', 'ekubo_core', 'avnu_exchange', 'naming']);
+/** Round 3's optional contracts, each venue's included: each one switches its feature on, a missing one off. */
+export const CONTRACTS = Object.freeze(['pragma', 'naming', ...VENUES.map((v) => v.contract)]);
 const PAIR = /^[A-Z0-9]{1,10}\/[A-Z0-9]{1,10}$/;
 
 function bad(reason) { throw new CairnError(reason, 2); }

@@ -45,10 +45,13 @@ export class Prices {
     this.maxAge = config.priceMaxAge ?? 900;
     this.rpc = rpc;
     this.memo = new Map(); // `${pair} ${block}` → sample, for this pass
+    this.until = null; // the last block of the range this pass scans
   }
   get enabled() { return this.contract !== null; }
   /** Starts a new pass: prices are read again. */
-  reset() { this.memo.clear(); }
+  reset() { this.memo.clear(); this.until = null; }
+  /** The pass scans up to block `number`: one read of each pair there serves the earlier blocks it does not postdate. */
+  horizon(number) { this.until = number; }
   /**
    * Pragma's median for `pair` at block `number`: a sample, { missing: true }, or { error } when the contract
    * refuses or answers another shape. Throws NodeBusy when the node fails, so that the caller retries.
@@ -70,10 +73,15 @@ export class Prices {
     }
     return parseMedian(result) ?? { error: 'an answer Cairn cannot read' };
   }
-  /** The fresh USD sample of a verified token as of `block` ({ number, timestamp }), or null. */
+  /**
+   * The fresh USD sample of a verified token as of `block` ({ number, timestamp }), or null. Pragma moves only
+   * when a publisher updates the pair, every few minutes, so the pass reads each pair once, at the end of its
+   * range, and reads the trade's own block only when that sample was updated after it.
+   */
   async usd(token, block) {
     if (!this.enabled || !token?.verified || !usdPair(token.pragma_pair)) return null;
-    const sample = await this.sample(token.pragma_pair, block.number);
+    let sample = this.until !== null && this.until > block.number ? await this.sample(token.pragma_pair, this.until) : null;
+    if (!sample || (sample.price !== undefined && sample.timestamp > block.timestamp)) sample = await this.sample(token.pragma_pair, block.number);
     return sample.price !== undefined && ageOf(sample, block.timestamp) <= this.maxAge ? sample : null;
   }
 }

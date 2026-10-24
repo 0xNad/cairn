@@ -10,8 +10,8 @@ import { FIELD, hex64, i129, normalize, SELECTORS, u256, unsigned } from './felt
  * scanner then reads one more filter on the same ranges, and the netting and trader rules apply unchanged.
  */
 export const VENUES = Object.freeze([
-  { key: 'avnu', name: 'AVNU', contract: 'avnu_exchange', selector: SELECTORS.Swap, aggregator: true, legs: avnuLegs },
-  { key: 'ekubo', name: 'Ekubo', contract: 'ekubo_core', selector: SELECTORS.Swapped, aggregator: false, legs: ekuboLegs },
+  { key: 'avnu', name: 'AVNU', label: 'AVNU exchange', contract: 'avnu_exchange', selector: SELECTORS.Swap, aggregator: true, legs: avnuLegs },
+  { key: 'ekubo', name: 'Ekubo', label: 'Ekubo Core', contract: 'ekubo_core', selector: SELECTORS.Swapped, aggregator: false, legs: ekuboLegs },
 ]);
 
 /**

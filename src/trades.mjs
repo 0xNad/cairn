@@ -201,16 +201,18 @@ export function sizeBar(side, cents, amount, floor) {
   return `${(side === 'buy' ? '🟢' : '🔴').repeat(dots)}${cents !== null && cents >= WHALE ? ' 🐋' : ''}`;
 }
 
-/** A chat's post: the size and side, the exact amount, the value and what was paid, the trader, then where and when. */
+/**
+ * A chat's post, four short lines that read at a glance on a phone: the size bar, the side and the USD value;
+ * the exact amount and what was paid (or got) for it; the trader; the venue, the block time and the link.
+ */
 function render(post, feed, fmt) {
   const { token, side, amount, others, value, trader, name, newHolder, block } = post;
   const cents = value ? centsOf(value) : null;
-  const verb = side === 'buy' ? 'Buy' : 'Sell', exact = decimal(amount, token.decimals);
-  const what = token.verified ? `<b>${verb} ${exact} ${escapeHtml(token.symbol)}</b>` : `<b>${verb} ${exact}</b> ${fmt.token(token)}`;
-  const lines = [`${sizeBar(side, cents, amount, feed.minUnits)} ${what}`];
-  const worth = cents !== null ? `≈${dollars(cents, value.num > 0n)}` : null;
-  const paid = others.length ? `for ${others.map((o) => `${decimal(o.amount, o.token.decimals)} ${fmt.token(o.token)}`).join(' + ')}` : null;
-  if (worth || paid) lines.push([worth, paid].filter(Boolean).join(' · '));
+  const symbol = token.verified ? escapeHtml(token.symbol) : `<code>${escapeHtml(token.symbol)}</code>`;
+  const worth = cents !== null ? ` · ≈${dollars(cents, value.num > 0n)}` : '';
+  const lines = [`${sizeBar(side, cents, amount, feed.minUnits)} <b>${side === 'buy' ? 'Buy' : 'Sell'}</b> ${fmt.token(token)}${worth}`];
+  const paid = others.map((o) => `${decimal(o.amount, o.token.decimals)} ${fmt.token(o.token)}`).join(' + ');
+  lines.push(`${decimal(amount, token.decimals)} ${symbol}${paid ? ` for ${paid}` : ''}`);
   if (trader) lines.push(`👤 ${fmt.contract(trader, name ? escapeHtml(name) : short(trader))}${newHolder ? ' · 🆕 new holder' : ''}`);
   lines.push(`${post.venue.name} · ${utc(block.timestamp)} · ${fmt.tx(post.tx, 'View transaction')}`);
   return lines.join('\n');

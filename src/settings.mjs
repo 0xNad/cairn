@@ -1,9 +1,10 @@
 import { NodeBusy } from './errors.mjs';
 import { normalize } from './felt.mjs';
-import { escapeHtml, parseDecimal, plainText, short, unescapeHtml } from './format.mjs';
+import { dollars, escapeHtml, parseDecimal, plainText, short, unescapeHtml } from './format.mjs';
 import { looksLikeName } from './names.mjs';
 import { usdPair } from './prices.mjs';
 import { LIMITS } from './subscriptions.mjs';
+import { VENUES } from './venues.mjs';
 
 // The chat settings: round 2's /watch, /unwatch, /list, /whale, /unwhale, /min, /mute, /unmute, /track,
 // /export, /forget and the buttons, and round 3's /feed and /unfeed. A handler does its reads and chain calls
@@ -157,7 +158,7 @@ const HANDLERS = {
    */
   async feed(arg, ctx) {
     if (!ctx.venues.length) {
-      return say('📉 The trade feed is off on this instance: its network file has no contracts.ekubo_core and no contracts.avnu_exchange, so no venue can be read.');
+      return say(`📉 The trade feed is off on this instance: its network file names no venue (${VENUES.map((v) => `contracts.${v.contract}`).join(', ')}), so no trade can be read.`);
     }
     const [first, ...options] = arg.split(/\s+/).filter(Boolean);
     if (!first || options.length > 2) return say(FEED_USAGE);
@@ -174,7 +175,7 @@ const HANDLERS = {
       if (floor !== undefined) return say(FEED_USAGE);
       const usd = option.startsWith('$'), value = parseDecimal(usd ? option.slice(1) : option, usd ? 2 : token.decimals);
       if (value.error) return say(`${escapeHtml(usd ? value.error.replace(/This token has 2 decimals/, 'Dollars have cents') : value.error)} Nothing was changed.`);
-      floor = value.units === 0n ? null : usd ? { usd: value.units, text: `$${value.text}` } : { units: value.units, text: value.text };
+      floor = value.units === 0n ? null : usd ? { usd: value.units, text: dollars(value.units) } : { units: value.units, text: value.text };
     }
     mode ??= 'buys';
     const name = ctx.fmt.token(token);
