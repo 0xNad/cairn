@@ -79,7 +79,10 @@ const HANDLERS = {
     };
   },
 
-  async list(_, ctx) { return () => listView(ctx.chat.id, ctx); },
+  async list(_, ctx) {
+    const named = await watchedNames(ctx, ctx.chat.id);
+    return () => listView(ctx.chat.id, ctx, named);
+  },
 
   async whale(arg, ctx) {
     const m = /^(\S+)\s+(\S+)$/.exec(arg);
@@ -273,8 +276,19 @@ function chunks(text, size) {
 const feedRule = (ctx, feed) => `${feed.mode === 'all' ? 'buys and sells' : 'buys'}${feed.min
   ? ` of at least ${escapeHtml(feed.min)}${feed.min_usd === null ? ` ${tokenName(ctx, feed.token)}` : ''}` : ''}`;
 
-/** The chat's settings with a Remove button per subscription, in one message. */
-export function listView(chatId, ctx) {
+/** The verified names of the chat's unlabelled watches, read before the commit: the list itself makes no call. */
+async function watchedNames(ctx, chatId) {
+  const named = new Map();
+  if (!ctx.head || !ctx.names?.enabled) return named;
+  for (const w of ctx.subs.watches(chatId)) if (!w.label) named.set(w.address, await ctx.names.display(w.address, ctx.head.timestamp));
+  return named;
+}
+
+/**
+ * The chat's settings with a Remove button per subscription, in one message; an unlabelled watch reads as its
+ * verified .stark name when `named` has one.
+ */
+export function listView(chatId, ctx, named = new Map()) {
   const { subs, fmt } = ctx;
   const watches = subs.watches(chatId), whales = subs.whales(chatId), floors = subs.minimums(chatId);
   const muted = subs.muted(chatId), tracks = subs.tracks(chatId), feed = subs.feedOf(chatId);
@@ -298,7 +312,8 @@ export function listView(chatId, ctx) {
   }
   section(`Watches · ${watches.length} of ${ctx.config.maxWatches}`, watches.length);
   for (const w of watches) {
-    add(`• ${w.label ? `<b>${escapeHtml(w.label)}</b> ` : ''}${fmt.contract(w.address)} · from block ${w.since_block + 1}`,
+    const name = !w.label && named.get(w.address);
+    add(`• ${w.label ? `<b>${escapeHtml(w.label)}</b> ` : ''}${fmt.contract(w.address, name ? escapeHtml(name) : short(w.address))} · from block ${w.since_block + 1}`,
       { text: `Remove ${plainText(w.label ?? short(w.address), 32)}`, callback_data: `rw:${w.id}` });
   }
   section(`Whale alerts · ${whales.length} of ${LIMITS.whales}`, whales.length);
@@ -331,7 +346,8 @@ export async function callback(query, ctx) {
   if (chat.type !== 'private' && !(await ctx.admin(query.from))) return answer('Only an administrator of this group can change Cairn’s settings.');
   const id = Number(m[2]);
   const elsewhere = answer('This button belongs to another chat, or what it removes is already gone.');
-  const refreshed = (text) => ({ answer: text, edit: { chat_id: chat.id, message_id: messageId, ...listView(chat.id, ctx) } });
+  const named = m[1].startsWith('r') ? await watchedNames(ctx, chat.id) : new Map();
+  const refreshed = (text) => ({ answer: text, edit: { chat_id: chat.id, message_id: messageId, ...listView(chat.id, ctx, named) } });
   switch (m[1]) {
     case 'rw': {
       const w = ctx.subs.watchById(id);
