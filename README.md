@@ -114,9 +114,9 @@ View transaction
   the exact amount, the direction (in, out, or between two watched wallets), the counterparty, the label,
   the block, its UTC time and a link to check it. A busy transaction shows ten lines and a count of the rest.
 - **Bursts never flood a group.** A group gets at most three alert messages per pass, feeds, watches and
-  whales together: when more are due, two are sent and the third summarises the rest. Command replies are
-  never held back. In a private chat, after three alerts in one pass the next ones arrive without a
-  notification sound.
+  whales together: when more are due, the two largest are sent and the third summarises the rest. Command
+  replies are never held back. In a private chat, after three alerts in one pass the next ones arrive without
+  a notification sound.
 - **Every token, plainly marked.** Cairn sees every ERC-20, but anything outside its registry is
   **unverified**: its symbol is shown in code, never as a link, followed by "unverified" and its contract.
   An airdropped fake "USDC" always reads `USDC (unverified, 0x05ce…7841)`, never as the real one. One
@@ -349,9 +349,10 @@ name, and the network file's contracts read by their role ("Ekubo Core", "AVNU e
 ### Groups, topics and bursts
 
 Per group per pass, at most three messages that are not command replies, feed posts, watch and whale alerts
-and track updates together. When more are due, the first two are sent and the third summarises the rest: how
+and track updates together. When more are due, two are sent in full and the third summarises the rest: how
 many, in which blocks, the buys and sells with their totals and USD values, the wallet alerts, the track
-updates and a link to the largest trade. The alerts a summary covered are marked delivered with its
+updates and a link to the largest trade it covers. The two sent in full are the burst's largest by USD value
+(a track update before any, someone asked for it), in chain order; with no USD values, the first two. The alerts a summary covered are marked delivered with its
 `message_id` and never sent again. A summary arrives without a notification sound. When `run` catches up on a
 backlog, back-to-back passes share one budget until `CAIRN_POLL_MS` has passed, so a group never gets more
 than three in one poll interval.
@@ -368,6 +369,7 @@ it moves there. If Telegram says the topic is gone, the alert goes to the group'
 - An AVNU route's intermediate tokens net to zero (see above).
 - The size bar counts half-decades of USD value; without a USD value it counts multiples of the floor.
 - A summary posts into the topic most of its alerts came from.
+- In a burst, the two alerts sent in full are the largest by USD value, not the first two.
 
 ### State and delivery
 

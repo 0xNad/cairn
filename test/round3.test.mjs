@@ -176,6 +176,18 @@ test('a group gets two alerts and a summary when more than three are due; a priv
   assert.deepEqual(plan(rows(3), 'supergroup', 3), { full: [], rest: [] }); // spent: the alerts wait for the next pass
 });
 
+test('in a burst, the alerts sent in full are a track update and then the largest USD values, in chain order', () => {
+  const trade = (n, cents) => ({ n, kind: 'trade', digest: JSON.stringify({ k: 'trade', token: TOKEN, amount: '1', cents: cents === null ? null : String(cents) }) });
+  const burst = [trade(0, 1_000), trade(1, 50_000), trade(2, null), { n: 3, kind: 'track', digest: null }, trade(4, 100_000), trade(5, 50_000)];
+  const { full, rest } = plan(burst, 'supergroup', 0);
+  assert.deepEqual(full.map((r) => r.n), [3, 4]);
+  assert.deepEqual(rest.map((r) => r.n), [0, 1, 2, 5]);
+  const ties = [trade(0, 500), trade(1, 500), trade(2, 500), trade(3, 500)];
+  assert.deepEqual(plan(ties, 'supergroup', 0).full.map((r) => r.n), [0, 1]);
+  const unpriced = ['5', '900', '70', '900'].map((amount, n) => ({ n, kind: 'trade', digest: JSON.stringify({ k: 'trade', token: TOKEN, amount, cents: null }) }));
+  assert.deepEqual(plan(unpriced, 'supergroup', 0).full.map((r) => r.n), [1, 3]); // one token: by amount
+});
+
 test('a summary counts what it covers: trades per token and side with totals, wallet alerts and tracks', () => {
   const fmt = links({ explorer: 'https://x.example' }, String);
   const t = (side, amount, cents, tx) => ({ kind: 'trade', block: 12, tx_hash: hex64(felt(tx)),

@@ -6,20 +6,39 @@ import { decimal, dollars, escapeHtml } from './format.mjs';
 export const GROUP_BUDGET = 3;
 export const GROUP_TYPES = new Set(['group', 'supergroup']);
 
+const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+const read = (digest) => { try { return digest ? JSON.parse(digest) : null; } catch { return null; } };
+
+/** What makes an alert worth a full message in a burst: a track update first, then the larger USD value. */
+function weight(row) {
+  const d = read(row?.digest);
+  return { track: row?.kind === 'track', cents: d?.cents ? BigInt(d.cents) : null, token: d?.token ?? null, amount: d?.amount ? BigInt(d.amount) : 0n };
+}
+/** Positive when `a` should be sent in full rather than `b`; 0 keeps chain order. */
+function heavier(a, b) {
+  if (a.track !== b.track) return a.track ? 1 : -1;
+  if ((a.cents === null) !== (b.cents === null)) return a.cents !== null ? 1 : -1;
+  if (a.cents !== null) return a.cents > b.cents ? 1 : a.cents < b.cents ? -1 : 0;
+  if (a.token !== null && a.token === b.token) return a.amount > b.amount ? 1 : a.amount < b.amount ? -1 : 0; // one unpriced token
+  return 0;
+}
+
 /**
  * How a chat's due alerts fit its budget this pass: { full, rest } — `full` sent one by one, `rest` covered
- * by one summary. Private chats have no budget; a group that already used its budget waits for the next pass.
+ * by one summary. When more are due than fit, the ones sent in full are the largest by USD value (a track
+ * update before any), kept in chain order, so a burst shows its biggest trades. Private chats have no budget;
+ * a group that already used its budget waits for the next pass.
  */
 export function plan(rows, type, used) {
   if (!GROUP_TYPES.has(type)) return { full: rows, rest: [] };
   const left = GROUP_BUDGET - used;
   if (left <= 0) return { full: [], rest: [] };
   if (rows.length <= left) return { full: rows, rest: [] };
-  return { full: rows.slice(0, left - 1), rest: rows.slice(left - 1) };
+  const weights = rows.map(weight);
+  const order = rows.map((_, i) => i).sort((i, j) => heavier(weights[j], weights[i]) || i - j);
+  const chosen = new Set(order.slice(0, left - 1));
+  return { full: rows.filter((_, i) => chosen.has(i)), rest: rows.filter((_, i) => !chosen.has(i)) };
 }
-
-const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
-const read = (digest) => { try { return digest ? JSON.parse(digest) : null; } catch { return null; } };
 
 /**
  * One message for the alerts beyond a group's budget, from their ledger rows (digest, kind, block, tx_hash):

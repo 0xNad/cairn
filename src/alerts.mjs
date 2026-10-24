@@ -98,9 +98,15 @@ export async function findAlerts(events, { interests, tokens, rpc, now, fmt, hea
     chatId: g.chatId, thread: g.thread, txHash: g.tx, eventIndex: g.items[0].ev.index, kind: 'alert', events: g.items.map((i) => i.ev.index),
     block: g.block, chainTime: headers.get(g.block).timestamp, position: [g.block, g.txIndex ?? 0, g.items[0].ev.index],
     body: render(g, headers.get(g.block).timestamp, interests.labels.get(g.chatId) ?? new Map(), { fmt, shown, known }),
-    digest: { k: 'alert', whale: g.items.some((i) => i.role.whale) },
+    digest: { k: 'alert', whale: g.items.some((i) => i.role.whale), cents: largestCents(g.items) },
   }));
   return { deliveries, seen };
+}
+
+/** The largest USD value among an alert's lines, in cents, or null: what a group's budget weighs it by. */
+function largestCents(items) {
+  const cents = items.filter((i) => i.usd).map((i) => centsOf(i.usd));
+  return cents.length ? String(cents.reduce((a, b) => (b > a ? b : a))) : null;
 }
 
 /**
