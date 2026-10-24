@@ -1,12 +1,34 @@
 export const escapeHtml = (value) => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-export function amount(value, decimals, symbol) {
+export const unescapeHtml = (value) => String(value).replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+/** An exact decimal of a base-unit BigInt: grouped integer part, trailing zeros trimmed. */
+export function decimal(value, decimals) {
   const scale = 10n ** BigInt(decimals);
   const whole = (value / scale).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
   const fraction = decimals === 0 ? '' : (value % scale).toString().padStart(decimals, '0').replace(/0+$/, '');
-  return `${whole}${fraction ? `.${fraction}` : ''} ${symbol}`;
+  return `${whole}${fraction ? `.${fraction}` : ''}`;
+}
+export const amount = (value, decimals, symbol) => `${decimal(value, decimals)} ${symbol}`;
+/**
+ * Base units from a decimal a person typed ("1000000", "2.000001", "1,000.5"), or a reason. No sign, no
+ * exponent, no more fraction digits than the token has, and below 2^256.
+ */
+export function parseDecimal(text, decimals) {
+  const value = String(text ?? '').trim();
+  const match = /^(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?$/.exec(value);
+  if (!match) return { error: `${value ? `"${value.slice(0, 40)}" is not` : 'Give'} an amount: use digits and an optional decimal point, such as 1000 or 2.5.` };
+  const fraction = (match[2] ?? '').replace(/0+$/, '');
+  if (fraction.length > decimals) return { error: `This token has ${decimals} decimal${decimals === 1 ? '' : 's'}: use at most ${decimals} digit${decimals === 1 ? '' : 's'} after the point.` };
+  const units = BigInt(match[1].replaceAll(',', '')) * 10n ** BigInt(decimals) + BigInt(fraction.padEnd(decimals, '0') || '0');
+  if (units >= 1n << 256n) return { error: 'That amount is above the largest token amount (2^256 − 1 base units).' };
+  return { units, text: decimal(units, decimals).replaceAll(',', '') };
 }
 export const short = (value) => `${value.slice(0, 6)}…${value.slice(-4)}`;
 export const utc = (seconds) => new Date(seconds * 1000).toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC');
+/** A symbol or label from outside, safe to show: no control or format characters, at most `max` characters. */
+export function plainText(value, max) {
+  const text = String(value ?? '').replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ').replace(/\s+/g, ' ').trim();
+  return Array.from(text).slice(0, max).join('').trim();
+}
 export function redactor(config) {
   const rpc = new URL(config.rpcUrl);
   const secrets = [config.token, config.token.split(':')[1], config.rpcUrl,
@@ -46,4 +68,17 @@ export function messages(lines) {
   }
   if (current) result.push(current);
   return result;
+}
+/** Links and names every reply builds the same way. */
+export function links(config, clean) {
+  const href = (kind, value) => escapeHtml(clean(`${config.explorer}/${kind}/${value}`));
+  const link = (kind, value, text = short(value)) => `<a href="${href(kind, value)}">${text}</a>`;
+  return {
+    link,
+    contract: (address, text) => link('contract', address, text),
+    tx: (hash, text) => link('tx', hash, text),
+    /** A token as a reader sees it: a registry symbol, or an unverified symbol in code with its contract linked. */
+    token: (token) => token.verified ? escapeHtml(token.symbol)
+      : `<code>${escapeHtml(token.symbol)}</code> (unverified, ${link('contract', token.address)})`,
+  };
 }

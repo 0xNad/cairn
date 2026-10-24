@@ -57,6 +57,8 @@ export function loadConfig(args, env = process.env) {
     tgTimeout: integer(env, 'CAIRN_TG_TIMEOUT', 30, 0, 50),
     rpcRps: integer(env, 'CAIRN_RPC_RPS', 5, 1, 100),
     rpcTimeout: integer(env, 'CAIRN_RPC_TIMEOUT_MS', 10000, 100),
+    maxBlocks: integer(env, 'CAIRN_MAX_BLOCKS', 500, 1, 10000),
+    maxWatches: integer(env, 'CAIRN_MAX_WATCHES', 20, 1, 200),
     logLevel: env.CAIRN_LOG ?? 'info',
   };
   if (!['error', 'warn', 'info', 'debug'].includes(config.logLevel)) bad('CAIRN_LOG: must be error, warn, info or debug.');
