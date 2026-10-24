@@ -1,6 +1,6 @@
 import { hex64, U128, unsigned } from './felt.mjs';
-import { decimal, dollars, escapeHtml, short, utc } from './format.mjs';
-import { centsOf, valueOf } from './prices.mjs';
+import { decimal, escapeHtml, short, utc } from './format.mjs';
+import { centsOf, usdText, valueOf } from './prices.mjs';
 import { blockHeaders, decodeTokenEvents, TOKEN_EVENTS } from './scanner.mjs';
 
 /**
@@ -98,7 +98,7 @@ export async function findAlerts(events, { interests, tokens, rpc, now, fmt, hea
     chatId: g.chatId, thread: g.thread, txHash: g.tx, eventIndex: g.items[0].ev.index, kind: 'alert', events: g.items.map((i) => i.ev.index),
     block: g.block, chainTime: headers.get(g.block).timestamp, position: [g.block, g.txIndex ?? 0, g.items[0].ev.index],
     body: render(g, headers.get(g.block).timestamp, interests.labels.get(g.chatId) ?? new Map(), { fmt, shown, known }),
-    digest: { k: 'alert', whale: g.items.some((i) => i.role.whale), cents: largestCents(g.items) },
+    digest: { k: 'alert', whale: g.items.some((i) => i.role.whale), approval: g.items.some((i) => i.ev.kind === 'Approval'), cents: largestCents(g.items) },
   }));
   return { deliveries, seen };
 }
@@ -167,7 +167,7 @@ function line({ ev, token, role, usd, to: end = ev.b, hops = 1 }, name, fmt) {
     if (ev.amount === 0n) return `🔑 <b>Approval</b> revoked: ${name(ev.a)} no longer lets spender ${name(ev.b)} spend ${symbol}`;
     return `🔑 <b>Approval</b>: ${name(ev.a)} lets spender ${name(ev.b)} spend ${ev.amount >= UNLIMITED ? 'unlimited' : value} ${symbol}`;
   }
-  const worth = usd ? ` (≈${dollars(centsOf(usd), usd.num > 0n)})` : '';
+  const worth = usd ? ` (≈${escapeHtml(usdText(usd))})` : '';
   const whale = role.whale ? ' 🐋' : '';
   const from = ev.a === ZERO ? 'a mint' : name(ev.a), to = ev.b === ZERO ? 'a burn' : name(ev.b);
   if (role.from && role.to) return `⇄ <b>Between</b> ${value} ${symbol}${worth} from ${from} to ${to}${whale}`;

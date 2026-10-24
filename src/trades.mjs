@@ -1,7 +1,7 @@
 import { NodeBusy, RpcError } from './errors.mjs';
 import { hex64, NodeValueError } from './felt.mjs';
-import { decimal, dollars, escapeHtml, short, utc } from './format.mjs';
-import { atLeast, centsOf, valueOf } from './prices.mjs';
+import { decimal, escapeHtml, short, utc } from './format.mjs';
+import { atLeast, centsOf, usdText, valueOf } from './prices.mjs';
 import { decodeTokenEvents, TOKEN_EVENTS } from './scanner.mjs';
 import { balanceOf } from './tokens.mjs';
 import { decodeSwaps } from './venues.mjs';
@@ -209,7 +209,7 @@ function render(post, feed, fmt) {
   const { token, side, amount, others, value, trader, name, newHolder, block } = post;
   const cents = value ? centsOf(value) : null;
   const symbol = token.verified ? escapeHtml(token.symbol) : `<code>${escapeHtml(token.symbol)}</code>`;
-  const worth = cents !== null ? ` · ≈${dollars(cents, value.num > 0n)}` : '';
+  const worth = value ? ` · ≈${escapeHtml(usdText(value))}` : '';
   const lines = [`${sizeBar(side, cents, amount, feed.minUnits)} <b>${side === 'buy' ? 'Buy' : 'Sell'}</b> ${fmt.token(token)}${worth}`];
   const paid = others.map((o) => `${decimal(o.amount, o.token.decimals)} ${fmt.token(o.token)}`).join(' + ');
   lines.push(`${decimal(amount, token.decimals)} ${symbol}${paid ? ` for ${paid}` : ''}`);
@@ -221,4 +221,4 @@ function render(post, feed, fmt) {
 /** What a group's summary needs to count this post among others. */
 const digest = (post) => ({ k: 'trade', side: post.side, token: post.token.address, symbol: post.token.symbol,
   verified: post.token.verified, decimals: post.token.decimals, amount: String(post.amount),
-  cents: post.value ? String(centsOf(post.value)) : null });
+  cents: post.value ? String(centsOf(post.value)) : null, value: post.value ? [String(post.value.num), String(post.value.den)] : null });

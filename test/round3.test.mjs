@@ -6,9 +6,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadConfig } from '../src/config.mjs';
 import { FIELD, hex64, i129, SELECTORS } from '../src/felt.mjs';
-import { dollars, links } from '../src/format.mjs';
+import { dollars, links, messages } from '../src/format.mjs';
 import { decode, encode, parseName, parseReverse } from '../src/names.mjs';
-import { atLeast, centsOf, parseMedian, valueOf } from '../src/prices.mjs';
+import { atLeast, centsOf, parseMedian, usdText, valueOf } from '../src/prices.mjs';
 import { decodeTokenEvents } from '../src/scanner.mjs';
 import { Store } from '../src/store.mjs';
 import { Subscriptions } from '../src/subscriptions.mjs';
@@ -152,10 +152,25 @@ test('USD values are exact, rounded half up to cents, and a dollar floor include
   assert.ok(atLeast(valueOf(100n, 0, sample), 12_500n) && !atLeast(valueOf(100n, 0, sample), 12_501n));
   const strk = { price: 4_774_266n, decimals: 8 }; // live STRK/USD on 24 Oct 2026
   assert.equal(dollars(centsOf(valueOf(17_802_368_766_626_936_800_896n, 18, strk))), '$849.93');
-  assert.equal(centsOf({ num: 5n, den: 1000n }), 1n); // $0.005 rounds up to a cent
+  assert.equal(centsOf({ num: 5n, den: 1000n }), 1n); // half a cent rounds up
   assert.equal(centsOf({ num: 4n, den: 1000n }), 0n);
+  // Shown, any value above zero below a cent is <$0.01, as ARCHITECTURE.md says, even when it would round up.
+  assert.equal(usdText({ num: 7n, den: 1000n }), '<$0.01');
+  assert.equal(usdText({ num: 1n, den: 100n }), '$0.01');
+  assert.equal(usdText({ num: 0n, den: 100n }), '$0.00');
+  assert.equal(usdText({ num: 1_234_565n, den: 1000n }), '$1,234.57');
   assert.equal(dollars(0n, true), '<$0.01');
   assert.equal(dollars(123_456_789n), '$1,234,567.89');
+});
+
+test('a reply line too long for Telegram goes as plain text in pieces instead of stopping the bot', () => {
+  const html = `No watch here matches <b>${'&amp;'.repeat(900)}</b>.`;
+  const parts = messages([html]);
+  assert.ok(parts.length > 1 && parts.every((p) => p.length <= 4096));
+  assert.equal(parts.map((p) => plain(p)).join('').replaceAll('\n', ''), `No watch here matches ${'&'.repeat(900)}.`);
+  // Names a person typed are echoed only in part.
+  assert.ok(parseName(`${'&'.repeat(900)}.b.stark`).error.length < 200);
+  assert.ok(parseName(`${'A'.repeat(4000)}.stark`).error.length < 200);
 });
 
 test('the size bar grows by half-decades of USD, and by multiples of the floor without a price', () => {
@@ -186,6 +201,9 @@ test('in a burst, the alerts sent in full are a track update and then the larges
   assert.deepEqual(plan(ties, 'supergroup', 0).full.map((r) => r.n), [0, 1]);
   const unpriced = ['5', '900', '70', '900'].map((amount, n) => ({ n, kind: 'trade', digest: JSON.stringify({ k: 'trade', token: TOKEN, amount, cents: null }) }));
   assert.deepEqual(plan(unpriced, 'supergroup', 0).full.map((r) => r.n), [1, 3]); // one token: by amount
+  // An approval by a watched wallet outranks any trade: a group should see it, not a count of it.
+  const approval = { n: 9, kind: 'alert', digest: JSON.stringify({ k: 'alert', approval: true, cents: null }) };
+  assert.deepEqual(plan([trade(0, 1_000), trade(1, 50_000), approval, trade(3, 100_000)], 'supergroup', 0).full.map((r) => r.n), [9, 3]);
 });
 
 test('a summary counts what it covers: trades per token and side with totals, wallet alerts and tracks', () => {
@@ -193,10 +211,74 @@ test('a summary counts what it covers: trades per token and side with totals, wa
   const t = (side, amount, cents, tx) => ({ kind: 'trade', block: 12, tx_hash: hex64(felt(tx)),
     digest: JSON.stringify({ k: 'trade', side, token: TOKEN, symbol: 'STRK', verified: true, decimals: 0, amount: String(amount), cents: String(cents) }) });
   const html = summarise([t('buy', 100, 12_500, 1), t('buy', 300, 37_500, 2), t('sell', 50, 6_250, 3),
-    { kind: 'alert', block: 13, tx_hash: hex64('0x4'), digest: JSON.stringify({ k: 'alert', whale: true }) }, { kind: 'track', block: null, tx_hash: hex64('0x5'), digest: null }], fmt);
-  assert.equal(plain(html), '➕ 5 more in blocks 12–13, summarised to keep the group readable:\n🟢 2 buys · 400 STRK · ≈$500.00\n' +
-    '🔴 1 sell · 50 STRK · ≈$62.50\n👁 1 wallet alert, 1 with a whale move 🐋\n⏱ 1 tracked transaction update\nLargest: Buy 300 STRK ≈$375.00');
-  assert.ok(html.includes(`href="https://x.example/tx/${hex64('0x2')}"`));
+    { kind: 'alert', block: 13, tx_hash: hex64('0x4'), digest: JSON.stringify({ k: 'alert', whale: true, approval: true }) },
+    { kind: 'alert', block: 13, tx_hash: hex64('0x6'), digest: null }, { kind: 'track', block: null, tx_hash: hex64('0x5'), digest: null }], fmt);
+  assert.equal(plain(html), '➕ 6 more in blocks 12–13, summarised to keep the group readable:\n🟢 2 buys · 400 STRK · ≈$500.00\n' +
+    '🔴 1 sell · 50 STRK · ≈$62.50\n👁 2 wallet alerts, 1 with a whale move 🐋, 1 with an approval 🔑: 1 · 2\n⏱ 1 tracked transaction update: 1\nLargest: Buy 300 STRK ≈$375.00');
+  for (const tx of ['0x2', '0x4', '0x6', '0x5']) assert.ok(html.includes(`href="https://x.example/tx/${hex64(tx)}"`), tx);
+  // Dust adds up exactly: three trades of $0.004 are $0.012, not three rounded zeros.
+  const dust = (n) => ({ kind: 'trade', block: 12, tx_hash: hex64(felt(n)), digest: JSON.stringify({ k: 'trade', side: 'buy', token: TOKEN, symbol: 'STRK',
+    verified: true, decimals: 0, amount: '1', cents: '0', value: ['4', '1000'] }) });
+  assert.match(plain(summarise([dust(1), dust(2), dust(3)], fmt)), /3 buys · 3 STRK · ≈\$0\.01\n/);
+  assert.match(plain(summarise([dust(1)], fmt)), /1 buy · 1 STRK · ≈<\$0\.01\n/);
+});
+
+test('the trade feed posts what a chat asked for: dollar floors at equality, fresh prices only, names proven, no USD when unverified', async () => {
+  const store = new Store(mkdtempSync(join(tmpdir(), 'cairn-feed-')));
+  try {
+    const NAMING = address(0x4a), PRAGMA = address(0x9a), STRANGE = address(0x73);
+    const cfg = { tokens: [{ symbol: 'STRK', address: TOKEN, decimals: 0, pragma_pair: 'STRK/USD' }, { symbol: 'USDC', address: QUOTE, decimals: 0, pragma_pair: 'USDC/USD' }],
+      contracts: { ...config.contracts, naming: NAMING, pragma: PRAGMA }, priceMaxAge: 900, maxWatches: 20, explorer: 'https://x.example' };
+    let updated = 1_000, quote = '0x7752e0', calls = [];
+    const rpc = { async call(method, params) {
+      calls.push([method, params]);
+      if (method === 'starknet_getBlockWithTxHashes') return { timestamp: 1_100, sequencer_address: SEQUENCER };
+      const { contract_address: at, entry_point_selector: sel, calldata } = params.request;
+      if (at === PRAGMA) return [quote, '0x8', felt(updated), '0x4', '0x1']; // $0.0782, 4 sources
+      if (at === NAMING && sel === SELECTORS.address_to_domain) return calldata[0] === TRADER ? ['0x1', '0x49ed'] : ['0x0'];
+      if (at === NAMING) return [calldata[1] === '0x49ed' ? TRADER : '0x0'];
+      if (sel === SELECTORS.balance_of) return ['0x0', '0x0'];
+      if (sel === SELECTORS.decimals) return ['0x0'];
+      if (sel === SELECTORS.symbol) return [felt(Buffer.from('ODD').readUIntBE(0, 3))];
+      throw new Error(`unexpected call ${method}`);
+    } };
+    const subs = new Subscriptions(store, cfg), chat = (id) => ({ id, type: 'private' });
+    store.transaction(() => {
+      subs.feed(chat(1), { token: TOKEN, symbol: 'STRK', min: '$78.20', minUsd: 7_820n, mode: 'buys' }, 10);
+      subs.feed(chat(2), { token: STRANGE, symbol: 'ODD', mode: 'all' }, 10);
+    });
+    const { Tokens } = await import('../src/tokens.mjs'), { Names } = await import('../src/names.mjs'), { Prices } = await import('../src/prices.mjs');
+    const { tradeFeed } = await import('../src/trades.mjs'), { blockHeaders, TOKEN_EVENTS } = await import('../src/scanner.mjs');
+    const feed = tradeFeed(venues), run = async (events) => {
+      const prices = new Prices(cfg, rpc), names = new Names(cfg, store, rpc);
+      const byFilter = new Map([[TOKEN_EVENTS, events.filter((e) => e.keys[0] === SELECTORS.Transfer)], ...venues.map((v) => [v.filter, events.filter((e) => e.from_address === v.address)])]);
+      index = 0;
+      return (await feed.find(byFilter, { interests: subs.interests(), tokens: new Tokens(cfg, store, rpc), rpc, now: 1_100, fmt: links(cfg, String), header: blockHeaders(rpc), prices, names })).deliveries;
+    };
+    // 1,000 STRK at $0.0782 is exactly $78.20: the floor includes it. The trader is proven to be ben.stark and held none before.
+    const [post, ...others] = await run([ekubo(-1000n, 78n), transfer(EKUBO, TRADER, 1000n)]);
+    assert.equal(others.length, 0);
+    assert.equal(post.chatId, 1);
+    assert.equal(plain(post.body), '🟢🟢🟢 Buy STRK · ≈$78.20\n1,000 STRK for 78 USDC\n👤 ben.stark · 🆕 new holder\nEkubo · 1970-01-01 00:18:20 UTC · View transaction');
+    assert.ok(calls.some(([m, p]) => m === 'starknet_call' && p.request.entry_point_selector === SELECTORS.balance_of && p.block_id.block_number === 10)); // block − 1
+    // The outside-registry token's sell goes to the chat that follows it, with no dollar sign anywhere.
+    const [odd] = await run([ekubo(5n, -9n, STRANGE, QUOTE), transfer(PEER, EKUBO, 5n, STRANGE)]);
+    assert.equal(odd.chatId, 2);
+    assert.match(plain(odd.body), /^🔴 Sell ODD \(unverified, 0x0000…0073\)\n5 ODD for 9 USDC\n👤 0x0000…0021\n/);
+    assert.ok(!odd.body.includes('$'));
+    // A trade below a cent shows <$0.01, escaped: Telegram would refuse a bare "<". ($0.001 a token here.)
+    store.transaction(() => subs.feed(chat(1), { token: TOKEN, symbol: 'STRK', mode: 'buys' }, 10));
+    quote = '0x186a0';
+    const [dust] = await run([ekubo(-1n, 0n), transfer(EKUBO, TRADER, 1n)]);
+    assert.ok(dust.body.includes('≈&lt;$0.01') && plain(dust.body).startsWith('🟢 Buy STRK · ≈<$0.01'));
+    // A stale price proves nothing: a trade far above the dollar floor stays unposted, yet posts without a floor.
+    store.transaction(() => subs.feed(chat(1), { token: TOKEN, symbol: 'STRK', min: '$78.20', minUsd: 7_820n, mode: 'buys' }, 10));
+    [quote, updated] = ['0x7752e0', 1_100 - 901];
+    assert.deepEqual(await run([ekubo(-100000n, 7800n), transfer(EKUBO, TRADER, 100000n)]), []);
+    store.transaction(() => subs.feed(chat(1), { token: TOKEN, symbol: 'STRK', mode: 'buys' }, 10));
+    const [unpriced] = await run([ekubo(-100000n, 7800n), transfer(EKUBO, TRADER, 100000n)]);
+    assert.ok(!unpriced.body.includes('$') && plain(unpriced.body).startsWith('🟢 Buy STRK\n100,000 STRK for 7,800 USDC'));
+  } finally { store.close(); }
 });
 
 test('a chat keeps one feed: another token replaces it, the same token updates it, and forget removes it', () => {

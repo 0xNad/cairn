@@ -1,5 +1,6 @@
 import { NodeBusy, RpcError } from './errors.mjs';
 import { FIELD, normalize, SELECTORS, unsigned } from './felt.mjs';
+import { plainText } from './format.mjs';
 
 // Starknet ID names (round 3). A name Cairn accepts is one label of [a-z0-9-] followed by .stark; an address
 // is shown by its reverse name only when that name resolves back to the same address.
@@ -98,9 +99,9 @@ export const looksLikeName = (text) => /\.stark$/i.test(String(text ?? '').trim(
 export function parseName(text) {
   const value = String(text ?? '').trim();
   const label = value.slice(0, -'.stark'.length);
-  if (label.includes('.')) return { error: `Subdomains such as ${value} are not supported: give one label, like ben.stark, or the 0x address.` };
+  if (label.includes('.')) return { error: `Subdomains such as ${plainText(value, 48)} are not supported: give one label, like ben.stark, or the 0x address.` };
   if (!/^[a-z0-9-]+$/.test(label) || !value.endsWith('.stark')) {
-    const hint = /^[A-Za-z0-9-]+$/.test(label) ? ` Names are lowercase: try ${label.toLowerCase()}.stark.` : '';
+    const hint = /^[A-Za-z0-9-]{1,40}$/.test(label) ? ` Names are lowercase: try ${label.toLowerCase()}.stark.` : '';
     return { error: `Invalid name: a .stark name is lowercase letters, digits and "-", like ben.stark.${hint}` };
   }
   const felt = encode(label);

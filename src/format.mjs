@@ -66,10 +66,15 @@ export function textLines(text, clean) {
 export function messages(lines) {
   const result = [];
   let current = '';
-  for (const line of lines) {
-    if (line.length > 4096) throw new Error('HTML line exceeds message size');
+  const add = (line) => {
     if (current.length + line.length + 1 > 4096) { result.push(current); current = ''; }
     current += `${current ? '\n' : ''}${line}`;
+  };
+  for (const line of lines) {
+    // A line too long for one message (an outside string left unbounded) goes as plain text in pieces,
+    // never cut inside a tag or an entity, rather than stopping the bot.
+    if (line.length > 4096) for (const piece of textLines(unescapeHtml(line.replace(/<[^>]*>/g, '')), String)) add(piece);
+    else add(line);
   }
   if (current) result.push(current);
   return result;

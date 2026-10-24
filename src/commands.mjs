@@ -1,6 +1,6 @@
 import { NodeBusy, RpcError } from './errors.mjs';
 import { normalize, unsigned } from './felt.mjs';
-import { amount, decimal, escapeHtml, links, short, textLines, utc } from './format.mjs';
+import { amount, decimal, escapeHtml, links, plainText, short, textLines, utc } from './format.mjs';
 import { looksLikeName } from './names.mjs';
 import { ageOf, usdPair } from './prices.mjs';
 import { callback, setting, SETTINGS } from './settings.mjs';
@@ -200,7 +200,7 @@ async function price(argument, context) {
   for (const symbol of wanted) {
     const token = tokens.bySymbol(symbol);
     if (!token) {
-      lines.push(`${escapeHtml(symbol.slice(0, 20))}: not a verified token here, so Cairn shows no price for it. Verified: ${config.tokens.map((t) => escapeHtml(t.symbol)).join(', ')}.`);
+      lines.push(`${escapeHtml(plainText(symbol, 20))}: not a verified token here, so Cairn shows no price for it. Verified: ${config.tokens.map((t) => escapeHtml(t.symbol)).join(', ')}.`);
       continue;
     }
     const pair = token.pragma_pair, name = escapeHtml(token.symbol);

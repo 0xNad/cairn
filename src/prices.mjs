@@ -1,12 +1,11 @@
-import { NodeBusy, RpcError } from './errors.mjs';
+import { RpcError } from './errors.mjs';
 import { SELECTORS, shortString, unsigned } from './felt.mjs';
+import { dollars } from './format.mjs';
 
 // Pragma prices (round 3): get_data_median(SpotEntry(pair)), scaled by the decimals it returns. A sample is
 // fresh while its age in chain time is at most CAIRN_PRICE_MAX_AGE; USD values come from fresh samples only,
 // and never for a token outside the registry. Samples are read per block and kept for the pass only.
 
-/** The contract's own answers: not deployed, no such entrypoint, or the call failed (an unknown pair). */
-const NO_ANSWER = new Set([20, 21, 40]);
 const U64 = 1n << 64n, U32 = 1n << 32n;
 
 /** Pairs Cairn reads as US dollars: only these give USD values. */
@@ -38,6 +37,11 @@ export const valueOf = (amount, decimals, sample) => ({ num: amount * sample.pri
 export const centsOf = ({ num, den }) => (200n * num + den) / (2n * den);
 /** Whether the exact value is at least `cents` (a USD floor includes equality). */
 export const atLeast = ({ num, den }, cents) => 100n * num >= cents * den;
+/** A value as shown: rounded half up to cents, as $1,234.57, and <$0.01 for any value above zero below a cent. */
+export const usdText = (value) => (value.num > 0n && 100n * value.num < value.den ? '<$0.01' : dollars(centsOf(value)));
+/** Two answers of one pair are the same sample: nothing was published between the blocks they were read at. */
+const same = (a, b) => a.price === b.price && a.decimals === b.decimals && a.timestamp === b.timestamp && a.sources === b.sources
+  && a.missing === b.missing && a.error === b.error;
 
 export class Prices {
   constructor(config, rpc) {
@@ -45,16 +49,18 @@ export class Prices {
     this.maxAge = config.priceMaxAge ?? 900;
     this.rpc = rpc;
     this.memo = new Map(); // `${pair} ${block}` → sample, for this pass
-    this.until = null; // the last block of the range this pass scans
+    this.range = null; // the blocks this pass scans
   }
   get enabled() { return this.contract !== null; }
   /** Starts a new pass: prices are read again. */
-  reset() { this.memo.clear(); this.until = null; }
-  /** The pass scans up to block `number`: one read of each pair there serves the earlier blocks it does not postdate. */
-  horizon(number) { this.until = number; }
+  reset() { this.memo.clear(); this.range = null; }
+  /** The pass scans blocks `from` to `to`: when a pair answers the same at both ends, that answer serves every block between. */
+  horizon(from, to) { this.range = { from, to }; }
   /**
-   * Pragma's median for `pair` at block `number`: a sample, { missing: true }, or { error } when the contract
-   * refuses or answers another shape. Throws NodeBusy when the node fails, so that the caller retries.
+   * Pragma's median for `pair` at block `number`: a sample, { missing: true }, or { error } when the node or the
+   * contract answers with an error (an unknown pair, a past block the node no longer serves) or another shape:
+   * then there is no USD value, and alerts still go out. A node that does not answer throws NodeBusy, and the
+   * pass reads the range again.
    */
   async sample(pair, number) {
     const key = `${pair} ${number}`;
@@ -67,21 +73,24 @@ export class Prices {
       result = await this.rpc.call('starknet_call', { request: { contract_address: this.contract,
         entry_point_selector: SELECTORS.get_data_median, calldata: ['0x0', shortString(pair)] }, block_id: { block_number: number } });
     } catch (error) {
-      if (error instanceof RpcError && NO_ANSWER.has(error.code)) return { error: `contract error ${error.code}` };
-      if (error instanceof RpcError) throw new NodeBusy();
+      if (error instanceof RpcError) return { error: `error ${error.code}` };
       throw error;
     }
     return parseMedian(result) ?? { error: 'an answer Cairn cannot read' };
   }
   /**
    * The fresh USD sample of a verified token as of `block` ({ number, timestamp }), or null. Pragma moves only
-   * when a publisher updates the pair, every few minutes, so the pass reads each pair once, at the end of its
-   * range, and reads the trade's own block only when that sample was updated after it.
+   * when a publisher updates the pair, every few minutes: a pass reads each pair at both ends of its range, and
+   * at a block between them only when the two answers differ.
    */
   async usd(token, block) {
     if (!this.enabled || !token?.verified || !usdPair(token.pragma_pair)) return null;
-    let sample = this.until !== null && this.until > block.number ? await this.sample(token.pragma_pair, this.until) : null;
-    if (!sample || (sample.price !== undefined && sample.timestamp > block.timestamp)) sample = await this.sample(token.pragma_pair, block.number);
+    const pair = token.pragma_pair, { from, to } = this.range ?? {};
+    let sample;
+    if (this.range && block.number > from && block.number < to) {
+      const first = await this.sample(pair, from), last = await this.sample(pair, to);
+      sample = same(first, last) ? last : await this.sample(pair, block.number);
+    } else sample = await this.sample(pair, block.number);
     return sample.price !== undefined && ageOf(sample, block.timestamp) <= this.maxAge ? sample : null;
   }
 }

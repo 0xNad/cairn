@@ -74,15 +74,12 @@ const HANDLERS = {
     return () => {
       const r = ctx.subs.unwatch(ctx.chat.id, address ? { address } : { label: plainText(arg, Infinity) });
       if (r.watch) return say(`Stopped watching ${watchName(ctx, r.watch)}.`)();
-      if (r.ambiguous) return say(`${r.ambiguous} watches here are labelled ${escapeHtml(arg)}: use the address, or the buttons in /list. Nothing was changed.`)();
-      return say(`No watch here matches ${escapeHtml(arg)}. /list shows what this chat watches.`)();
+      if (r.ambiguous) return say(`${r.ambiguous} watches here are labelled ${escapeHtml(plainText(arg, 40))}: use the address, or the buttons in /list. Nothing was changed.`)();
+      return say(`No watch here matches ${escapeHtml(plainText(arg, 40))}. /list shows what this chat watches.`)();
     };
   },
 
-  async list(_, ctx) {
-    const named = await watchedNames(ctx, ctx.chat.id);
-    return () => listView(ctx.chat.id, ctx, named);
-  },
+  async list(_, ctx) { return () => listView(ctx.chat.id, ctx); },
 
   async whale(arg, ctx) {
     const m = /^(\S+)\s+(\S+)$/.exec(arg);
@@ -276,19 +273,11 @@ function chunks(text, size) {
 const feedRule = (ctx, feed) => `${feed.mode === 'all' ? 'buys and sells' : 'buys'}${feed.min
   ? ` of at least ${escapeHtml(feed.min)}${feed.min_usd === null ? ` ${tokenName(ctx, feed.token)}` : ''}` : ''}`;
 
-/** The verified names of the chat's unlabelled watches, read before the commit: the list itself makes no call. */
-async function watchedNames(ctx, chatId) {
-  const named = new Map();
-  if (!ctx.head || !ctx.names?.enabled) return named;
-  for (const w of ctx.subs.watches(chatId)) if (!w.label) named.set(w.address, await ctx.names.display(w.address, ctx.head.timestamp));
-  return named;
-}
-
 /**
- * The chat's settings with a Remove button per subscription, in one message; an unlabelled watch reads as its
- * verified .stark name when `named` has one.
+ * The chat's settings with a Remove button per subscription, in one message. It makes no chain call, so that
+ * /list answers at once however many watches the chat has.
  */
-export function listView(chatId, ctx, named = new Map()) {
+export function listView(chatId, ctx) {
   const { subs, fmt } = ctx;
   const watches = subs.watches(chatId), whales = subs.whales(chatId), floors = subs.minimums(chatId);
   const muted = subs.muted(chatId), tracks = subs.tracks(chatId), feed = subs.feedOf(chatId);
@@ -312,8 +301,7 @@ export function listView(chatId, ctx, named = new Map()) {
   }
   section(`Watches · ${watches.length} of ${ctx.config.maxWatches}`, watches.length);
   for (const w of watches) {
-    const name = !w.label && named.get(w.address);
-    add(`• ${w.label ? `<b>${escapeHtml(w.label)}</b> ` : ''}${fmt.contract(w.address, name ? escapeHtml(name) : short(w.address))} · from block ${w.since_block + 1}`,
+    add(`• ${w.label ? `<b>${escapeHtml(w.label)}</b> ` : ''}${fmt.contract(w.address)} · from block ${w.since_block + 1}`,
       { text: `Remove ${plainText(w.label ?? short(w.address), 32)}`, callback_data: `rw:${w.id}` });
   }
   section(`Whale alerts · ${whales.length} of ${LIMITS.whales}`, whales.length);
@@ -346,8 +334,7 @@ export async function callback(query, ctx) {
   if (chat.type !== 'private' && !(await ctx.admin(query.from))) return answer('Only an administrator of this group can change Cairn’s settings.');
   const id = Number(m[2]);
   const elsewhere = answer('This button belongs to another chat, or what it removes is already gone.');
-  const named = m[1].startsWith('r') ? await watchedNames(ctx, chat.id) : new Map();
-  const refreshed = (text) => ({ answer: text, edit: { chat_id: chat.id, message_id: messageId, ...listView(chat.id, ctx, named) } });
+  const refreshed = (text) => ({ answer: text, edit: { chat_id: chat.id, message_id: messageId, ...listView(chat.id, ctx) } });
   switch (m[1]) {
     case 'rw': {
       const w = ctx.subs.watchById(id);

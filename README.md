@@ -115,9 +115,10 @@ View transaction
   the exact amount, the direction (in, out, or between two watched wallets), the counterparty, the label,
   the block, its UTC time and a link to check it. A busy transaction shows ten lines and a count of the rest.
 - **Bursts never flood a group.** A group gets at most three alert messages per pass, feeds, watches and
-  whales together: when more are due, the two largest are sent and the third summarises the rest. Command
-  replies are never held back. In a private chat, after three alerts in one pass the next ones arrive without
-  a notification sound.
+  whales together: when more are due, the two that matter most (a track update, an approval, then the
+  largest) are sent and the third summarises the rest, with a link to each wallet alert. Command replies are
+  never held back. In a private chat, after three alerts in one pass the next ones arrive without a
+  notification sound.
 - **Every token, plainly marked.** Cairn sees every ERC-20, but anything outside its registry is
   **unverified**: its symbol is shown in code, never as a link, followed by "unverified" and its contract.
   An airdropped fake "USDC" always reads `USDC (unverified, 0x05ce…7841)`, never as the real one. One
@@ -333,11 +334,13 @@ it loses nothing.
 **Prices.** `get_data_median(SpotEntry(pair))` on the Pragma contract, read at a block, gives the price, its
 decimals, its last update time, its number of sources and an expiration (`Some` or `None`, both read). An
 answer of price 0 is "no price". A USD value is `amount × price ÷ 10^(token decimals + pair decimals)`,
-computed exactly and rounded half up to cents (`<$0.01` for less), only for a verified token whose pair ends
-in `/USD`, and only when the price is at most `CAIRN_PRICE_MAX_AGE` older than the block of the trade or
-transfer. A pass reads each pair once, at the end of its range, and again at a trade's own block only when
-Pragma updated after that block. A trade of a verified token with no price of its own is valued by what was
-paid for it, when that is priced. Nothing is computed for an unverified token, and nothing from a stale price.
+computed exactly and rounded half up to cents (`<$0.01` for any value above zero below a cent), only for a
+verified token whose pair ends in `/USD`, and only when the price is at most `CAIRN_PRICE_MAX_AGE` older than
+the block of the trade or transfer. A pass reads each pair at both ends of its range, and at a block between
+them only when the two answers differ, since Pragma moves only when a publisher updates it. A trade of a
+verified token with no price of its own is valued by what was paid for it, when that is priced. Nothing is
+computed for an unverified token, and nothing from a stale price. A node that answers a price read with an
+error (an unknown pair, a past block it no longer serves) leaves that value out, and the alerts still go out.
 
 **Names.** A typed `name.stark` is encoded label by label as ARCHITECTURE.md settles (copied from
 starknetid.js) and resolved with `domain_to_address`; 0x0 is an unknown name and is refused, and so are
@@ -351,15 +354,18 @@ name, and the network file's contracts read by their role ("Ekubo Core", "AVNU e
 
 Per group per pass, at most three messages that are not command replies, feed posts, watch and whale alerts
 and track updates together. When more are due, two are sent in full and the third summarises the rest: how
-many, in which blocks, the buys and sells with their totals and USD values, the wallet alerts, the track
-updates and a link to the largest trade it covers. The two sent in full are the burst's largest by USD value
-(a track update before any, someone asked for it), in chain order; with no USD values, the first two. The alerts a summary covered are marked delivered with its
+many, in which blocks, the buys and sells with their totals and USD values, the wallet alerts and the track
+updates with a link to each, and a link to the largest trade it covers. The two sent in full are the
+weightiest, in chain order: a track update first (someone asked for it), then an approval by a watched
+wallet, then the larger USD value; with no USD values, the first two. The alerts a summary covered are marked delivered with its
 `message_id` and never sent again. A summary arrives without a notification sound. When `run` catches up on a
 backlog, back-to-back passes share one budget until `CAIRN_POLL_MS` has passed, so a group never gets more
 than three in one poll interval.
 
 A feed, watch, whale or track set up in a forum topic posts into that topic; asked again from another topic,
-it moves there. If Telegram says the topic is gone, the alert goes to the group's main thread instead.
+it moves there, and the reply says so. A reply in an ordinary group, or in a channel's comments, carries a
+thread too, and is not taken for a topic. If Telegram says the topic is gone, the alert goes to the group's
+main thread instead.
 
 ### Choices where the brief is silent
 
@@ -367,10 +373,12 @@ it moves there. If Telegram says the topic is gone, the alert goes to the group'
 - `/feed` with the same token updates the floor, side and topic in place; another token replaces the feed.
 - A dollar floor is refused for an unverified token and when no Pragma contract is configured.
 - The new-holder flag is for buys only (see above), and the trader's name is checked once per pass.
-- An AVNU route's intermediate tokens net to zero (see above).
+- An AVNU route's intermediate tokens net to zero (see above). The cost, rare: a multicall that both routes a
+  token through AVNU and trades it directly on Ekubo shows no trade of that token.
 - The size bar counts half-decades of USD value; without a USD value it counts multiples of the floor.
 - A summary posts into the topic most of its alerts came from.
-- In a burst, the two alerts sent in full are the largest by USD value, not the first two.
+- In a burst, the two alerts sent in full are the weightiest (above), not the first two.
+- `/list` shows labels and short addresses, not names: it answers at once, with no chain call.
 
 ### State and delivery
 

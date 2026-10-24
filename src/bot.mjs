@@ -241,8 +241,10 @@ class Bot {
       config: this.config, rpc: this.rpc, username: this.username, clean: this.clean, head: this.head, spec: this.identity?.spec,
       signal: this.signal, subs: this.subs, tokens: this.tokens, fmt: this.fmt, chat,
       prices: this.prices, names: this.names, venues: this.venues,
-      // The forum topic a command came from: a feed, watch, whale or track set up there posts there.
-      thread: Number.isSafeInteger(message?.message_thread_id) ? message.message_thread_id : null,
+      // The forum topic a command came from: a feed, watch, whale or track set up there posts there. A reply in
+      // an ordinary group (or a comment thread) also carries a message_thread_id, which subscriptions ignore.
+      thread: Number.isSafeInteger(message?.message_thread_id) && (message.is_topic_message === true || !message.reply_to_message)
+        ? message.message_thread_id : null,
       admin: (user) => (admin ??= this.isAdmin(chat, message, user)),
     };
   }
@@ -348,7 +350,7 @@ class Bot {
     if (!range) return;
     const interests = this.subs.interests();
     const feeds = this.feeds.filter((f) => f.wanted(interests));
-    this.prices.horizon(range.to);
+    this.prices.horizon(range.from, range.to);
     const context = { interests, tokens: this.tokens, rpc: this.rpc, now: this.head.timestamp, fmt: this.fmt,
       header: blockHeaders(this.rpc), prices: this.prices, names: this.names, known: this.known };
     const found = { deliveries: [], seen: [] };
