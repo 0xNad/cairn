@@ -109,7 +109,8 @@ View transaction
 - **A trade post reads at a glance.** The first line is the size, the side and the USD value; the second
   the exact amount and what was paid for it (or got for it); then the trader and the venue, the block time
   and a link. The row of dots grows by one at every half-decade of USD value ($10, $30, $100, $300, $1,000 …
-  up to a million and a 🐋), green for a buy and red for a sell, so a big trade stands out in a scroll.
+  up to $1,000,000, with a 🐋 from $100,000), green for a buy and red for a sell, so a big trade stands out
+  in a scroll.
 - **One message per chat per transaction**, in chain order: each matching transfer on its own line, with
   the exact amount, the direction (in, out, or between two watched wallets), the counterparty, the label,
   the block, its UTC time and a link to check it. A busy transaction shows ten lines and a count of the rest.
