@@ -34,7 +34,7 @@ export class Ledger {
       const rest = rows.slice(2), first = rest[0];
       const topics = new Set(rest.map(r => r.topic));
       let count = rest.length;
-      for (const r of rest) if (r.kind === 'summary') count += Number(this.#q('SELECT count(*) AS n FROM deliveries WHERE summary_seq = ?').get(r.seq).n) - 1;
+      for (const r of rest) if (r.kind === 'summary') count += Number(this.#q("SELECT count(*) AS n FROM deliveries WHERE summary_seq = ? AND kind <> 'summary'").get(r.seq).n) - 1;
       const links = [...new Set(rest.map(r => r.tx_hash))].slice(0, 4).map((tx, i) => fmt.tx(tx, `Transaction ${i + 1}`));
       const topic = first.topic;
       const kinds = new Map();

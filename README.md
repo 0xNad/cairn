@@ -149,7 +149,7 @@ configuration or an incompatible chain/spec, and 3 for a rejected Telegram token
 | Command | Who, in groups | What it does |
 | --- | --- | --- |
 | `/start`, `/help` | everyone | Commands, privacy, and a link to add the bot to a group |
-| `/feed <token> [minimum|$USD] [buys|all]` | administrators | One trade feed per chat; default buys only, minimum 0; replaces the previous feed |
+| `/feed <token> [minimum\|$USD] [buys\|all]` | administrators | One trade feed per chat; default buys only, minimum 0; replaces the previous feed |
 | `/unfeed` | administrators | Stops this chat’s trade feed |
 | `/price [SYMBOL…]` | everyone | Oracle price, age in chain seconds, number of sources and stale state |
 | `/status` | everyone | Chain, head, UTC block time, L1/L1-data/L2 gas in FRI, RPC spec |

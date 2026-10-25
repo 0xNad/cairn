@@ -58,7 +58,7 @@ test('oracle boundary, expiration, missing, future and unsourced answers cannot 
 });
 test('price cache isolates pairs and refreshes at the next pass even at the same head', async () => {
   let calls=0, fail=true;
-  const prices=new Prices(config,{async call(_,params){calls++;assert.equal(params.block_id.block_number,10);if(fail&&params.request.calldata[1].includes('42'))throw Error();return ['125','2','1000','4','1'];}});
+  const prices=new Prices(config,{async call(_,params){calls++;assert.equal(params.block_id.block_number,10);if(fail&&params.request.calldata[1] === '0x422f555344')throw Error();return ['125','2','1000','4','1'];}});
   const bad={...token,pragma_pair:'B/USD'};
   assert.equal(await prices.get(bad,1000,{block_number:10}),null);
   assert.equal((await prices.get(token,1000,{block_number:10})).value,125n);
@@ -141,7 +141,9 @@ test('paused summaries retain unsent work beyond retention and re-summarize new 
   for(let i=1;i<=5;i++)add(i);store.transaction(()=>ledger.summarize(fmt));
   subs.pause(-1);ledger.prune(1000+8*86400);assert.equal(ledger.pending().length,0);
   subs.resume(-1);for(let i=6;i<=10;i++)add(i);store.transaction(()=>ledger.summarize(fmt));
-  const rows=ledger.pending();assert.equal(rows.length,3);assert.match(rows[2].body,/8 more alerts/);
+  let rows=ledger.pending();assert.equal(rows.length,3);assert.match(rows[2].body,/8 more alerts/);
+  for(let i=11;i<=15;i++)add(i);store.transaction(()=>ledger.summarize(fmt));
+  rows=ledger.pending();assert.equal(rows.length,3);assert.match(rows[2].body,/13 more alerts/);
   for(const r of rows)store.transaction(()=>ledger.sent(r.seq,987));
   assert.equal(store.sql("SELECT count(*) n FROM deliveries WHERE state <> 'sent'").get().n,0);
 });
