@@ -1,4 +1,4 @@
-// The delivery ledger. Each alert is keyed by (chat, transaction hash, event_index), the first event of its
+// The delivery ledger. Each alert is keyed by (chat, transaction hash, event_index, topic), the first event of its
 // message, and saved as pending in the same transaction as the scan that found it. It is marked sent, with
 // its message_id, only once Telegram accepts it; its text is then dropped and the key kept for seven days of
 // chain time, so that a rescan or a restart never sends it twice. Track stages use negative indexes.
@@ -36,14 +36,17 @@ export class Ledger {
       let count = rest.length;
       for (const r of rest) if (r.kind === 'summary') count += Number(this.#q('SELECT count(*) AS n FROM deliveries WHERE summary_seq = ?').get(r.seq).n) - 1;
       const links = [...new Set(rest.map(r => r.tx_hash))].slice(0, 4).map((tx, i) => fmt.tx(tx, `Transaction ${i + 1}`));
-      const topic = topics.size === 1 ? first.topic : 0;
+      const topic = first.topic;
+      const kinds = new Map();
+      for (const r of rest) kinds.set(r.kind, (kinds.get(r.kind) ?? 0) + 1);
+      const breakdown = [...kinds].map(([kind, n]) => `${n} ${kind === 'feed' ? 'trade' : kind === 'alert' ? 'wallet' : kind} posts`).join(' · ');
       this.add({ chatId, topic, txHash: first.tx_hash, eventIndex: -100 - first.seq, kind: 'summary',
         events: rest.map(r => r.event_index), block: first.block, chainTime: first.chain_time,
-        body: `<b>${count} more alerts</b> · burst summary\n${links.join(' · ')}${topics.size > 1 ? '\nAcross forum topics; individual subscriptions keep their topics.' : ''}\nUse /min, /mute or /feed to adjust this chat’s alerts.` });
+        body: `<b>${count} more alerts</b> · burst summary\n${breakdown}\n${links.join(' · ')}${topics.size > 1 ? `\nTopics: ${[...topics].map(t => t || 'General').join(', ')}` : ''}\nUse /min, /mute or /feed to adjust this chat’s alerts.` });
       const seq = this.#q('SELECT seq FROM deliveries WHERE chat_id = ? AND tx_hash = ? AND event_index = ? AND topic = ?')
         .get(chatId, first.tx_hash, -100 - first.seq, topic).seq;
       for (const r of rest) {
-        this.#q("UPDATE deliveries SET state = 'batched', summary_seq = ? WHERE seq = ? OR summary_seq = ?").run(seq, r.seq, r.seq);
+        this.#q("UPDATE deliveries SET state = 'batched', body = NULL, summary_seq = ? WHERE seq = ? OR summary_seq = ?").run(seq, r.seq, r.seq);
       }
     }
   }
@@ -51,5 +54,5 @@ export class Ledger {
   messageId(chatId, txHash, eventIndex) {
     return this.#q('SELECT message_id FROM deliveries WHERE chat_id = ? AND tx_hash = ? AND event_index = ?').get(chatId, txHash, eventIndex)?.message_id ?? null;
   }
-  prune(now) { this.#q('DELETE FROM deliveries WHERE chain_time < ?').run(now - LEDGER_TTL); }
+  prune(now) { this.#q('DELETE FROM deliveries WHERE state IN ('sent', 'dropped') AND chain_time < ?').run(now - LEDGER_TTL); }
 }

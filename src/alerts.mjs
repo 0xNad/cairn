@@ -87,7 +87,8 @@ export async function findAlerts(events, { interests, tokens, rpc, now, fmt, pri
     }
   }
   // Items refer to the same token event; carry price enrichment into rendered routes.
-  for (const g of groups.values()) for (const item of g.items) item.usd = alertable.find(c => c.ev === item.ev)?.usd;
+  const usdByEvent = new Map(alertable.map(c => [c.ev, c.usd]));
+  for (const g of groups.values()) for (const item of g.items) item.usd = usdByEvent.get(item.ev);
   const deliveries = [...groups.values()].map((g) => ({
     chatId: g.chatId, topic: g.topic, txHash: g.tx, eventIndex: g.items[0].ev.index, kind: 'alert', events: g.items.map((i) => i.ev.index),
     block: g.block, chainTime: headers.get(g.block).timestamp,
@@ -103,24 +104,22 @@ async function header(rpc, number) {
 }
 
 /**
- * The fee payment: the STRK Transfer from the transaction's sender to the block's sequencer_address, the last
- * event of its transaction, for the receipt's actual fee. Only such a candidate costs the two lookups. A
+ * The fee payment: the final STRK Transfer to the block's sequencer_address, the last
+ * event of its transaction, for the receipt's actual fee. Only such a candidate costs a receipt lookup. A
  * failed lookup fails the range, which the next pass reads again: a busy node never turns a fee into an alert.
  */
 async function isFee(ev, block, strk, rpc, cache) {
   if (ev.kind !== 'Transfer' || ev.token !== strk || ev.b !== block.sequencer) return false;
   if (!cache.has(ev.tx)) {
     const receipt = await rpc.call('starknet_getTransactionReceipt', { transaction_hash: ev.tx });
-    const tx = await rpc.call('starknet_getTransactionByHash', { transaction_hash: ev.tx });
     cache.set(ev.tx, {
       last: Array.isArray(receipt?.events) ? receipt.events.length - 1 : -1,
       fee: receipt?.actual_fee?.unit === 'FRI' ? unsigned(receipt.actual_fee.amount) : null,
-      // A DEPLOY_ACCOUNT transaction pays from the account it deploys, which only its receipt names.
-      sender: hex64(tx?.sender_address ?? tx?.contract_address ?? receipt?.contract_address ?? '0x0'),
+
     });
   }
   const fact = cache.get(ev.tx);
-  return ev.index === fact.last && ev.a === fact.sender && ev.amount === fact.fee;
+  return ev.index === fact.last && ev.amount === fact.fee;
 }
 
 /** One chat's message for one transaction: a line per matching event, then where and when. */

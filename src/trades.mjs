@@ -1,4 +1,4 @@
-import { FIELD, hex64, normalize, SELECTORS, U128, u256, unsigned } from './felt.mjs';
+import { FIELD, hex64, NodeValueError, normalize, SELECTORS, U128, u256, unsigned } from './felt.mjs';
 import { decimal, escapeHtml, utc } from './format.mjs';
 import { balanceOf } from './tokens.mjs';
 import { decodeTokenEvents } from './scanner.mjs';
@@ -108,6 +108,7 @@ export async function tradeAlerts(rawSwaps, rawTokens, feeds, ctx) {
       if (feed.usd && !meetsUsd(units, token, price, feed.units)) continue;
       if (!headers.has(block)) headers.set(block, await rpc.call('starknet_getBlockWithTxHashes', { block_id: { block_number: block } }));
       const header = headers.get(block), events = transfers.get(tx) ?? [];
+      if (!Number.isSafeInteger(header?.timestamp) || header.timestamp < 0) throw new NodeValueError();
       const trader = traderFromTransfers(events, token.address, net, excluded, await feeIndex(events, header, token.address, tokens, rpc, tx));
       let name = null, newHolder = false;
       if (trader) {

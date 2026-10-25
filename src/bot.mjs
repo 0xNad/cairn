@@ -18,7 +18,6 @@ import { trackStep } from './tracks.mjs';
 import { Rpc, Telegram, sleep } from './transport.mjs';
 
 const ALLOWED_UPDATES = ['message', 'callback_query', 'my_chat_member'];
-/** What the scanner reads from each range; round 3 adds its venue feeds here. */
 
 const ADMINS = new Set(['creator', 'administrator']);
 const LOUD_ALERTS = 3; // alerts per chat and pass with a notification; later ones in the same pass arrive silently

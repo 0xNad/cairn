@@ -34,7 +34,7 @@ export function parseCommand(message, username) {
 /** In a private chat, a pasted address or transaction hash is looked up as if it were a command. */
 export function parsePaste(message) {
   if (message?.chat?.type !== 'private') return null;
-  const match = /^\s*(0x[0-9a-fA-F]{1,64})\s*$/.exec(message.text ?? '');
+  const match = /^\s*(0x[0-9a-fA-F]{1,64}|[a-z0-9-]+\.stark)\s*$/.exec(message.text ?? '');
   return match ? { name: 'paste', argument: match[1] } : null;
 }
 
@@ -202,6 +202,12 @@ export async function respond(command, context) {
   if (command.name === 'price') {
     const lines = await context.prices.lines(command.argument, context.tokens, context.head);
     return () => ({ lines });
+  }
+  if (command.name === 'paste' && command.argument.endsWith('.stark')) {
+    let address;
+    try { address = await context.names.resolve(command.argument); } catch (e) { return () => ({ lines: textLines(e.message, context.clean) }); }
+    const lines = await answer({ name: 'balance', argument: address }, context);
+    return () => ({ lines, keyboard: context.head ? [[{ text: '👁 Watch this address', callback_data: `ow:${context.subs.offer(context.chat, 'watch', address, context.head.timestamp)}` }]] : [] });
   }
   if (command.name === 'paste') return paste(command.argument, context);
   if (SETTINGS.has(command.name)) return setting(command, context);
