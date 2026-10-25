@@ -104,22 +104,24 @@ async function header(rpc, number) {
 }
 
 /**
- * The fee payment: the final STRK Transfer to the block's sequencer_address, the last
- * event of its transaction, for the receipt's actual fee. Only such a candidate costs a receipt lookup. A
+ * The fee payment: the STRK Transfer from the sender to the block's sequencer_address, the last
+ * event of its transaction, for the receipt's actual fee. A candidate costs receipt and sender reads; the sender is used only to confirm the fee, never as the trader. A
  * failed lookup fails the range, which the next pass reads again: a busy node never turns a fee into an alert.
  */
 async function isFee(ev, block, strk, rpc, cache) {
   if (ev.kind !== 'Transfer' || ev.token !== strk || ev.b !== block.sequencer) return false;
   if (!cache.has(ev.tx)) {
     const receipt = await rpc.call('starknet_getTransactionReceipt', { transaction_hash: ev.tx });
+    const tx = await rpc.call('starknet_getTransactionByHash', { transaction_hash: ev.tx });
     cache.set(ev.tx, {
       last: Array.isArray(receipt?.events) ? receipt.events.length - 1 : -1,
       fee: receipt?.actual_fee?.unit === 'FRI' ? unsigned(receipt.actual_fee.amount) : null,
-
+      // A DEPLOY_ACCOUNT transaction pays from the account it deploys, which only its receipt names.
+      sender: hex64(tx?.sender_address ?? tx?.contract_address ?? receipt?.contract_address ?? '0x0'),
     });
   }
   const fact = cache.get(ev.tx);
-  return ev.index === fact.last && ev.amount === fact.fee;
+  return ev.index === fact.last && ev.a === fact.sender && ev.amount === fact.fee;
 }
 
 /** One chat's message for one transaction: a line per matching event, then where and when. */

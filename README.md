@@ -192,7 +192,7 @@ covers only the blocks after the head read when it was made, and the first start
 
 Extra calls happen only for events some chat cares about: `symbol` and `decimals` of a token outside the
 registry (cached for 7 days of chain time, "not a coin" included), the block header (time and
-`sequencer_address`), and, for a STRK transfer to the sequencer, the receipt to confirm its last event and actual fee. No transaction-sender lookup is made. When nobody subscribes, a pass reads nothing. Only the contract's own answers (not deployed, no
+`sequencer_address`), and, for a STRK transfer to the sequencer, the receipt and transaction sender to confirm the legacy fee rule. This sender lookup is confined to wallet fee detection and never identifies a trader. When nobody subscribes, a pass reads nothing. Only the contract's own answers (not deployed, no
 such entrypoint, a failed call) make a token "not a coin"; any other node error, like a failed header or fee
 lookup, fails the range, which the next pass reads again, so a busy node neither hides a token for a week
 nor turns a fee into an alert.

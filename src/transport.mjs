@@ -37,10 +37,10 @@ async function post(url, body, timeout, signal) {
     return { response, json };
   } finally { limit.clear(); }
 }
-// Only the frozen read surface: transfer flows identify traders, never transaction sender lookups.
+// Read-only RPC. Transaction sender is used only by the inherited wallet fee check, never for trade identity.
 const READ_METHODS = new Set(['starknet_chainId', 'starknet_specVersion', 'starknet_blockNumber',
   'starknet_getBlockWithTxHashes', 'starknet_getClassHashAt', 'starknet_call',
-  'starknet_getTransactionStatus', 'starknet_getTransactionReceipt',
+  'starknet_getTransactionStatus', 'starknet_getTransactionReceipt', 'starknet_getTransactionByHash',
   'starknet_getEvents']);
 
 function validBlockId(value) {

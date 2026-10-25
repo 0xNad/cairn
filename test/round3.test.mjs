@@ -181,3 +181,17 @@ test('busy wallet alerts keep valid bounded HTML when verified names are long', 
   const {parseHtml}=await import('../.launchpad/checks/round-3/fake-telegram.mjs');
   assert.equal(parseHtml(deliveries[0].body).error,undefined);
 });
+
+test('legacy wallet fee suppression verifies sender while trades never infer trader from sender', async () => {
+  const { findAlerts } = await import('../src/alerts.mjs');
+  const interests={watchers:new Map([[TRADER,[{chatId:1,since:0,topic:0}]]]),whales:new Map(),muted:new Set(),floors:new Map(),labels:new Map()};
+  const calls=[];
+  const rpc={async call(method){calls.push(method);
+    if(method==='starknet_getBlockWithTxHashes')return {timestamp:1000,sequencer_address:WRAPPER};
+    if(method==='starknet_getTransactionReceipt')return {events:[{}],actual_fee:{unit:'FRI',amount:'0x9'}};
+    if(method==='starknet_getTransactionByHash')return {sender_address:OTHER};
+    throw Error('unexpected RPC');
+  }};
+  const {deliveries}=await findAlerts(decodeTokenEvents([transfer(TRADER,WRAPPER,9n,0)]),{interests,tokens:{strk:TOKEN,async get(){return token;}},rpc,now:1000,fmt});
+  assert.equal(deliveries.length,1);assert.equal(calls.filter(c=>c==='starknet_getTransactionByHash').length,1);
+});

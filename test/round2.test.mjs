@@ -247,6 +247,6 @@ test('alerts: one message per chat per transaction, fee and noise suppressed, fl
     assert.match(view[2][3], /^↑ Out −1 OUT \(unverified, 0x0000…07e4\) from 0x0000…000a to 0x0000…000b\n/);
     assert.match(view[3][3], /Approval: Vault lets spender 0x0000…000b spend unlimited STRK/);
     assert.deepEqual(seen, [[1, A, OTHER], [2, A, OTHER]]);
-    assert.equal(rpc.log.filter((c) => c.method === 'starknet_getTransactionByHash').length, 0);
+    assert.equal(rpc.log.filter((c) => c.method === 'starknet_getTransactionByHash').length, 1);
   } finally { store.close(); }
 });
