@@ -42,7 +42,7 @@ export class Ledger {
       const breakdown = [...kinds].map(([kind, n]) => `${n} ${kind === 'feed' ? 'trade' : kind === 'alert' ? 'wallet' : kind} posts`).join(' · ');
       this.add({ chatId, topic, txHash: first.tx_hash, eventIndex: -100 - first.seq, kind: 'summary',
         events: rest.map(r => r.event_index), block: first.block, chainTime: first.chain_time,
-        body: `<b>${count} more alerts</b> · burst summary\n${breakdown}\n${links.join(' · ')}${topics.size > 1 ? `\nTopics: ${[...topics].map(t => t || 'General').join(', ')}` : ''}\nUse /min, /mute or /feed to adjust this chat’s alerts.` });
+        body: `<b>${count} more alerts</b> · burst summary\n${breakdown}\n${links.join(' · ')}${topics.size > 1 ? `\nTopics: ${[...topics].slice(0, 8).map(t => t || 'General').join(', ')}${topics.size > 8 ? ` + ${topics.size - 8} others` : ''}` : ''}\nUse /min, /mute or /feed to adjust this chat’s alerts.` });
       const seq = this.#q('SELECT seq FROM deliveries WHERE chat_id = ? AND tx_hash = ? AND event_index = ? AND topic = ?')
         .get(chatId, first.tx_hash, -100 - first.seq, topic).seq;
       for (const r of rest) {

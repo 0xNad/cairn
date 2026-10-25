@@ -111,7 +111,8 @@ export class Names {
         if (labels.some((s, i) => !s || encodeLabel(s) !== values[i])) return null;
         const forward = await this.call(SELECTORS.domain_to_address, [r[0], ...r.slice(1), '0x0'], block);
         if (!Array.isArray(forward) || forward.length !== 1 || normalize(forward[0]) !== address) return null;
-        return `${labels.join('.')}.stark`;
+        const name = `${labels.join('.')}.stark`;
+        return name.length <= 128 ? name : null;
       } catch { return null; }
     })());
     return this.cache.get(key);

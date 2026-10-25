@@ -170,3 +170,14 @@ test('unauthorized feed commands perform no lookup or mutation, anonymous admin 
   for(const name of ['feed','unfeed']){const commit=await feedSetting({name,argument:'STRK'},ctx);assert.match(commit().lines.join(' '),/administrator/);}
   assert.equal(touched,0);
 });
+
+test('busy wallet alerts keep valid bounded HTML when verified names are long', async () => {
+  const { findAlerts } = await import('../src/alerts.mjs');
+  const raw=Array.from({length:20},(_,i)=>transfer(OTHER,TRADER,((1n<<256n)-1n),i));
+  const interests={watchers:new Map([[TRADER,[{chatId:1,since:0,topic:0}]]]),whales:new Map(),muted:new Set(),floors:new Map(),labels:new Map()};
+  const rpc={async call(method){assert.equal(method,'starknet_getBlockWithTxHashes');return {timestamp:1000,sequencer_address:WRAPPER};}};
+  const {deliveries}=await findAlerts(decodeTokenEvents(raw),{interests,tokens:{strk:TOKEN,async get(){return token;}},rpc,now:1000,fmt,names:{async reverse(){return 'a'.repeat(122)+'.stark';}}});
+  assert.equal(deliveries.length,1);assert.ok(deliveries[0].body.length<=4096);assert.match(deliveries[0].body,/more in this transaction/);
+  const {parseHtml}=await import('../.launchpad/checks/round-3/fake-telegram.mjs');
+  assert.equal(parseHtml(deliveries[0].body).error,undefined);
+});

@@ -70,6 +70,7 @@ test('RPC refuses write methods and speculative blocks before HTTP', async (t) =
   const url = await server(t, (_, res) => { contacted++; res.end('{}'); });
   const client = new Rpc(config(url), new AbortController().signal);
   await assert.rejects(client.call('starknet_addInvokeTransaction'), CairnError);
+  await assert.rejects(client.call('starknet_getTransactionByHash', { transaction_hash: '0x123' }), CairnError);
   await assert.rejects(client.call('starknet_getBlockWithTxHashes', { block_id: 'pending' }), CairnError);
   await assert.rejects(client.call('starknet_getBlockWithTxHashes', { block_id: 'pre_confirmed' }), CairnError);
   assert.equal(contacted, 0);

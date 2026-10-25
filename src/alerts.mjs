@@ -128,8 +128,14 @@ function render(group, time, labels, fmt, names = new Map()) {
     ? fmt.contract(address, labels.get(address) ? escapeHtml(labels.get(address)) : names.get(address) ? escapeHtml(names.get(address)) : short(address))
     : fmt.contract(address, names.get(address) ? escapeHtml(names.get(address)) : undefined);
   const items = routes(group.items);
-  const lines = items.slice(0, MAX_ITEMS).map((item) => line(item, name, fmt));
-  if (items.length > MAX_ITEMS) lines.push(`… and ${items.length - MAX_ITEMS} more in this transaction.`);
+  const lines = [];
+  let size = 0;
+  for (const item of items.slice(0, MAX_ITEMS)) {
+    const rendered = line(item, name, fmt);
+    if (size + rendered.length > 3400) break;
+    lines.push(rendered); size += rendered.length + 1;
+  }
+  if (items.length > lines.length) lines.push(`… and ${items.length - lines.length} more in this transaction.`);
   lines.push(`Block ${group.block} · ${utc(time)} · ${fmt.tx(group.tx, 'View transaction')}`);
   return lines.join('\n');
 }
