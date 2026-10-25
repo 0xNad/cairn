@@ -51,7 +51,10 @@ export class Tokens {
    * Throws NodeBusy when the node fails.
    */
   async resolve(argument, now) {
-    const value = String(argument ?? '').trim();
+    let value = String(argument ?? '').trim();
+    if (value.endsWith('.stark') && this.names) {
+      try { value = await this.names.resolve(value); } catch (e) { return { error: e.message }; }
+    }
     if (!value) return { error: 'Name a token: a registry symbol such as STRK, or a token contract address.' };
     if (/^0x/i.test(value)) {
       let address;

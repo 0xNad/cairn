@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS deliveries (seq INTEGER PRIMARY KEY AUTOINCREMENT, ch
   state TEXT NOT NULL, message_id INTEGER, body TEXT, UNIQUE (chat_id, tx_hash, event_index)) STRICT;
 CREATE INDEX IF NOT EXISTS deliveries_state ON deliveries (state, seq);
 `;
-const SCHEMA_VERSION = '2';
+const SCHEMA_VERSION = '3';
 
 function safeFile(path, what) {
   if (!existsSync(path)) return;
@@ -60,8 +60,25 @@ export class Store {
       this.db.exec('PRAGMA journal_mode = DELETE; PRAGMA synchronous = FULL; PRAGMA secure_delete = ON; PRAGMA temp_store = MEMORY;');
       this.db.exec(SCHEMA);
       const version = this.get('schema');
-      if (version !== null && version !== SCHEMA_VERSION) throw new Error('unknown schema');
-      this.transaction(() => this.set('schema', SCHEMA_VERSION));
+      if (version !== null && !['2', SCHEMA_VERSION].includes(version)) throw new Error('unknown schema');
+      this.transaction(() => {
+        if (version !== SCHEMA_VERSION) {
+          for (const table of ['watches', 'whales', 'tracks']) this.db.exec(`ALTER TABLE ${table} ADD COLUMN topic INTEGER NOT NULL DEFAULT 0`);
+          this.db.exec(`ALTER TABLE deliveries RENAME TO deliveries_v2;
+            DROP INDEX deliveries_state;
+            CREATE TABLE deliveries (seq INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, tx_hash TEXT NOT NULL,
+              event_index INTEGER NOT NULL, kind TEXT NOT NULL, events TEXT NOT NULL, block INTEGER, chain_time INTEGER NOT NULL,
+              state TEXT NOT NULL, message_id INTEGER, body TEXT, topic INTEGER NOT NULL DEFAULT 0, summary_seq INTEGER,
+              UNIQUE (chat_id, tx_hash, event_index, topic)) STRICT;
+            INSERT INTO deliveries (seq,chat_id,tx_hash,event_index,kind,events,block,chain_time,state,message_id,body)
+              SELECT seq,chat_id,tx_hash,event_index,kind,events,block,chain_time,state,message_id,body FROM deliveries_v2;
+            DROP TABLE deliveries_v2;
+            CREATE INDEX deliveries_state ON deliveries (state,seq);`);
+        }
+        this.db.exec(`CREATE TABLE IF NOT EXISTS feeds (chat_id INTEGER PRIMARY KEY, token TEXT NOT NULL, minimum TEXT NOT NULL,
+          units TEXT NOT NULL, usd INTEGER NOT NULL, mode TEXT NOT NULL, since_block INTEGER NOT NULL, topic INTEGER NOT NULL) STRICT;`);
+        this.set('schema', SCHEMA_VERSION);
+      });
       this.importRoundOne();
     } catch (error) {
       this.close();

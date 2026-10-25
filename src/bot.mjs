@@ -1,4 +1,8 @@
 import { performance } from 'node:perf_hooks';
+import { Names } from './names.mjs';
+import { Prices } from './prices.mjs';
+import { tradeAlerts, VENUES } from './trades.mjs';
+import { TOKEN_EVENTS } from './scanner.mjs';
 import { walletAlerts } from './alerts.mjs';
 import { callback, COMMANDS, parseCommand, parsePaste, respond } from './commands.mjs';
 import { CairnError, log, NodeBusy, RpcError, TelegramRefused } from './errors.mjs';
@@ -15,7 +19,7 @@ import { Rpc, Telegram, sleep } from './transport.mjs';
 
 const ALLOWED_UPDATES = ['message', 'callback_query', 'my_chat_member'];
 /** What the scanner reads from each range; round 3 adds its venue feeds here. */
-const FEEDS = [walletAlerts];
+
 const ADMINS = new Set(['creator', 'administrator']);
 const LOUD_ALERTS = 3; // alerts per chat and pass with a notification; later ones in the same pass arrive silently
 /** A 400 that means the bot may not write to the chat for now, rather than that one message was bad. */
@@ -74,6 +78,9 @@ class Bot {
     this.subs = new Subscriptions(o.store, o.config);
     this.ledger = new Ledger(o.store);
     this.tokens = new Tokens(o.config, o.store, o.rpc);
+    this.names = new Names(o.config, o.rpc);
+    this.prices = new Prices(o.config, o.rpc);
+    this.tokens.names = this.names;
     this.rate = new RateLimit(o.store);
     this.scanner = new Scanner(o.rpc, o.config);
     this.fmt = links(o.config, o.clean);
@@ -122,6 +129,7 @@ class Bot {
   }
 
   async readHead() {
+    this.names.reset(); this.prices.reset();
     try {
       this.identity ??= await handshake(this.rpc, this.config, this.clean);
       const block = await this.rpc.call('starknet_getBlockWithTxHashes', { block_id: 'latest' });
@@ -209,6 +217,7 @@ class Bot {
     let admin;
     return {
       config: this.config, rpc: this.rpc, username: this.username, clean: this.clean, head: this.head, spec: this.identity?.spec,
+      names: this.names, prices: this.prices, topic: Number.isSafeInteger(message?.message_thread_id) ? message.message_thread_id : 0,
       signal: this.signal, subs: this.subs, tokens: this.tokens, fmt: this.fmt, chat,
       admin: (user) => (admin ??= this.isAdmin(chat, message, user)),
     };
@@ -299,15 +308,24 @@ class Bot {
     this.behind = false;
     if (!range) return;
     const interests = this.subs.interests();
-    const context = { interests, tokens: this.tokens, rpc: this.rpc, now: this.head.timestamp, fmt: this.fmt };
+    const context = { config: this.config, head: this.head, names: this.names, prices: this.prices, interests, tokens: this.tokens, rpc: this.rpc, now: this.head.timestamp, fmt: this.fmt };
     const found = { deliveries: [], seen: [] };
     try {
-      // A feed nobody subscribes to reads nothing: no subscription can cover these blocks.
-      for (const feed of FEEDS.filter((f) => f.wanted(interests))) {
-        const result = await feed.find(await this.scanner.events(range, feed.filter), context);
+      const feeds = this.subs.feeds();
+      const rawTokens = !interests.empty || feeds.length ? await this.scanner.events(range, TOKEN_EVENTS) : [];
+      if (!interests.empty) {
+        const result = await walletAlerts.find(rawTokens, context);
         found.deliveries.push(...result.deliveries);
-        found.seen.push(...(result.seen ?? []));
+        found.seen.push(...result.seen);
       }
+      if (feeds.length) {
+        const swaps = [];
+        for (const v of VENUES) if (this.config.contracts[v.key]) {
+          swaps.push(...await this.scanner.events(range, { address: this.config.contracts[v.key], keys: [[v.selector]] }));
+        }
+        found.deliveries.push(...await tradeAlerts(swaps, rawTokens, feeds, context));
+      }
+      found.deliveries.sort((a, b) => a.block - b.block);
     } catch (error) {
       if (this.signal.aborted || !retriable(error)) throw error;
       log('warn', `node busy: blocks ${range.from} to ${range.to} will be scanned again.`);
@@ -339,6 +357,7 @@ class Bot {
   }
   /** Pending alerts, oldest first, skipping chats that are paused or were blocked during this pass. */
   async deliver() {
+    this.store.transaction(() => this.ledger.summarize(this.fmt));
     const sentTo = new Map(), blocked = new Set(), moved = new Map();
     for (const row of this.ledger.pending()) {
       if (this.signal.aborted) return;
@@ -346,7 +365,7 @@ class Bot {
       if (blocked.has(chatId)) continue;
       const count = sentTo.get(chatId) ?? 0;
       sentTo.set(chatId, count + 1);
-      const r = await this.send(chatId, row.body, count >= LOUD_ALERTS ? { disable_notification: true } : {});
+      const r = await this.send(chatId, row.body, { ...(row.topic ? { message_thread_id: row.topic } : {}), ...(count >= LOUD_ALERTS ? { disable_notification: true } : {}) });
       if (r.message) {
         if (r.chatId !== chatId) moved.set(row.chat_id, r.chatId);
         this.store.transaction(() => this.ledger.sent(row.seq, r.message.message_id));
