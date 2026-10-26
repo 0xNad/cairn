@@ -4,8 +4,8 @@
 
 Cairn is an open-source Telegram bot for Starknet. It answers balance and transaction lookups in private
 chats and groups, and alerts a chat when a watched wallet moves any token or grants an approval, when a
-large amount of a token moves, or when a tracked transaction is accepted. Buy feeds and network guards are
-planned for later rounds.
+large amount of a token moves, or when a tracked transaction is accepted. Group trade feeds include
+Pragma prices and verified .stark names. Network guards are planned for round 4.
 
 It only reads the chain. It holds no keys, signs nothing, never trades and has no Mini App. It runs as a
 single Node.js process with zero dependencies, on any Starknet RPC. It is MIT-licensed, so anyone can host it.
@@ -13,9 +13,8 @@ single Node.js process with zero dependencies, on any Starknet RPC. It is MIT-li
 It is built in public by AI coding agents, in four judged rounds on
 [Hotpod](https://agent-launchpad-six.vercel.app).
 
-> **Status:** rounds 1 and 2 are implemented: lookups, then wallet alerts on every token, whale alerts,
-> floors, mutes, `/track`, buttons, `/export` and `/forget`. Group feeds and guards belong to rounds 3
-> and 4. [ARCHITECTURE.md](ARCHITECTURE.md) specifies the frozen interface.
+> **Status:** rounds 1–3 are implemented: lookups, wallet alerts, group feeds, prices and names.
+> Network guards belong to round 4. [ARCHITECTURE.md](ARCHITECTURE.md) specifies the frozen interface.
 
 ## What it looks like
 
@@ -45,7 +44,8 @@ View transaction
 - **One message per chat per transaction**, in chain order: each matching transfer on its own line, with
   the exact amount, the direction (in, out, or between two watched wallets), the counterparty, the label,
   the block, its UTC time and a link to check it. A busy transaction shows ten lines and a count of the rest.
-  After three alerts to one chat in one pass, the next ones arrive without a notification sound.
+  Groups receive at most three alert messages per pass; bursts send two details and a remainder count.
+  Private chats have no message budget; messages after the third arrive silently.
 - **Every token, plainly marked.** Cairn sees every ERC-20, but anything outside its registry is
   **unverified**: its symbol is shown in code, never as a link, followed by "unverified" and its contract.
   An airdropped fake "USDC" always reads `USDC (unverified, 0x05ce…7841)`, never as the real one. One
@@ -89,8 +89,8 @@ Connect your coding agent on [Hotpod](https://agent-launchpad-six.vercel.app). E
 
 ## For Starknet communities
 
-- **Want a buy feed or whale alerts in your group?** Open an issue: tell us the token and what you'd want to
-  see.
+- **Want a buy feed or whale alerts in your group?** Add your hosted bot, then use `/feed` or `/whale`
+  as a group administrator.
 - **Run a treasury, a DAO or a validator?** Tell us which wallets you would watch, and why.
 - **Want to host an instance?** It is one process: `node cairn.mjs run`, a BotFather token and an RPC URL.
 
@@ -104,7 +104,8 @@ Connect your coding agent on [Hotpod](https://agent-launchpad-six.vercel.app). E
 - **It keeps little, and shows all of it.** Per chat: its id and type, its settings, the tokens seen moving
   for a watched address, alert delivery records for 7 days, and a pasted address or hash for a day (the
   value behind its button). Per person, only their id and command times for one minute, for the rate limit.
-  Never message text, names or usernames. `/export` shows everything stored for a chat; `/forget` deletes
+  Price samples stay in memory per pass; reverse-name candidates are cached in SQLite for an hour of chain
+  time and forward-verified each pass before display. Never Telegram message text, names or usernames. `/export` shows everything stored for a chat; `/forget` deletes
   it, and in a private chat the person's rate-limit entry too.
 - **Groups are run by their administrators.** Members can look things up and read `/list`; only an
   administrator can change what the group watches, and every button press is checked again.
@@ -152,6 +153,9 @@ configuration or an incompatible chain/spec, and 3 for a rejected Telegram token
 | `/start`, `/help` | everyone | Commands, privacy, and a link to add the bot to a group |
 | `/status` | everyone | Chain, head, UTC block time, L1/L1-data/L2 gas in FRI, RPC spec |
 | `/balance 0x… [token]` | everyone | Exact balances of every registry token, or of one token (a symbol or any token address); for a watched address, also the other tokens seen moving for it |
+| `/price [SYMBOL…]` | everyone | Exact Pragma prices, age in seconds, source count, and stale/no-price status; no arguments lists configured pairs |
+| `/feed <token> [minimum\|$usd] [buys\|all]` | administrators | Replaces the chat’s trade feed; default minimum 0, buys only; `all` includes sells |
+| `/unfeed` | administrators | Stops the trade feed |
 | `/tx 0x…` | everyone | Finality, execution, block, fee, escaped revert reason, explorer link |
 | `/list` | everyone | The chat's watches, whale alerts, floors, mutes and tracks, with Remove buttons |
 | `/watch 0x… [label]` | administrators | Alerts on every transfer in or out, on any token, and every approval the address grants (`CAIRN_MAX_WATCHES` per chat, default 20; labels up to 32 characters) |
@@ -197,9 +201,56 @@ lookup, fails the range, which the next pass reads again, so a busy node neither
 nor turns a fee into an alert.
 
 The code keeps the scanner (`src/scanner.mjs`: ranges, paging, decoding by shape) apart from the alert rules
-(`src/alerts.mjs`) and the delivery ledger (`src/ledger.mjs`). A feed is a filter plus the function that turns
-its events into deliveries; round 3's Ekubo and AVNU feeds are added beside `walletAlerts` and read the same
-ranges.
+(`src/alerts.mjs`) and the delivery ledger (`src/ledger.mjs`). Venue descriptions and netting live in
+`src/venues.mjs`; `src/feed.mjs` turns the combined range into trades, `src/prices.mjs` reads Pragma, and
+`src/names.mjs` encodes names and verifies reverse lookups.
+
+### Trades, prices and names
+
+`/feed STRK $100 all` posts buys and sells worth at least $100; `/feed STRK 100` posts buys of at least
+100 STRK. Token floors compare exact base units, including equality. A dollar floor requires a fresh
+verified price on every trade; missing or stale prices suppress that trade. Unverified tokens can use token
+floors, carry an escaped code symbol and the unverified mark, and never receive USD values.
+
+The network file accepts optional `contracts.ekubo_core`, `contracts.avnu_exchange`, `contracts.pragma`
+and `contracts.naming` addresses. Each token may have `pragma_pair`, such as `STRK/USD`, matching
+`^[A-Z0-9]{1,10}/[A-Z0-9]{1,10}$`. Invalid settings exit 2 before contacting either service. Missing
+contracts disable their features with an explanation; either venue is enough for feeds. Mainnet includes
+both venues, Pragma and naming. Sepolia includes only Pragma and naming, with a pair only for STRK.
+USDC.e uses the USDC/USD oracle pair as an assumed peg.
+
+Venue filters sit beside the wallet filter on the same scanner ranges and follow all continuation pages.
+For a transaction containing an AVNU Swap involving the feed token, Cairn nets the AVNU swaps and ignores
+Ekubo. Otherwise it nets Ekubo Swapped deltas, reversing the pool signs to the trader’s perspective.
+Positive token net is a buy, negative a sell, and zero is silent. Intermediate route flows cancel; the
+remaining counter-token nets supply the Paid line (absolute amounts, joined if there is more than one).
+The size row scales logarithmically with fresh USD (1 dot at $10, 3 at $100, 5 at $1k, 7 at $10k, 9 at
+$100k, capped at 10), or adds one dot per doubling above the token minimum; without either, it shows one dot.
+
+The trader is the largest net gainer of the feed token on a buy, or largest net loser on a sell, computed
+from that transaction’s modern or legacy Transfer events. Ties use the earliest event index. The fee
+payment, zero address and venue contracts are excluded. Neither transaction sender nor AVNU beneficiary
+identifies the trader. No qualifying flow means no trader line. A zero token balance in block `trade−1`
+adds “new holder”; failed historical calls never add it.
+
+`/price [SYMBOL…]` reads Pragma independently for each pair, reporting the exact price, source count and
+age measured against the chain head. `CAIRN_PRICE_MAX_AGE` defaults to 900 seconds; equality is fresh.
+Oracle samples are shared within a pass. Feed, watch and whale USD values require fresh verified prices,
+round half up to two decimal places and show `<$0.01` below a cent. An oracle zero price and timestamp
+means “no price”; read failures, unknown symbols and missing pairs report “unavailable” with a reason,
+without hiding other pairs.
+
+One lowercase label of letters, digits or hyphens followed by `.stark` works wherever a contract or wallet
+address is accepted. Subdomain inputs, uppercase, underscores, unknown names and labels that overflow a
+felt are refused. Reverse names, including multiple labels, display only after all labels resolve back to
+the same address. Cached reverse candidates expire after one hour of chain time, and every pass verifies
+them again before display. Labels set by `/watch` take precedence over reverse names.
+
+Feed, watch and whale subscriptions retain their setup command’s forum topic. Per group per pass, at most
+three non-reply messages are sent across the shared ledger: if more than three are due, two detailed
+messages and “...and N more: X trades, Y alerts” cover them all. Summarized entries are marked sent with the
+summary’s message id and never replayed. The summary uses the first summarized alert’s topic. Command
+replies are exempt; private chats are unbudgeted.
 
 ### State and delivery
 
@@ -214,7 +265,8 @@ after a kill. State and lock files reject symbolic links and hard links. Corrupt
 a kill can lose a reply, never replay an accepted one.
 
 **Alerts.** Each alert is keyed by (chat, transaction hash, `event_index`) and saved as pending in the same
-transaction that moves the cursor past its block. It is marked sent, with its `message_id`, only once
+transaction that moves the cursor past its block. Feed posts reserve index −4; topic copies of wallet
+alerts use separate negative indexes, retaining original event positions in the ledger’s events array. It is marked sent, with its `message_id`, only once
 Telegram accepts it; its text is then dropped and the key kept for 7 days of chain time. A kill before
 Telegram accepts an alert leaves it pending, and the next pass sends it; a confirmed alert is never sent
 again, across restarts, rescans and failed pages. Telegram's `sendMessage` has no idempotency key, so one
@@ -241,7 +293,7 @@ Any other refusal drops that one alert with a warning in the logs.
 ### Checks
 
 ```sh
-npm run check   # rounds 1 and 2: node .launchpad/checks/round-<n>/run.mjs
+npm run check   # rounds 1–3: node .launchpad/checks/round-<n>/run.mjs
 npm test        # node --test test/*.test.mjs
 ```
 
@@ -250,7 +302,8 @@ processes, including kills, retries, strict host limits and credential scans. Th
 redirects, ambiguous sends, corruption, concurrent state owners, symlinks and hard links, the round 1
 upgrade, full-range u256 arithmetic, typed amounts, short-string and ByteArray symbols, decoding by shape,
 paging and restarts, the ledger, `/forget` leaving no bytes behind, rate limits and the alert rules. They use
-Node built-ins only.
+Node built-ins only. Round 3 adds name vectors, venue netting, transfer-derived traders, price freshness
+and USD formatting tests.
 
 ## Build it with your agent
 

@@ -58,6 +58,7 @@ export function loadConfig(args, env = process.env) {
     rpcRps: integer(env, 'CAIRN_RPC_RPS', 5, 1, 100),
     rpcTimeout: integer(env, 'CAIRN_RPC_TIMEOUT_MS', 10000, 100),
     maxBlocks: integer(env, 'CAIRN_MAX_BLOCKS', 500, 1, 10000),
+    priceMaxAge: integer(env, 'CAIRN_PRICE_MAX_AGE', 900, 0),
     maxWatches: integer(env, 'CAIRN_MAX_WATCHES', 20, 1, 200),
     logLevel: env.CAIRN_LOG ?? 'info',
   };
@@ -79,7 +80,16 @@ export function loadConfig(args, env = process.env) {
     if (addresses.has(address)) entryBad(`${at}.address`, 'duplicate normalized address.');
     addresses.add(address);
     if (!Number.isInteger(t.decimals) || t.decimals < 0 || t.decimals > 36) entryBad(`${at}.decimals`, 'must be an integer from 0 to 36.');
-    return { symbol: t.symbol, address, decimals: t.decimals };
+    if (t.pragma_pair !== undefined && (typeof t.pragma_pair !== 'string' || !/^[A-Z0-9]{1,10}\/[A-Z0-9]{1,10}$/.test(t.pragma_pair))) entryBad(`${at}.pragma_pair`, 'use an uppercase oracle pair such as STRK/USD.');
+    return { symbol: t.symbol, address, decimals: t.decimals, ...(t.pragma_pair === undefined ? {} : { pragma_pair: t.pragma_pair }) };
   });
+  config.contracts = {};
+  if (network.contracts !== undefined && (!network.contracts || typeof network.contracts !== 'object' || Array.isArray(network.contracts))) entryBad('contracts', 'must be an object.');
+  for (const key of ['ekubo_core', 'avnu_exchange', 'pragma', 'naming']) {
+    if (network.contracts && Object.hasOwn(network.contracts, key)) {
+      try { config.contracts[key] = normalize(network.contracts[key]); }
+      catch { entryBad(`contracts.${key}`, 'invalid Starknet address.'); }
+    }
+  }
   return config;
 }

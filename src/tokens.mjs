@@ -53,9 +53,9 @@ export class Tokens {
   async resolve(argument, now) {
     const value = String(argument ?? '').trim();
     if (!value) return { error: 'Name a token: a registry symbol such as STRK, or a token contract address.' };
-    if (/^0x/i.test(value)) {
+    if (/^0x/i.test(value) || value.endsWith('.stark')) {
       let address;
-      try { address = normalize(value); } catch (error) { return { error: error.message.replace('address', 'token address') }; }
+      try { address = this.names ? await this.names.address(value) : normalize(value); } catch (error) { return { error: error.message.replace('address', 'token address') }; }
       const token = await this.get(address, now);
       return token ? { token } : { error: 'That contract is not an ERC-20 token: it does not answer decimals from 0 to 36.' };
     }
