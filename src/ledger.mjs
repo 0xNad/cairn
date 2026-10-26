@@ -1,4 +1,4 @@
-// The delivery ledger. Each alert is keyed by (chat, transaction hash, event_index), the first event of its
+// The delivery ledger. Each alert is keyed by (chat, transaction hash, event_index, topic), the first event of its
 // message, and saved as pending in the same transaction as the scan that found it. It is marked sent, with
 // its message_id, only once Telegram accepts it; its text is then dropped and the key kept for seven days of
 // chain time, so that a rescan or a restart never sends it twice. Track stages use negative indexes.
@@ -10,21 +10,49 @@ export class Ledger {
   constructor(store) { this.store = store; }
   #q(text) { return this.store.sql(text); }
   /** Saves an alert before it is sent; false when its key is already in the ledger. */
-  add({ chatId, txHash, eventIndex, kind, events = [eventIndex], block = null, chainTime, body }) {
-    return this.#q(`INSERT OR IGNORE INTO deliveries (chat_id, tx_hash, event_index, kind, events, block, chain_time, state, body)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)`).run(chatId, txHash, eventIndex, kind, JSON.stringify(events), block, chainTime, body).changes === 1;
+  add({ chatId, txHash, eventIndex, kind, events = [eventIndex], block = null, chainTime, body, topic = 0 }) {
+    return this.#q(`INSERT OR IGNORE INTO deliveries (chat_id, tx_hash, event_index, kind, events, block, chain_time, state, body, topic)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`).run(chatId, txHash, eventIndex, kind, JSON.stringify(events), block, chainTime, body, topic).changes === 1;
   }
   /** Pending alerts of chats that are not paused, in the order they were found (chain order). */
-  pending(limit = 1000) {
-    return this.#q(`SELECT d.seq, d.chat_id, d.body FROM deliveries d LEFT JOIN chats c ON c.chat_id = d.chat_id
+  pending(limit = -1) {
+    return this.#q(`SELECT d.seq, d.chat_id, d.body, d.topic, d.tx_hash, d.event_index, d.block, d.chain_time, d.kind, c.type FROM deliveries d LEFT JOIN chats c ON c.chat_id = d.chat_id
       WHERE d.state = 'pending' AND coalesce(c.paused, 0) = 0 ORDER BY d.seq LIMIT ?`).all(limit);
   }
-  sent(seq, messageId) { this.#q("UPDATE deliveries SET state = 'sent', message_id = ?, body = NULL WHERE seq = ?").run(messageId, seq); }
+  sent(seq, messageId) { this.#q("UPDATE deliveries SET state = 'sent', message_id = ?, body = NULL WHERE seq = ? OR summary_seq = ?").run(messageId, seq, seq); }
   /** Telegram refused it for good (not a 403 or a migration): keep the key, drop the text. */
-  dropped(seq) { this.#q("UPDATE deliveries SET state = 'dropped', body = NULL WHERE seq = ?").run(seq); }
+  dropped(seq) { this.#q("UPDATE deliveries SET state = 'dropped', body = NULL WHERE seq = ? OR summary_seq = ?").run(seq, seq); }
+  /** Coalesce each group's backlog before any send. Commands are never in this ledger. */
+  summarize(fmt) {
+    const groups = new Map();
+    for (const r of this.pending()) if (['group', 'supergroup'].includes(r.type)) {
+      if (!groups.has(r.chat_id)) groups.set(r.chat_id, []);
+      groups.get(r.chat_id).push(r);
+    }
+    for (const [chatId, rows] of groups) {
+      if (rows.length <= 3) continue;
+      const rest = rows.slice(2), first = rest[0];
+      const topics = new Set(rest.map(r => r.topic));
+      let count = rest.length;
+      for (const r of rest) if (r.kind === 'summary') count += Number(this.#q("SELECT count(*) AS n FROM deliveries WHERE summary_seq = ? AND kind <> 'summary'").get(r.seq).n) - 1;
+      const links = [...new Set(rest.map(r => r.tx_hash))].slice(0, 4).map((tx, i) => fmt.tx(tx, `Transaction ${i + 1}`));
+      const topic = first.topic;
+      const kinds = new Map();
+      for (const r of rest) kinds.set(r.kind, (kinds.get(r.kind) ?? 0) + 1);
+      const breakdown = [...kinds].map(([kind, n]) => `${n} ${kind === 'feed' ? 'trade' : kind === 'alert' ? 'wallet' : kind} posts`).join(' · ');
+      this.add({ chatId, topic, txHash: first.tx_hash, eventIndex: -100 - first.seq, kind: 'summary',
+        events: rest.map(r => r.event_index), block: first.block, chainTime: first.chain_time,
+        body: `<b>${count} more alerts</b> · burst summary\n${breakdown}\n${links.join(' · ')}${topics.size > 1 ? `\nTopics: ${[...topics].slice(0, 8).map(t => t || 'General').join(', ')}${topics.size > 8 ? ` + ${topics.size - 8} others` : ''}` : ''}\nUse /min, /mute or /feed to adjust this chat’s alerts.` });
+      const seq = this.#q('SELECT seq FROM deliveries WHERE chat_id = ? AND tx_hash = ? AND event_index = ? AND topic = ?')
+        .get(chatId, first.tx_hash, -100 - first.seq, topic).seq;
+      for (const r of rest) {
+        this.#q("UPDATE deliveries SET state = 'batched', body = NULL, summary_seq = ? WHERE seq = ? OR summary_seq = ?").run(seq, r.seq, r.seq);
+      }
+    }
+  }
   /** The message an alert became, for later corrections. */
   messageId(chatId, txHash, eventIndex) {
     return this.#q('SELECT message_id FROM deliveries WHERE chat_id = ? AND tx_hash = ? AND event_index = ?').get(chatId, txHash, eventIndex)?.message_id ?? null;
   }
-  prune(now) { this.#q('DELETE FROM deliveries WHERE chain_time < ?').run(now - LEDGER_TTL); }
+  prune(now) { this.#q("DELETE FROM deliveries WHERE state IN ('sent', 'dropped') AND chain_time < ?").run(now - LEDGER_TTL); }
 }

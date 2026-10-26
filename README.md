@@ -4,8 +4,7 @@
 
 Cairn is an open-source Telegram bot for Starknet. It answers balance and transaction lookups in private
 chats and groups, and alerts a chat when a watched wallet moves any token or grants an approval, when a
-large amount of a token moves, or when a tracked transaction is accepted. Buy feeds and network guards are
-planned for later rounds.
+large amount of a token moves, or when a tracked transaction is accepted. Ekubo and AVNU trade feeds include fresh oracle prices and verified .stark names. Network guards are planned for round 4.
 
 It only reads the chain. It holds no keys, signs nothing, never trades and has no Mini App. It runs as a
 single Node.js process with zero dependencies, on any Starknet RPC. It is MIT-licensed, so anyone can host it.
@@ -13,9 +12,8 @@ single Node.js process with zero dependencies, on any Starknet RPC. It is MIT-li
 It is built in public by AI coding agents, in four judged rounds on
 [Hotpod](https://agent-launchpad-six.vercel.app).
 
-> **Status:** rounds 1 and 2 are implemented: lookups, then wallet alerts on every token, whale alerts,
-> floors, mutes, `/track`, buttons, `/export` and `/forget`. Group feeds and guards belong to rounds 3
-> and 4. [ARCHITECTURE.md](ARCHITECTURE.md) specifies the frozen interface.
+> **Status:** rounds 1–3 provide lookups, wallet and whale alerts, tracking, group trade feeds,
+> Pragma prices, Starknet ID names, burst summaries and forum topics. [ARCHITECTURE.md](ARCHITECTURE.md) specifies the frozen interface.
 
 ## What it looks like
 
@@ -45,7 +43,8 @@ View transaction
 - **One message per chat per transaction**, in chain order: each matching transfer on its own line, with
   the exact amount, the direction (in, out, or between two watched wallets), the counterparty, the label,
   the block, its UTC time and a link to check it. A busy transaction shows ten lines and a count of the rest.
-  After three alerts to one chat in one pass, the next ones arrive without a notification sound.
+  Groups receive at most three alert messages per pass: for larger bursts, two posts plus one summary.
+  In private chats, alerts after the third arrive silently.
 - **Every token, plainly marked.** Cairn sees every ERC-20, but anything outside its registry is
   **unverified**: its symbol is shown in code, never as a link, followed by "unverified" and its contract.
   An airdropped fake "USDC" always reads `USDC (unverified, 0x05ce…7841)`, never as the real one. One
@@ -150,6 +149,9 @@ configuration or an incompatible chain/spec, and 3 for a rejected Telegram token
 | Command | Who, in groups | What it does |
 | --- | --- | --- |
 | `/start`, `/help` | everyone | Commands, privacy, and a link to add the bot to a group |
+| `/feed <token> [minimum\|$USD] [buys\|all]` | administrators | One trade feed per chat; default buys only, minimum 0; replaces the previous feed |
+| `/unfeed` | administrators | Stops this chat’s trade feed |
+| `/price [SYMBOL…]` | everyone | Oracle price, age in chain seconds, number of sources and stale state |
 | `/status` | everyone | Chain, head, UTC block time, L1/L1-data/L2 gas in FRI, RPC spec |
 | `/balance 0x… [token]` | everyone | Exact balances of every registry token, or of one token (a symbol or any token address); for a watched address, also the other tokens seen moving for it |
 | `/tx 0x…` | everyone | Finality, execution, block, fee, escaped revert reason, explorer link |
@@ -190,16 +192,14 @@ covers only the blocks after the head read when it was made, and the first start
 
 Extra calls happen only for events some chat cares about: `symbol` and `decimals` of a token outside the
 registry (cached for 7 days of chain time, "not a coin" included), the block header (time and
-`sequencer_address`), and, for a STRK transfer to the sequencer, the receipt and the transaction to confirm
-the fee rule. When nobody subscribes, a pass reads nothing. Only the contract's own answers (not deployed, no
+`sequencer_address`), and, for a STRK transfer to the sequencer, the receipt and transaction sender to confirm the legacy fee rule. This sender lookup is confined to wallet fee detection and never identifies a trader. When nobody subscribes, a pass reads nothing. Only the contract's own answers (not deployed, no
 such entrypoint, a failed call) make a token "not a coin"; any other node error, like a failed header or fee
 lookup, fails the range, which the next pass reads again, so a busy node neither hides a token for a week
 nor turns a fee into an alert.
 
 The code keeps the scanner (`src/scanner.mjs`: ranges, paging, decoding by shape) apart from the alert rules
 (`src/alerts.mjs`) and the delivery ledger (`src/ledger.mjs`). A feed is a filter plus the function that turns
-its events into deliveries; round 3's Ekubo and AVNU feeds are added beside `walletAlerts` and read the same
-ranges.
+its events into deliveries. Ekubo and AVNU adapters in `src/trades.mjs` read the same ranges; all three filters finish before the cursor moves. Pure venue decoders produce per-token signed deltas; transfer attribution and rendering are separate.
 
 ### State and delivery
 
@@ -213,7 +213,7 @@ after a kill. State and lock files reject symbolic links and hard links. Corrupt
 **Commands.** Each update's change and its offset are saved in one transaction **before** the reply is sent:
 a kill can lose a reply, never replay an accepted one.
 
-**Alerts.** Each alert is keyed by (chat, transaction hash, `event_index`) and saved as pending in the same
+**Alerts.** Each alert is keyed by (chat, transaction hash, `event_index`, topic) and saved as pending in the same
 transaction that moves the cursor past its block. It is marked sent, with its `message_id`, only once
 Telegram accepts it; its text is then dropped and the key kept for 7 days of chain time. A kill before
 Telegram accepts an alert leaves it pending, and the next pass sends it; a confirmed alert is never sent
@@ -241,7 +241,7 @@ Any other refusal drops that one alert with a warning in the logs.
 ### Checks
 
 ```sh
-npm run check   # rounds 1 and 2: node .launchpad/checks/round-<n>/run.mjs
+npm run check   # rounds 1–3: node .launchpad/checks/round-<n>/run.mjs
 npm test        # node --test test/*.test.mjs
 ```
 
@@ -259,3 +259,62 @@ Anyone can enter its rounds with their coding agent: give it this prompt.
 ```text
 I want you to contribute to 0xNad/cairn on Hotpod. Download https://agent-launchpad-six.vercel.app/skill/SKILL.md with curl, read all of it, and follow it: install the launchpad CLI and the skill, use the key in ~/.launchpad/<agent>/env (if I have no Hotpod agent yet, ask me to create one on https://agent-launchpad-six.vercel.app/me/agents and to save its key with the commands it shows; never ask me for the key itself), find this repository's project with launchpad projects, and enter its open round following roles/build.md.
 ```
+
+
+## Group feeds, prices and names
+
+In your group or forum topic, as an administrator, send `/feed STRK $100 all`.
+Use `/feed STRK` for every buy, `/feed STRK 1000 all` for a token-denominated floor,
+and `/unfeed` to stop. `/list` shows the current feed. Unknown tokens require their
+contract address, are marked unverified and never receive USD estimates. `/mute`
+also silences the feed for that token. A change applies only after the current head.
+`/watch ben.stark Treasury` accepts one lowercase label; `/price STRK ETH` reports
+prices independently, so one unavailable pair does not hide the others.
+
+A feed post has the following shape (illustrative values, not a live trade):
+
+```text
+🟢 Buy · 1,000 STRK · ≈ $125.00
+Paid: 125 USDC
+Trader: ben.stark · new holder
+Ekubo · 2026-10-25 12:00:00 UTC · View transaction
+```
+
+Trades of at least $100,000 add a whale marker; exact token amounts remain visible
+at every size. Ekubo pool deltas are negated into the trader’s perspective. Relevant
+AVNU swaps take precedence over every Ekubo hop in the same transaction; unrelated
+AVNU activity does not. Net-zero round trips are silent. The largest token gain or
+loss across transfers identifies the trader, with earliest event index breaking a
+tie. Zero, venue addresses and the final sequencer fee are excluded. Sender, router
+and beneficiary fields are never treated as trader identity. “New holder” requires
+a successful zero balance at the previous block, not an assumption after RPC failure.
+
+`CAIRN_PRICE_MAX_AGE=900` sets freshness in chain seconds. Alerts and dollar floors
+use fresh, nonzero, sourced oracle values only. Values are computed with integers,
+rounded half up to cents for display; a nonzero sub-cent amount reads `<$0.01`.
+Threshold comparisons use the unrounded value. Missing prices do not suppress
+ordinary token-floor alerts; dollar-floor feeds skip transactions without a usable
+price. Prices and reverse names are cached only within a pass and pinned to read
+blocks. A reverse name is shown only after its complete label list resolves back
+to the exact address. Failed naming calls quietly leave the linked short address.
+
+Network contracts and pairs are documented in `ARCHITECTURE.md`. Missing contracts
+disable their features with an explanation. Mainnet uses its documented contracts;
+Sepolia has naming and the documented STRK oracle pair, with venue feeds disabled.
+No public price API or extra host is contacted.
+
+Feed, watch and whale topics are captured at setup; issuing a setting again moves
+it to that topic. The group budget is shared across topics and alert types, but
+command replies are exempt. More than three due alerts become two individual posts
+and one summary with a count, types and transaction links. A summary covering several
+topics is posted to the first summarized subscription’s topic and lists its topic
+ids. Summary membership is persisted before sending; on acknowledgement all members
+share its delivery receipt and cannot reappear as individual alerts after restart.
+A blocked chat retains its pending summary. The existing Telegram ambiguity window
+(acceptance before local acknowledgement) also applies to summaries.
+
+Round 2 databases upgrade transactionally, preserving offsets, cursors, subscriptions
+and delivery receipts. `/export` includes feeds and saved topics; `/forget` and chat
+migrations include them. Pending delivery work is retained until handled; confirmed
+records expire after seven days of chain time. Back up the data directory while the
+bot is stopped before upgrading, and use Node.js 24 or later.

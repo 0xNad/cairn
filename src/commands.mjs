@@ -2,9 +2,13 @@ import { NodeBusy, RpcError } from './errors.mjs';
 import { normalize, unsigned } from './felt.mjs';
 import { amount, decimal, escapeHtml, links, textLines, utc } from './format.mjs';
 import { callback, setting, SETTINGS } from './settings.mjs';
+import { feedSetting } from './feed-settings.mjs';
 import { balanceOf } from './tokens.mjs';
 
 export const COMMANDS = Object.freeze([
+  { command: 'feed', description: 'Token trades: /feed STRK $100 all' },
+  { command: 'unfeed', description: 'Stop this chat’s trade feed' },
+  { command: 'price', description: 'Pragma USD prices, age and sources' },
   { command: 'start', description: 'Welcome and privacy' },
   { command: 'help', description: 'Commands and privacy' },
   { command: 'status', description: 'Chain head and gas prices' },
@@ -30,12 +34,18 @@ export function parseCommand(message, username) {
 /** In a private chat, a pasted address or transaction hash is looked up as if it were a command. */
 export function parsePaste(message) {
   if (message?.chat?.type !== 'private') return null;
-  const match = /^\s*(0x[0-9a-fA-F]{1,64})\s*$/.exec(message.text ?? '');
+  const match = /^\s*(0x[0-9a-fA-F]{1,64}|[a-z0-9-]+\.stark)\s*$/.exec(message.text ?? '');
   return match ? { name: 'paste', argument: match[1] } : null;
 }
 
 const HELP = `Cairn · Starknet lookups and wallet alerts
+Group trades:
+/feed <token> [minimum|$USD] [buys|all] — One feed per chat; /unfeed stops it
+Feeds, watches and whales post into the forum topic where you set them up.
+Groups receive at most 3 alert posts per pass: two plus a summary for larger bursts.
 Lookups, for everyone:
+/price [SYMBOL…] — Oracle USD price, age and sources
+Use a single lowercase name.stark wherever an address is accepted.
 /status — Chain head and gas prices
 /balance <address> [token] — Exact balances, one token or every verified one
 /tx <hash> — Status, fee and revert reason
@@ -79,7 +89,7 @@ export async function answer(command, context) {
   let input, tokenArgument;
   if (command.name === 'balance') {
     const [address = '', token, ...extra] = command.argument.split(/\s+/).filter(Boolean);
-    try { input = normalize(address, 'address'); } catch (error) { return text(error.message); }
+    try { input = context.names ? await context.names.resolve(address) : normalize(address, 'address'); } catch (error) { return text(error.message); }
     if (extra.length) return text('Usage: /balance <address> [SYMBOL|token address].');
     tokenArgument = token;
   } else if (command.name === 'tx') {
@@ -98,7 +108,8 @@ export async function answer(command, context) {
           chosen = resolved.token;
         }
         const block_id = { block_number: head.block_number };
-        const lines = [...text(`Balances · ${config.chain} · block ${head.block_number}\n${utc(head.timestamp)}`), link('contract', input)];
+        const reverse = await context.names?.reverse(input, block_id);
+        const lines = [...text(`Balances · ${config.chain} · block ${head.block_number}\n${utc(head.timestamp)}`), fmt.contract(input, reverse ? escapeHtml(reverse) : undefined)];
         try { await rpc.call('starknet_getClassHashAt', { block_id, contract_address: input }); }
         catch (error) {
           if (error instanceof RpcError && error.code === 20) lines.push(...text('Account not deployed (balances still available).'));
@@ -187,6 +198,17 @@ async function paste(value, context) {
 
 /** Routes a command to its handler and returns its commit, as settings handlers do. */
 export async function respond(command, context) {
+  if (['feed', 'unfeed'].includes(command.name)) return feedSetting(command, context);
+  if (command.name === 'price') {
+    const lines = await context.prices.lines(command.argument, context.tokens, context.head);
+    return () => ({ lines });
+  }
+  if (command.name === 'paste' && command.argument.endsWith('.stark')) {
+    let address;
+    try { address = await context.names.resolve(command.argument); } catch (e) { return () => ({ lines: textLines(e.message, context.clean) }); }
+    const lines = await answer({ name: 'balance', argument: address }, context);
+    return () => ({ lines, keyboard: context.head ? [[{ text: '👁 Watch this address', callback_data: `ow:${context.subs.offer(context.chat, 'watch', address, context.head.timestamp)}` }]] : [] });
+  }
   if (command.name === 'paste') return paste(command.argument, context);
   if (SETTINGS.has(command.name)) return setting(command, context);
   const lines = await answer(command, context);

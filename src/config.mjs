@@ -59,6 +59,7 @@ export function loadConfig(args, env = process.env) {
     rpcTimeout: integer(env, 'CAIRN_RPC_TIMEOUT_MS', 10000, 100),
     maxBlocks: integer(env, 'CAIRN_MAX_BLOCKS', 500, 1, 10000),
     maxWatches: integer(env, 'CAIRN_MAX_WATCHES', 20, 1, 200),
+    priceMaxAge: integer(env, 'CAIRN_PRICE_MAX_AGE', 900, 0),
     logLevel: env.CAIRN_LOG ?? 'info',
   };
   if (!['error', 'warn', 'info', 'debug'].includes(config.logLevel)) bad('CAIRN_LOG: must be error, warn, info or debug.');
@@ -79,7 +80,13 @@ export function loadConfig(args, env = process.env) {
     if (addresses.has(address)) entryBad(`${at}.address`, 'duplicate normalized address.');
     addresses.add(address);
     if (!Number.isInteger(t.decimals) || t.decimals < 0 || t.decimals > 36) entryBad(`${at}.decimals`, 'must be an integer from 0 to 36.');
-    return { symbol: t.symbol, address, decimals: t.decimals };
+    if (t.pragma_pair !== undefined && (typeof t.pragma_pair !== 'string' || !/^[A-Z0-9]{1,10}\/[A-Z0-9]{1,10}$/.test(t.pragma_pair))) entryBad(`${at}.pragma_pair`, 'must be a pair such as STRK/USD.');
+    return { symbol: t.symbol, address, decimals: t.decimals, ...(t.pragma_pair ? { pragma_pair: t.pragma_pair } : {}) };
   });
+  config.contracts = {};
+  if (network.contracts !== undefined && (!network.contracts || typeof network.contracts !== 'object' || Array.isArray(network.contracts))) entryBad('contracts', 'must be an object.');
+  for (const [key, value] of Object.entries(network.contracts ?? {})) {
+    try { config.contracts[key] = normalize(value); } catch { entryBad(`contracts.${key}`, 'invalid Starknet address.'); }
+  }
   return config;
 }

@@ -32,14 +32,14 @@ const HANDLERS = {
     const m = /^(\S+)(?:\s+([\s\S]+))?$/.exec(arg);
     if (!m) return say('Usage: /watch &lt;address&gt; [label], for example /watch 0x0471…938d Treasury.');
     let address;
-    try { address = normalize(m[1]); } catch (error) { return say(escapeHtml(error.message)); }
+    try { address = ctx.names ? await ctx.names.resolve(m[1]) : normalize(m[1]); } catch (error) { return say(escapeHtml(error.message)); }
     const label = plainText(m[2] ?? '', Infinity) || null;
     if (label && Array.from(label).length > LIMITS.label) return say(`Labels are at most ${LIMITS.label} characters; that one has ${Array.from(label).length}. Nothing was changed.`);
     if (label && /^0x[0-9a-f]*$/i.test(label)) return say('A label cannot look like an address, or /unwatch could not tell them apart. Nothing was changed.');
     if (!ctx.head) return say(BUSY);
     const since = ctx.head.block_number;
     return () => {
-      const r = ctx.subs.watch(ctx.chat, address, label, since);
+      const r = ctx.subs.watch(ctx.chat, address, label, since, ctx.topic);
       if (r.status === 'cap') return say(`This chat already watches ${ctx.config.maxWatches} addresses, the most it can. Remove one with /unwatch or the buttons in /list.`)();
       if (r.status === 'exists') return say(`Already watching ${watchName(ctx, r.watch)}${r.relabelled ? '; its label is updated' : ''}.`)();
       return say(`👁 Watching ${watchName(ctx, r.watch)} from block ${since + 1}: every transfer in or out, on any token, and every approval it grants.\n` +
@@ -50,7 +50,9 @@ const HANDLERS = {
   async unwatch(arg, ctx) {
     if (!arg) return say('Usage: /unwatch &lt;address|label&gt;. /list shows what this chat watches.');
     let address = null;
-    try { address = normalize(arg); } catch { /* a label */ }
+    if (arg.endsWith('.stark')) {
+      try { address = await ctx.names.resolve(arg); } catch (e) { return say(escapeHtml(e.message)); }
+    } else try { address = normalize(arg); } catch { /* a label */ }
     return () => {
       const r = ctx.subs.unwatch(ctx.chat.id, address ? { address } : { label: plainText(arg, Infinity) });
       if (r.watch) return say(`Stopped watching ${watchName(ctx, r.watch)}.`)();
@@ -72,7 +74,7 @@ const HANDLERS = {
     if (amount.units === 0n) return say('Use an amount above zero: zero-amount transfers are never alerted. Nothing was changed.');
     const since = ctx.head.block_number;
     return () => {
-      const r = ctx.subs.whale(ctx.chat, token.address, token.symbol, amount.text, amount.units, since);
+      const r = ctx.subs.whale(ctx.chat, token.address, token.symbol, amount.text, amount.units, since, ctx.topic);
       const name = ctx.fmt.token(token);
       if (r === 'cap') return say(`This chat already has ${LIMITS.whales} whale alerts, the most it can. Stop one with /unwhale or in /list.`)();
       if (r === 'updated') return say(`🐋 Whale alert on ${name} updated: every transfer of at least ${escapeHtml(amount.text)} ${name}.`)();
@@ -144,7 +146,7 @@ const HANDLERS = {
       const c = ctx.subs.forget(ctx.chat.id);
       return say(`🗑 Deleted everything Cairn stored for this chat: ${plural(c.watches, 'watch', 'watches')}, ${plural(c.whales, 'whale alert')}, ` +
         `${plural(c.minimums, 'floor')}, ${plural(c.muted, 'mute')}, ${plural(c.tracks, 'track')}, ${plural(c.offers, 'button')} and ` +
-        `${plural(c.deliveries, 'alert record')}.`)();
+        `${plural(c.deliveries, 'alert record')}, ${plural(c.feeds, 'feed')}.`)();
     };
   },
 };
@@ -163,6 +165,9 @@ function trackCommit(ctx, chat, hash, reply = say) {
 /** A token address for /mute, /unmute and /unwhale: a registry symbol works for /unwhale only. */
 async function tokenAddress(arg, ctx, command) {
   if (!arg) return { error: command ? `Usage: /${command} <token address>.` : 'Usage: /unwhale <SYMBOL|token address>.' };
+  if (arg.endsWith('.stark')) {
+    try { return { address: await ctx.names.resolve(arg) }; } catch (e) { return { error: e.message }; }
+  }
   if (!/^0x/i.test(arg)) {
     if (command) return { error: `Use the token's contract address: /${command} 0x… (any token can claim any symbol).` };
     const token = ctx.tokens.bySymbol(arg);
@@ -196,7 +201,8 @@ export function listView(chatId, ctx) {
   const { subs, fmt } = ctx;
   const watches = subs.watches(chatId), whales = subs.whales(chatId), floors = subs.minimums(chatId);
   const muted = subs.muted(chatId), tracks = subs.tracks(chatId);
-  if (!watches.length && !whales.length && !floors.length && !muted.length && !tracks.length) {
+  const feed = subs.feedFor(chatId);
+  if (!feed && !watches.length && !whales.length && !floors.length && !muted.length && !tracks.length) {
     return { lines: ['Nothing is set up in this chat yet.', 'Start with /watch &lt;address&gt; [label] or /whale &lt;token&gt; &lt;amount&gt;. /help lists everything.'], keyboard: [] };
   }
   const lines = [], keyboard = [];
@@ -208,6 +214,7 @@ export function listView(chatId, ctx) {
     if (button) keyboard.push([button]);
   };
   const section = (title, count) => { if (count) add(`<b>${title}</b>`); };
+  if (feed) add(`<b>Trade feed</b> · ${tokenName(ctx, feed.token)} · ${feed.mode} · minimum ${feed.usd ? '$' : ''}${escapeHtml(feed.minimum)}${feed.topic ? ` · topic ${feed.topic}` : ''} · /unfeed to stop`);
   section(`Watches · ${watches.length} of ${ctx.config.maxWatches}`, watches.length);
   for (const w of watches) {
     add(`• ${w.label ? `<b>${escapeHtml(w.label)}</b> ` : ''}${fmt.contract(w.address)} · from block ${w.since_block + 1}`,

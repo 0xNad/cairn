@@ -136,7 +136,7 @@ test('forget leaves no trace of a label in CAIRN_DATA, and migration moves every
     assert.equal(subs.export(-100).watches.length, 0);
     assert.equal(subs.export(-200).watches[0].label, 'SECRET-LABEL-4711');
     store.transaction(() => subs.forget(-200));
-    assert.deepEqual(subs.export(-200), { chat_id: -200, watches: [], whales: [], minimums: {}, tracks: [], muted: [],
+    assert.deepEqual(subs.export(-200), { chat_id: -200, feed: null, watches: [], whales: [], minimums: {}, tracks: [], muted: [],
       chat: null, buttons: [], deliveries: { pending: 0, sent: 0, dropped: 0 } });
   } finally { store.close(); }
   for (const file of readdirSync(directory)) assert.ok(!readFileSync(join(directory, file)).includes('SECRET-LABEL-4711'), file);
@@ -178,7 +178,7 @@ test('export lists what else is stored for a chat, and forget in a private chat 
     assert.deepEqual(e.deliveries, { pending: 1, sent: 0, dropped: 0 });
     store.transaction(() => subs.forget(42));
     assert.equal(store.sql('SELECT count(*) AS n FROM rate').get().n, 0);
-    assert.deepEqual(subs.export(42), { chat_id: 42, watches: [], whales: [], minimums: {}, tracks: [], muted: [],
+    assert.deepEqual(subs.export(42), { chat_id: 42, feed: null, watches: [], whales: [], minimums: {}, tracks: [], muted: [],
       chat: null, buttons: [], deliveries: { pending: 0, sent: 0, dropped: 0 } });
   } finally { store.close(); }
 });
