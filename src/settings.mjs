@@ -1,5 +1,6 @@
 import { NodeBusy } from './errors.mjs';
 import { normalize } from './felt.mjs';
+import { looksLikeName, parseStarkName, resolveName } from './names.mjs';
 import { escapeHtml, parseDecimal, plainText, short, unescapeHtml } from './format.mjs';
 import { LIMITS } from './subscriptions.mjs';
 
@@ -8,7 +9,7 @@ import { LIMITS } from './subscriptions.mjs';
 // a synchronous function the bot runs in the transaction that also confirms the update, before any reply is
 // sent. In groups every one of them but /list needs an administrator.
 
-export const SETTINGS = new Set(['watch', 'unwatch', 'list', 'whale', 'unwhale', 'min', 'mute', 'unmute', 'track', 'export', 'forget']);
+export const SETTINGS = new Set(['watch', 'unwatch', 'list', 'whale', 'unwhale', 'min', 'mute', 'unmute', 'track', 'export', 'forget', 'feed', 'unfeed']);
 const OPEN_IN_GROUPS = new Set(['list']);
 const BUSY = 'node busy: Cairn cannot read the chain right now, so nothing was changed. Please try again shortly.';
 const ADMIN_ONLY = 'Only an administrator of this group can change Cairn’s settings. Anyone here can read them with /list.';
@@ -24,6 +25,27 @@ export async function setting(command, ctx) {
   }
 }
 
+const FEED_USAGE = 'Usage: /feed &lt;SYMBOL|token address&gt; [&lt;min&gt;|$&lt;usd&gt;] [buys|all], for example /feed STRK $100 all.';
+
+/**
+ * A `name.stark` typed where an address goes: its address from `domain_to_address`, or { error } when names
+ * are switched off, the name is malformed, or it points nowhere (0x0).
+ */
+async function nameAddress(text, ctx) {
+  const naming = ctx.config.contracts.naming;
+  if (!naming) return { error: 'Names are unavailable: this network file configures no naming contract (contracts.naming). Use the address instead.' };
+  const parsed = parseStarkName(text);
+  if (parsed.error) return { error: escapeHtml(parsed.error) };
+  let address;
+  try { address = await resolveName(ctx.rpc, naming, [parsed.encoded]); }
+  catch (error) {
+    if (ctx.signal.aborted) throw error;
+    return { error: 'Name lookup unavailable right now: nothing was changed. Please try again shortly.' };
+  }
+  if (!address) return { error: `Unknown name: ${escapeHtml(parsed.name)} is not registered on Starknet ID. Nothing was changed.` };
+  return { address, name: parsed.name };
+}
+
 /** How a watched address reads in this chat: its label, or its short form, linked. */
 const watchName = (ctx, w) => ctx.fmt.contract(w.address, w.label ? escapeHtml(w.label) : short(w.address));
 
@@ -31,15 +53,21 @@ const HANDLERS = {
   async watch(arg, ctx) {
     const m = /^(\S+)(?:\s+([\s\S]+))?$/.exec(arg);
     if (!m) return say('Usage: /watch &lt;address&gt; [label], for example /watch 0x0471…938d Treasury.');
-    let address;
-    try { address = normalize(m[1]); } catch (error) { return say(escapeHtml(error.message)); }
-    const label = plainText(m[2] ?? '', Infinity) || null;
+    let address, name = null;
+    if (looksLikeName(m[1])) {
+      const named = await nameAddress(m[1], ctx);
+      if (named.error) return say(named.error);
+      ({ address, name } = named);
+    } else {
+      try { address = normalize(m[1]); } catch (error) { return say(escapeHtml(error.message)); }
+    }
+    const label = plainText(m[2] ?? '', Infinity) || (name && Array.from(name).length <= LIMITS.label ? name : null);
     if (label && Array.from(label).length > LIMITS.label) return say(`Labels are at most ${LIMITS.label} characters; that one has ${Array.from(label).length}. Nothing was changed.`);
     if (label && /^0x[0-9a-f]*$/i.test(label)) return say('A label cannot look like an address, or /unwatch could not tell them apart. Nothing was changed.');
     if (!ctx.head) return say(BUSY);
     const since = ctx.head.block_number;
     return () => {
-      const r = ctx.subs.watch(ctx.chat, address, label, since);
+      const r = ctx.subs.watch(ctx.chat, address, label, since, ctx.thread);
       if (r.status === 'cap') return say(`This chat already watches ${ctx.config.maxWatches} addresses, the most it can. Remove one with /unwatch or the buttons in /list.`)();
       if (r.status === 'exists') return say(`Already watching ${watchName(ctx, r.watch)}${r.relabelled ? '; its label is updated' : ''}.`)();
       return say(`👁 Watching ${watchName(ctx, r.watch)} from block ${since + 1}: every transfer in or out, on any token, and every approval it grants.\n` +
@@ -61,6 +89,47 @@ const HANDLERS = {
 
   async list(_, ctx) { return () => listView(ctx.chat.id, ctx); },
 
+  /** /feed <SYMBOL|address> [<min>|$<usd>] [buys|all]: the chat's one trade feed, replacing any earlier one. */
+  async feed(arg, ctx) {
+    const { ekubo_core, avnu_exchange, pragma } = ctx.config.contracts;
+    if (!ekubo_core && !avnu_exchange) return say('Trade feeds are unavailable: this network file configures no venue (contracts.ekubo_core or contracts.avnu_exchange). Nothing was changed.');
+    const [tokenArg, ...options] = arg.split(/\s+/).filter(Boolean);
+    if (!tokenArg) return say(FEED_USAGE);
+    let sides = 'buys', floorArg = null;
+    for (const option of options) {
+      if (/^(buys|all)$/i.test(option)) sides = option.toLowerCase();
+      else if (floorArg === null) floorArg = option;
+      else return say(FEED_USAGE);
+    }
+    if (!ctx.head) return say(BUSY);
+    const { token, error } = await ctx.tokens.resolve(tokenArg, ctx.head.timestamp);
+    if (error) return say(escapeHtml(error));
+    let units = 0n, floor = null, cents = null;
+    if (floorArg?.startsWith('$')) {
+      const usd = parseDecimal(floorArg.slice(1), 2);
+      if (usd.error) return say(`${escapeHtml(usd.error)} Nothing was changed.`);
+      if (!token.verified || !token.pragma_pair || !pragma) return say('A dollar floor needs a registry token with a Pragma pair and a configured Pragma contract. Use a token amount instead. Nothing was changed.');
+      [cents, floor] = [usd.units, `$${usd.text}`];
+    } else if (floorArg !== null) {
+      const amount = parseDecimal(floorArg, token.decimals);
+      if (amount.error) return say(`${escapeHtml(amount.error)} Nothing was changed.`);
+      [units, floor] = [amount.units, amount.text];
+    }
+    const since = ctx.head.block_number;
+    return () => {
+      const r = ctx.subs.setFeed(ctx.chat, { token: token.address, symbol: token.symbol, floor, units, cents, sides }, since, ctx.thread);
+      const name = ctx.fmt.token(token);
+      const what = sides === 'all' ? 'every buy and sell' : 'every buy';
+      const min = floor === null ? '' : ` of at least ${escapeHtml(floor)}${cents === null ? ` ${name}` : ''}`;
+      const venues = [ekubo_core && 'Ekubo', avnu_exchange && 'AVNU'].filter(Boolean).join(' and ');
+      return say(`📈 Feed ${r === 'replaced' ? 'replaced' : 'started'}: ${what} of ${name}${min} on ${venues}, from block ${since + 1}. /unfeed stops it.`)();
+    };
+  },
+
+  async unfeed(_, ctx) {
+    return () => say(ctx.subs.unfeed(ctx.chat.id) ? 'Feed stopped.' : 'There is no feed here. /feed starts one.')();
+  },
+
   async whale(arg, ctx) {
     const m = /^(\S+)\s+(\S+)$/.exec(arg);
     if (!m) return say('Usage: /whale &lt;SYMBOL|token address&gt; &lt;amount&gt;, for example /whale STRK 1000000.');
@@ -72,7 +141,7 @@ const HANDLERS = {
     if (amount.units === 0n) return say('Use an amount above zero: zero-amount transfers are never alerted. Nothing was changed.');
     const since = ctx.head.block_number;
     return () => {
-      const r = ctx.subs.whale(ctx.chat, token.address, token.symbol, amount.text, amount.units, since);
+      const r = ctx.subs.whale(ctx.chat, token.address, token.symbol, amount.text, amount.units, since, ctx.thread);
       const name = ctx.fmt.token(token);
       if (r === 'cap') return say(`This chat already has ${LIMITS.whales} whale alerts, the most it can. Stop one with /unwhale or in /list.`)();
       if (r === 'updated') return say(`🐋 Whale alert on ${name} updated: every transfer of at least ${escapeHtml(amount.text)} ${name}.`)();
@@ -195,8 +264,8 @@ function chunks(text, size) {
 export function listView(chatId, ctx) {
   const { subs, fmt } = ctx;
   const watches = subs.watches(chatId), whales = subs.whales(chatId), floors = subs.minimums(chatId);
-  const muted = subs.muted(chatId), tracks = subs.tracks(chatId);
-  if (!watches.length && !whales.length && !floors.length && !muted.length && !tracks.length) {
+  const muted = subs.muted(chatId), tracks = subs.tracks(chatId), feed = subs.feed(chatId);
+  if (!feed && !watches.length && !whales.length && !floors.length && !muted.length && !tracks.length) {
     return { lines: ['Nothing is set up in this chat yet.', 'Start with /watch &lt;address&gt; [label] or /whale &lt;token&gt; &lt;amount&gt;. /help lists everything.'], keyboard: [] };
   }
   const lines = [], keyboard = [];
@@ -208,6 +277,10 @@ export function listView(chatId, ctx) {
     if (button) keyboard.push([button]);
   };
   const section = (title, count) => { if (count) add(`<b>${title}</b>`); };
+  if (feed) {
+    section('Trade feed', 1);
+    add(`• ${tokenName(ctx, feed.token)} ${feed.sides === 'all' ? 'buys and sells' : 'buys'}${feed.floor ? ` at or above ${escapeHtml(feed.floor)}` : ''} · /unfeed stops it`);
+  }
   section(`Watches · ${watches.length} of ${ctx.config.maxWatches}`, watches.length);
   for (const w of watches) {
     add(`• ${w.label ? `<b>${escapeHtml(w.label)}</b> ` : ''}${fmt.contract(w.address)} · from block ${w.since_block + 1}`,

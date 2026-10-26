@@ -1,5 +1,6 @@
 import { hex64, NodeValueError, U128, unsigned } from './felt.mjs';
 import { decimal, escapeHtml, short, utc } from './format.mjs';
+import { usdValue } from './prices.mjs';
 import { decodeTokenEvents, TOKEN_EVENTS } from './scanner.mjs';
 
 /**
@@ -8,9 +9,9 @@ import { decodeTokenEvents, TOKEN_EVENTS } from './scanner.mjs';
  * and read the same ranges with their own filter.
  */
 export const walletAlerts = Object.freeze({
-  filter: TOKEN_EVENTS,
+  reads: () => [{ key: 'transfers', filter: TOKEN_EVENTS }],
   wanted: (interests) => !interests.empty,
-  find: (raw, context) => findAlerts(decodeTokenEvents(raw), context),
+  find: (sources, context) => findAlerts(decodeTokenEvents(sources.get('transfers')), context),
 });
 
 const ZERO = hex64('0x0');
@@ -26,18 +27,19 @@ const MAX_ITEMS = 10; // lines per message: a busy transaction does not bury the
  * muted tokens, contracts that are not coins, and anything at or before a subscription's since_block.
  * Extra calls happen only for events some chat cares about: token metadata, block headers, and the fee rule.
  */
-export async function findAlerts(events, { interests, tokens, rpc, now, fmt }) {
+export async function findAlerts(events, { interests, tokens, rpc, now, fmt, quotes }) {
   const candidates = [];
   for (const ev of events) {
     const roles = new Map();
-    const role = (chatId) => roles.get(chatId) ?? roles.set(chatId, {}).get(chatId);
+    // A role remembers the forum topic of the first subscription that matched, which its message posts into.
+    const role = (chatId, thread) => roles.get(chatId) ?? roles.set(chatId, { thread: thread ?? null }).get(chatId);
     if (ev.kind === 'Transfer') {
       if (ev.amount === 0n) continue;
-      for (const w of interests.watchers.get(ev.a) ?? []) if (ev.block > w.since) role(w.chatId).from = true;
-      for (const w of interests.watchers.get(ev.b) ?? []) if (ev.block > w.since) role(w.chatId).to = true;
-      for (const w of interests.whales.get(ev.token) ?? []) if (ev.block > w.since && ev.amount >= w.units) role(w.chatId).whale = true;
+      for (const w of interests.watchers.get(ev.a) ?? []) if (ev.block > w.since) Object.assign(role(w.chatId, w.thread), { from: true });
+      for (const w of interests.watchers.get(ev.b) ?? []) if (ev.block > w.since) Object.assign(role(w.chatId, w.thread), { to: true });
+      for (const w of interests.whales.get(ev.token) ?? []) if (ev.block > w.since && ev.amount >= w.units) Object.assign(role(w.chatId, w.thread), { whale: true });
     } else {
-      for (const w of interests.watchers.get(ev.a) ?? []) if (ev.block > w.since) role(w.chatId).approval = true;
+      for (const w of interests.watchers.get(ev.a) ?? []) if (ev.block > w.since) Object.assign(role(w.chatId, w.thread), { approval: true });
     }
     if (roles.size) candidates.push({ ev, roles });
   }
@@ -63,23 +65,27 @@ export async function findAlerts(events, { interests, tokens, rpc, now, fmt }) {
   for (const { ev } of kept) if (!headers.has(ev.block)) headers.set(ev.block, await header(rpc, ev.block));
   for (const c of kept) if (!(await isFee(c.ev, headers.get(c.ev.block), tokens.strk, rpc, facts))) alertable.push(c);
 
+  // From round 3 a transfer of a priced token shows its USD value, from a fresh price only.
+  const usd = new Map();
+  for (const { token } of alertable) if (!usd.has(token.address)) usd.set(token.address, token.verified && quotes ? await quotes.fresh(token) : null);
+
   const groups = new Map();
   for (const c of alertable) {
     for (const [chatId, role] of c.roles) {
       const key = `${chatId} ${c.ev.tx}`;
-      if (!groups.has(key)) groups.set(key, { chatId, tx: c.ev.tx, block: c.ev.block, items: [] });
-      groups.get(key).items.push({ ev: c.ev, token: c.token, role });
+      if (!groups.has(key)) groups.set(key, { chatId, tx: c.ev.tx, block: c.ev.block, thread: role.thread, items: [] });
+      groups.get(key).items.push({ ev: c.ev, token: c.token, role, quote: usd.get(c.token.address) });
     }
   }
   const deliveries = [...groups.values()].map((g) => ({
     chatId: g.chatId, txHash: g.tx, eventIndex: g.items[0].ev.index, kind: 'alert', events: g.items.map((i) => i.ev.index),
-    block: g.block, chainTime: headers.get(g.block).timestamp,
+    block: g.block, chainTime: headers.get(g.block).timestamp, thread: g.thread,
     body: render(g, headers.get(g.block).timestamp, interests.labels.get(g.chatId) ?? new Map(), fmt),
   }));
   return { deliveries, seen };
 }
 
-async function header(rpc, number) {
+export async function header(rpc, number) {
   const block = await rpc.call('starknet_getBlockWithTxHashes', { block_id: { block_number: number } });
   if (!Number.isSafeInteger(block?.timestamp)) throw new NodeValueError();
   return { timestamp: block.timestamp, sequencer: hex64(block.sequencer_address ?? '0x0') };
@@ -135,8 +141,9 @@ function routes(items) {
   return out;
 }
 
-function line({ ev, token, role, to: end = ev.b, hops = 1 }, name, fmt) {
-  const symbol = fmt.token(token), value = decimal(ev.amount, token.decimals);
+function line({ ev, token, role, quote, to: end = ev.b, hops = 1 }, name, fmt) {
+  const value = decimal(ev.amount, token.decimals);
+  const symbol = `${fmt.token(token)}${quote && ev.kind === 'Transfer' ? ` (≈ $${usdValue(ev.amount, token.decimals, quote)})` : ''}`;
   if (ev.kind === 'Approval') {
     if (ev.amount === 0n) return `🔑 <b>Approval</b> revoked: ${name(ev.a)} no longer lets spender ${name(ev.b)} spend ${symbol}`;
     return `🔑 <b>Approval</b>: ${name(ev.a)} lets spender ${name(ev.b)} spend ${ev.amount >= UNLIMITED ? 'unlimited' : value} ${symbol}`;

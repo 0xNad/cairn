@@ -2,6 +2,7 @@ import { NodeBusy, RpcError } from './errors.mjs';
 import { normalize, unsigned } from './felt.mjs';
 import { amount, decimal, escapeHtml, links, textLines, utc } from './format.mjs';
 import { callback, setting, SETTINGS } from './settings.mjs';
+import { readPrice } from './prices.mjs';
 import { balanceOf } from './tokens.mjs';
 
 export const COMMANDS = Object.freeze([
@@ -10,11 +11,14 @@ export const COMMANDS = Object.freeze([
   { command: 'status', description: 'Chain head and gas prices' },
   { command: 'balance', description: 'Exact token balances for an address' },
   { command: 'tx', description: 'Transaction status, fee and revert reason' },
+  { command: 'price', description: 'Pragma USD prices, with age and sources' },
   { command: 'watch', description: 'Alert on every transfer and approval of an address' },
   { command: 'unwatch', description: 'Stop watching an address' },
   { command: 'list', description: 'This chat\'s watches and alerts, with Remove buttons' },
   { command: 'whale', description: 'Alert on large transfers of a token' },
   { command: 'unwhale', description: 'Stop a whale alert' },
+  { command: 'feed', description: 'Post the buys (or all trades) of a token' },
+  { command: 'unfeed', description: 'Stop the trade feed of this chat' },
   { command: 'min', description: 'Skip watch alerts below an amount of a token' },
   { command: 'mute', description: 'Silence one token in this chat' },
   { command: 'unmute', description: 'Undo /mute' },
@@ -39,12 +43,15 @@ Lookups, for everyone:
 /status — Chain head and gas prices
 /balance <address> [token] — Exact balances, one token or every verified one
 /tx <hash> — Status, fee and revert reason
+/price [SYMBOL…] — Pragma USD prices, with their age and number of sources
 In a private chat, paste an address or a transaction hash to look it up.
 Alerts, set by group administrators (anyone in a private chat):
-/watch <address> [label] — Every transfer in or out, on any token, and every approval
+/watch <address|name.stark> [label] — Every transfer in or out, on any token, and every approval
 /unwatch <address|label> — Stop watching
 /whale <token> <amount> — Every transfer of a token at or above an amount
 /unwhale <token> — Stop a whale alert
+/feed <token> [<min>|$<usd>] [buys|all] — Post the token's trades on Ekubo and AVNU: buys, or all with sells
+/unfeed — Stop the feed (one per chat)
 /min <token> <amount> — Skip watch alerts below an amount (0 removes it)
 /mute <token address> — Silence one token in this chat, such as a spam airdrop
 /unmute <token address> — Undo /mute
@@ -59,7 +66,7 @@ This chat:
 On-chain facts, not financial advice.
 Public balances and transfers only.
 Tokens outside Cairn's registry are marked unverified: anyone can deploy a token with any symbol.
-The operator stores this chat's id and type, its settings (watched addresses and labels, whale alerts, floors, mutes, tracked transactions), the tokens seen moving for a watched address, alert delivery records for 7 days, a pasted address or hash for a day (for its button), and the update offset. /export shows all of it; /forget deletes it. For the rate limit, each person's id and command times are kept for one minute. Never message text, names or usernames.`;
+The operator stores this chat's id and type, its settings (watched addresses and labels, whale alerts, its trade feed, floors, mutes, tracked transactions, and the forum topic each was set up in), the tokens seen moving for a watched address, alert delivery records for 7 days, a pasted address or hash for a day (for its button), and the update offset. /export shows all of it; /forget deletes it. For the rate limit, each person's id and command times are kept for one minute. Never message text, names or usernames.`;
 const GROUP_SETUP = `Cairn is in this group. To set it up, as an administrator:
 1. /watch <address> <label> for each wallet the group follows.
 2. /whale <token> <amount> for large transfers of a token.
@@ -75,6 +82,7 @@ export async function answer(command, context) {
     if (command.name === 'start' && command.argument === 'setup' && context.chat && context.chat.type !== 'private') return text(GROUP_SETUP);
     return [...text(HELP), `<a href="https://t.me/${escapeHtml(clean(username))}?startgroup=setup">Add Cairn to a group</a>`];
   }
+  if (command.name === 'price') return price(command.argument, context);
   if (!['status', 'balance', 'tx'].includes(command.name)) return text('Unknown command. Use /help for available commands.');
   let input, tokenArgument;
   if (command.name === 'balance') {
@@ -158,6 +166,36 @@ export async function answer(command, context) {
     if (command.name === 'tx' && error instanceof RpcError && error.code === 29) return [...text('Transaction not found. Check the hash and selected chain.'), link('tx', input)];
     return text(error instanceof RpcError ? `Lookup unavailable (${error.message}). Try again later.` : 'node busy — the lookup is unavailable. Please try again shortly.');
   }
+}
+
+/**
+ * /price [SYMBOL…]: Pragma's median for each token's pair (every priced registry token when none is named),
+ * scaled by the decimals Pragma returns, with its age in chain time and its number of sources. Each pair is
+ * read on its own, so one failure never hides another.
+ */
+async function price(argument, context) {
+  const { config, clean, head, tokens } = context;
+  const text = (value) => textLines(value, clean);
+  if (!config.contracts.pragma) return text('Prices are unavailable: this network file configures no Pragma contract (contracts.pragma).');
+  if (!head) return text('node busy — the lookup is unavailable. Please try again shortly.');
+  const symbols = argument.split(/\s+/).filter(Boolean);
+  if (symbols.length > 10) return text('Usage: /price [SYMBOL…], at most 10 symbols.');
+  const wanted = symbols.length ? symbols.map((s) => tokens.bySymbol(s) ?? s) : config.tokens.filter((t) => t.pragma_pair);
+  const lines = [...text(`Prices · Pragma · block ${head.block_number}`)];
+  for (const token of wanted) {
+    if (typeof token === 'string') { lines.push(...text(`${token.slice(0, 20)}: not a registry symbol, so it has no price.`)); continue; }
+    if (!token.pragma_pair) { lines.push(...text(`${token.symbol}: no Pragma pair configured.`)); continue; }
+    try {
+      const q = await readPrice(context.rpc, config.contracts.pragma, token.pragma_pair, head.timestamp, config.priceMaxAge);
+      if (!q) lines.push(...text(`${token.symbol} (${token.pragma_pair}): no price from Pragma.`));
+      else lines.push(...text(`${token.symbol} (${token.pragma_pair}): $${q.usd} · ${q.age} s old · ${q.sources} sources${q.fresh ? '' : ` · stale (older than ${config.priceMaxAge} s)`}`));
+    } catch (error) {
+      if (context.signal.aborted) throw error;
+      lines.push(...text(`${token.symbol} (${token.pragma_pair}): price unavailable (${error instanceof RpcError ? error.message : 'node busy'}).`));
+    }
+  }
+  if (!symbols.length && !wanted.length) lines.push(...text('No registry token has a Pragma pair.'));
+  return lines;
 }
 
 /**

@@ -153,8 +153,11 @@ configuration or an incompatible chain/spec, and 3 for a rejected Telegram token
 | `/status` | everyone | Chain, head, UTC block time, L1/L1-data/L2 gas in FRI, RPC spec |
 | `/balance 0x… [token]` | everyone | Exact balances of every registry token, or of one token (a symbol or any token address); for a watched address, also the other tokens seen moving for it |
 | `/tx 0x…` | everyone | Finality, execution, block, fee, escaped revert reason, explorer link |
+| `/price [SYMBOL…]` | everyone | Pragma's median USD price of each named registry token (all priced ones by default), with its age in chain time and its number of sources; older than `CAIRN_PRICE_MAX_AGE` (default 900 s) is marked stale, and an empty Pragma answer reads "no price". One failed pair never hides the others |
 | `/list` | everyone | The chat's watches, whale alerts, floors, mutes and tracks, with Remove buttons |
-| `/watch 0x… [label]` | administrators | Alerts on every transfer in or out, on any token, and every approval the address grants (`CAIRN_MAX_WATCHES` per chat, default 20; labels up to 32 characters) |
+| `/feed <token> [<min>\|$<usd>] [buys\|all]` | administrators | The chat's one trade feed (a new `/feed` replaces it): every buy of the token on Ekubo and AVNU, or buys and sells with `all`, at or above a token amount or a USD value (a dollar floor needs a fresh Pragma price). A token outside the registry is marked unverified and never priced |
+| `/unfeed` | administrators | Stops the trade feed |
+| `/watch 0x…` or `/watch name.stark [label]` | administrators | Alerts on every transfer in or out, on any token, and every approval the address grants (`CAIRN_MAX_WATCHES` per chat, default 20; labels up to 32 characters). A Starknet ID name is resolved once with `domain_to_address`; an unknown name (0x0), a subdomain or an invalid label is refused |
 | `/unwatch 0x…` or `/unwatch label` | administrators | Stops a watch |
 | `/whale <token> <amount>` | administrators | Every transfer of a token at or above the amount, mints and burns labelled (5 per chat) |
 | `/unwhale <token>` | administrators | Stops a whale alert |
@@ -197,9 +200,38 @@ lookup, fails the range, which the next pass reads again, so a busy node neither
 nor turns a fee into an alert.
 
 The code keeps the scanner (`src/scanner.mjs`: ranges, paging, decoding by shape) apart from the alert rules
-(`src/alerts.mjs`) and the delivery ledger (`src/ledger.mjs`). A feed is a filter plus the function that turns
-its events into deliveries; round 3's Ekubo and AVNU feeds are added beside `walletAlerts` and read the same
-ranges.
+(`src/alerts.mjs`) and the delivery ledger (`src/ledger.mjs`). A feed names the filters it reads and turns
+their events into deliveries; each filter is read once per range, so the wallet alerts and the trade feed
+share the chain-wide Transfer filter.
+
+### How trades are decoded (round 3)
+
+The network file may list `contracts.ekubo_core`, `contracts.avnu_exchange`, `contracts.pragma` and
+`contracts.naming`, and a `pragma_pair` per token (such as `STRK/USD`). Each is optional: a missing one
+switches its feature off, and the command that needs it replies so; a malformed one exits 2 naming its path.
+
+The trade feed (`src/trades.mjs`) adds one `starknet_getEvents` filter per configured venue. Venues live in
+one table in `src/venues.mjs`, in precedence order: AVNU's `Swap` (`[taker, sell_token, sell u256, buy_token,
+buy u256, beneficiary]`), then Ekubo Core's `Swapped` (signed `delta.amount0` and `delta.amount1` at data 12
+to 15, positive meaning paid into the pool). Each entry turns one event into legs, a token and the trader's
+change. Per transaction and fed token, the first venue with a swap involving the token nets it over its own
+swaps and the others are ignored, so an AVNU route through Ekubo pools counts once. A positive net is a buy,
+a negative one a sell (posted only with `all`), zero posts nothing. Adding a venue is one more entry.
+
+The trader comes from the token's own `Transfer` events in the transaction, never from its sender (relayers
+and paymasters send for others): each address's net change, leaving out the fee payment (the transfer to
+the block's sequencer), the zero address and the venue contracts; the largest gain for a buy, the largest
+loss for a sell, a tie to the earliest `event_index`. No candidate means no trader and no "new holder".
+"New holder" means `balance_of` at the previous block read 0; a failed read never claims it. The trader is
+shown by its Starknet ID reverse name only when every label resolves back to the same address.
+
+USD values, in feed posts and in watch and whale alerts, use Pragma's `get_data_median` and only a fresh
+price (at most `CAIRN_PRICE_MAX_AGE` seconds old in chain time); a stale or failed price leaves them out, and
+a dollar floor then posts nothing.
+
+Per group and pass, at most 3 alerts are sent: when more are due, the first 2 go out and a third message
+summarises the rest with a link to each transaction (command replies never count). A feed, watch or whale
+set up in a forum topic posts into that topic.
 
 ### State and delivery
 

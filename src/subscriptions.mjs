@@ -4,7 +4,7 @@
 export const LIMITS = Object.freeze({ whales: 5, tracks: 10, minimums: 20, muted: 100, label: 32 });
 const OFFER_TTL = 24 * 3600; // seconds of chain time a Watch or Track button keeps working
 /** Every table holding a chat's data, children before the chat itself: /forget and migrations walk it. */
-const CHAT_TABLES = ['watches', 'seen', 'whales', 'minimums', 'muted', 'tracks', 'offers', 'deliveries', 'chats'];
+const CHAT_TABLES = ['watches', 'seen', 'whales', 'minimums', 'muted', 'tracks', 'offers', 'feeds', 'deliveries', 'chats'];
 
 const same = (a, b) => String(a ?? '').toLowerCase() === String(b ?? '').toLowerCase();
 
@@ -30,7 +30,7 @@ export class Subscriptions {
   watches(chatId) { return this.#q('SELECT id, chat_id, address, label, since_block FROM watches WHERE chat_id = ? ORDER BY id').all(chatId); }
   watchById(id) { return this.#q('SELECT id, chat_id, address, label, since_block FROM watches WHERE id = ?').get(id) ?? null; }
   /** Adds a watch, or relabels an existing one: { status: added|exists|cap, watch, relabelled }. */
-  watch(chat, address, label, sinceBlock) {
+  watch(chat, address, label, sinceBlock, thread = null) {
     const all = this.watches(chat.id);
     const existing = all.find((w) => w.address === address);
     if (existing) {
@@ -40,8 +40,8 @@ export class Subscriptions {
     }
     if (all.length >= this.maxWatches) return { status: 'cap' };
     this.chat(chat);
-    const { lastInsertRowid } = this.#q('INSERT INTO watches (chat_id, address, label, since_block) VALUES (?, ?, ?, ?)')
-      .run(chat.id, address, label || null, sinceBlock);
+    const { lastInsertRowid } = this.#q('INSERT INTO watches (chat_id, address, label, since_block, thread) VALUES (?, ?, ?, ?, ?)')
+      .run(chat.id, address, label || null, sinceBlock, thread);
     return { status: 'added', watch: this.watchById(Number(lastInsertRowid)) };
   }
   /**
@@ -65,17 +65,17 @@ export class Subscriptions {
   whales(chatId) { return this.#q('SELECT id, chat_id, token, symbol, min, units, since_block FROM whales WHERE chat_id = ? ORDER BY id').all(chatId); }
   whaleById(id) { return this.#q('SELECT id, chat_id, token, symbol, min, units, since_block FROM whales WHERE id = ?').get(id) ?? null; }
   /** Sets the chat's threshold on a token, in place when it has one: added|updated|cap. */
-  whale(chat, token, symbol, min, units, sinceBlock) {
+  whale(chat, token, symbol, min, units, sinceBlock, thread = null) {
     const all = this.whales(chat.id);
     const existing = all.find((w) => w.token === token);
     if (existing) {
-      this.#q('UPDATE whales SET symbol = ?, min = ?, units = ? WHERE id = ?').run(symbol, min, String(units), existing.id);
+      this.#q('UPDATE whales SET symbol = ?, min = ?, units = ?, thread = ? WHERE id = ?').run(symbol, min, String(units), thread, existing.id);
       return 'updated';
     }
     if (all.length >= LIMITS.whales) return 'cap';
     this.chat(chat);
-    this.#q('INSERT INTO whales (chat_id, token, symbol, min, units, since_block) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(chat.id, token, symbol, min, String(units), sinceBlock);
+    this.#q('INSERT INTO whales (chat_id, token, symbol, min, units, since_block, thread) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(chat.id, token, symbol, min, String(units), sinceBlock, thread);
     return 'added';
   }
   unwhale(chatId, { token, id }) {
@@ -108,6 +108,21 @@ export class Subscriptions {
     return 'added';
   }
   unmute(chatId, token) { return this.#q('DELETE FROM muted WHERE chat_id = ? AND token = ?').run(chatId, token).changes > 0; }
+
+  // ---- trade feed (round 3): one per chat ------------------------------------------------------------
+
+  feed(chatId) { return this.#q('SELECT token, symbol, floor, units, usd_cents, sides, thread, since_block FROM feeds WHERE chat_id = ?').get(chatId) ?? null; }
+  /** Sets the chat's one feed, replacing any earlier one: added|replaced. */
+  setFeed(chat, { token, symbol, floor, units, cents, sides }, sinceBlock, thread = null) {
+    const had = this.feed(chat.id) !== null;
+    this.chat(chat);
+    this.#q(`INSERT INTO feeds (chat_id, token, symbol, floor, units, usd_cents, sides, thread, since_block) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (chat_id) DO UPDATE SET token = excluded.token, symbol = excluded.symbol, floor = excluded.floor, units = excluded.units,
+      usd_cents = excluded.usd_cents, sides = excluded.sides, thread = excluded.thread, since_block = excluded.since_block`)
+      .run(chat.id, token, symbol, floor, String(units), cents === null ? null : String(cents), sides, thread, sinceBlock);
+    return had ? 'replaced' : 'added';
+  }
+  unfeed(chatId) { return this.#q('DELETE FROM feeds WHERE chat_id = ?').run(chatId).changes > 0; }
 
   // ---- tracks and buttons ------------------------------------------------------------------------------
 
@@ -156,6 +171,7 @@ export class Subscriptions {
       minimums: Object.fromEntries(this.minimums(chatId).map((m) => [m.token, m.amount])),
       tracks: this.tracks(chatId).map((t) => ({ hash: t.hash, since_block: t.since_block })),
       muted: this.muted(chatId),
+      feed: this.feed(chatId),
       chat: chat ? { type: chat.type, paused: chat.paused === 1 } : null,
       buttons: this.#q('SELECT kind, value, chain_time FROM offers WHERE chat_id = ? ORDER BY id').all(chatId)
         .map((o) => ({ kind: o.kind, value: o.value, chain_time: o.chain_time })),
@@ -183,19 +199,25 @@ export class Subscriptions {
   /** Every subscription, indexed for the scanner. */
   interests() {
     const watchers = new Map(), whales = new Map(), muted = new Set(), floors = new Map(), labels = new Map();
-    for (const w of this.#q('SELECT chat_id, address, label, since_block FROM watches').all()) {
+    for (const w of this.#q('SELECT chat_id, address, label, since_block, thread FROM watches').all()) {
       if (!watchers.has(w.address)) watchers.set(w.address, []);
-      watchers.get(w.address).push({ chatId: w.chat_id, since: w.since_block });
+      watchers.get(w.address).push({ chatId: w.chat_id, since: w.since_block, thread: w.thread });
       if (!labels.has(w.chat_id)) labels.set(w.chat_id, new Map());
       labels.get(w.chat_id).set(w.address, w.label);
     }
-    for (const w of this.#q('SELECT chat_id, token, units, since_block FROM whales').all()) {
+    for (const w of this.#q('SELECT chat_id, token, units, since_block, thread FROM whales').all()) {
       if (!whales.has(w.token)) whales.set(w.token, []);
-      whales.get(w.token).push({ chatId: w.chat_id, units: BigInt(w.units), since: w.since_block });
+      whales.get(w.token).push({ chatId: w.chat_id, units: BigInt(w.units), since: w.since_block, thread: w.thread });
     }
     for (const m of this.#q('SELECT chat_id, token FROM muted').all()) muted.add(`${m.chat_id} ${m.token}`);
     for (const m of this.#q('SELECT chat_id, token, units FROM minimums').all()) floors.set(`${m.chat_id} ${m.token}`, BigInt(m.units));
-    return { watchers, whales, muted, floors, labels, empty: watchers.size === 0 && whales.size === 0 };
+    const feeds = new Map();
+    for (const f of this.#q('SELECT chat_id, token, units, usd_cents, sides, thread, since_block FROM feeds').all()) {
+      if (!feeds.has(f.token)) feeds.set(f.token, []);
+      feeds.get(f.token).push({ chatId: f.chat_id, units: BigInt(f.units), cents: f.usd_cents === null ? null : BigInt(f.usd_cents),
+        sells: f.sides === 'all', thread: f.thread, since: f.since_block });
+    }
+    return { watchers, whales, muted, floors, labels, feeds, empty: watchers.size === 0 && whales.size === 0 };
   }
   /** Drops buttons older than a day of chain time. */
   prune(now) { this.#q('DELETE FROM offers WHERE chain_time < ?').run(now - OFFER_TTL); }

@@ -4,6 +4,10 @@ import { fileURLToPath } from 'node:url';
 import { CairnError } from './errors.mjs';
 import { normalize } from './felt.mjs';
 
+/** The network file's optional round-3 contracts, each enabling one feature. */
+export const CONTRACTS = Object.freeze(['ekubo_core', 'avnu_exchange', 'pragma', 'naming']);
+const PAIR = /^[A-Z0-9.]{1,15}\/[A-Z0-9.]{1,15}$/; // a Pragma pair short string, at most 31 characters
+
 function bad(reason) { throw new CairnError(reason, 2); }
 function url(value, name, originOnly = false) {
   let result;
@@ -79,7 +83,17 @@ export function loadConfig(args, env = process.env) {
     if (addresses.has(address)) entryBad(`${at}.address`, 'duplicate normalized address.');
     addresses.add(address);
     if (!Number.isInteger(t.decimals) || t.decimals < 0 || t.decimals > 36) entryBad(`${at}.decimals`, 'must be an integer from 0 to 36.');
-    return { symbol: t.symbol, address, decimals: t.decimals };
+    const pair = t.pragma_pair;
+    if (pair !== undefined && (typeof pair !== 'string' || !PAIR.test(pair))) entryBad(`${at}.pragma_pair`, 'must be a Pragma pair such as STRK/USD.');
+    return { symbol: t.symbol, address, decimals: t.decimals, pragma_pair: pair ?? null };
   });
+  // Round 3's contracts are optional: a missing one switches its feature off (with a reply saying so).
+  const contracts = network.contracts ?? {};
+  if (typeof contracts !== 'object' || Array.isArray(contracts)) entryBad('contracts', 'must be an object.');
+  config.contracts = Object.fromEntries(CONTRACTS.map((key) => {
+    if (contracts[key] === undefined || contracts[key] === null) return [key, null];
+    try { return [key, normalize(contracts[key])]; } catch { return entryBad(`contracts.${key}`, 'invalid Starknet address.'); }
+  }));
+  config.priceMaxAge = integer(env, 'CAIRN_PRICE_MAX_AGE', 900, 1);
   return config;
 }

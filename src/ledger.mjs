@@ -1,7 +1,8 @@
 // The delivery ledger. Each alert is keyed by (chat, transaction hash, event_index), the first event of its
 // message, and saved as pending in the same transaction as the scan that found it. It is marked sent, with
 // its message_id, only once Telegram accepts it; its text is then dropped and the key kept for seven days of
-// chain time, so that a rescan or a restart never sends it twice. Track stages use negative indexes.
+// chain time, so that a rescan or a restart never sends it twice. Track stages use negative indexes. From
+// round 3 a delivery remembers the forum topic of the subscription that produced it.
 
 export const LEDGER_TTL = 7 * 24 * 3600;
 export const STAGE = Object.freeze({ accepted: -1, final: -2, missing: -3 });
@@ -10,13 +11,13 @@ export class Ledger {
   constructor(store) { this.store = store; }
   #q(text) { return this.store.sql(text); }
   /** Saves an alert before it is sent; false when its key is already in the ledger. */
-  add({ chatId, txHash, eventIndex, kind, events = [eventIndex], block = null, chainTime, body }) {
-    return this.#q(`INSERT OR IGNORE INTO deliveries (chat_id, tx_hash, event_index, kind, events, block, chain_time, state, body)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)`).run(chatId, txHash, eventIndex, kind, JSON.stringify(events), block, chainTime, body).changes === 1;
+  add({ chatId, txHash, eventIndex, kind, events = [eventIndex], block = null, chainTime, body, thread = null }) {
+    return this.#q(`INSERT OR IGNORE INTO deliveries (chat_id, tx_hash, event_index, kind, events, block, chain_time, state, body, thread)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`).run(chatId, txHash, eventIndex, kind, JSON.stringify(events), block, chainTime, body, thread).changes === 1;
   }
-  /** Pending alerts of chats that are not paused, in the order they were found (chain order). */
+  /** Pending alerts of chats that are not paused, in the order they were found (chain order), with the chat's type. */
   pending(limit = 1000) {
-    return this.#q(`SELECT d.seq, d.chat_id, d.body FROM deliveries d LEFT JOIN chats c ON c.chat_id = d.chat_id
+    return this.#q(`SELECT d.seq, d.chat_id, d.body, d.thread, d.tx_hash, d.kind, c.type FROM deliveries d LEFT JOIN chats c ON c.chat_id = d.chat_id
       WHERE d.state = 'pending' AND coalesce(c.paused, 0) = 0 ORDER BY d.seq LIMIT ?`).all(limit);
   }
   sent(seq, messageId) { this.#q("UPDATE deliveries SET state = 'sent', message_id = ?, body = NULL WHERE seq = ?").run(messageId, seq); }

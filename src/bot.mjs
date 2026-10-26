@@ -5,19 +5,27 @@ import { CairnError, log, NodeBusy, RpcError, TelegramRefused } from './errors.m
 import { decodeChain, NodeValueError } from './felt.mjs';
 import { links, messages, redactor, textLines } from './format.mjs';
 import { Ledger } from './ledger.mjs';
+import { reverseNames } from './names.mjs';
+import { freshQuotes } from './prices.mjs';
 import { RateLimit } from './rate.mjs';
 import { Scanner } from './scanner.mjs';
 import { Store } from './store.mjs';
 import { Subscriptions } from './subscriptions.mjs';
 import { Tokens } from './tokens.mjs';
+import { tradeFeed } from './trades.mjs';
 import { trackStep } from './tracks.mjs';
 import { Rpc, Telegram, sleep } from './transport.mjs';
 
 const ALLOWED_UPDATES = ['message', 'callback_query', 'my_chat_member'];
-/** What the scanner reads from each range; round 3 adds its venue feeds here. */
-const FEEDS = [walletAlerts];
+/** What the scanner reads from each range: round 2's wallet alerts and round 3's trade feed. */
+const FEEDS = [walletAlerts, tradeFeed];
 const ADMINS = new Set(['creator', 'administrator']);
-const LOUD_ALERTS = 3; // alerts per chat and pass with a notification; later ones in the same pass arrive silently
+const LOUD_ALERTS = 3; // alerts per private chat and pass with a notification; later ones in the same pass arrive silently
+/** Per group and pass, at most this many messages that are not command replies: the last one summarises the rest. */
+const GROUP_BUDGET = 3;
+const SUMMARY_LINKS = 10; // transaction links in a summary
+/** A delivery posts into the forum topic its subscription was set up in. */
+const thread = (row) => (Number.isSafeInteger(row.thread) ? { message_thread_id: row.thread } : {});
 /** A 400 that means the bot may not write to the chat for now, rather than that one message was bad. */
 const NO_WRITE = /not enough rights|have no rights|chat not found/i;
 const SLOW_DOWN = 'Slow down: Cairn answers at most 10 commands a minute from one person, and ignores the rest until that minute has passed.';
@@ -210,6 +218,7 @@ class Bot {
     return {
       config: this.config, rpc: this.rpc, username: this.username, clean: this.clean, head: this.head, spec: this.identity?.spec,
       signal: this.signal, subs: this.subs, tokens: this.tokens, fmt: this.fmt, chat,
+      thread: Number.isSafeInteger(message?.message_thread_id) ? message.message_thread_id : null,
       admin: (user) => (admin ??= this.isAdmin(chat, message, user)),
     };
   }
@@ -298,13 +307,17 @@ class Bot {
     const range = cursor === null ? null : this.scanner.next(cursor, this.head.block_number);
     this.behind = false;
     if (!range) return;
-    const interests = this.subs.interests();
-    const context = { interests, tokens: this.tokens, rpc: this.rpc, now: this.head.timestamp, fmt: this.fmt };
+    const interests = this.subs.interests(), now = this.head.timestamp;
+    const context = { interests, tokens: this.tokens, rpc: this.rpc, now, fmt: this.fmt, config: this.config,
+      quotes: freshQuotes(this.rpc, this.config, now), names: reverseNames(this.rpc, this.config) };
     const found = { deliveries: [], seen: [] };
     try {
-      // A feed nobody subscribes to reads nothing: no subscription can cover these blocks.
-      for (const feed of FEEDS.filter((f) => f.wanted(interests))) {
-        const result = await feed.find(await this.scanner.events(range, feed.filter), context);
+      // A feed nobody subscribes to reads nothing: no subscription can cover these blocks. Each filter is read
+      // once per range, however many feeds share it (the Transfer filter serves both).
+      const sources = new Map();
+      for (const feed of FEEDS.filter((f) => f.wanted(interests, this.config))) {
+        for (const { key, filter } of feed.reads(this.config)) if (!sources.has(key)) sources.set(key, await this.scanner.events(range, filter));
+        const result = await feed.find(sources, context);
         found.deliveries.push(...result.deliveries);
         found.seen.push(...(result.seen ?? []));
       }
@@ -337,22 +350,47 @@ class Bot {
       });
     }
   }
-  /** Pending alerts, oldest first, skipping chats that are paused or were blocked during this pass. */
+  /**
+   * Pending alerts, oldest first, skipping chats that are paused or were blocked during this pass. A group
+   * gets at most GROUP_BUDGET of them per pass: when more are due, the first ones are sent and one summary
+   * stands for the rest, which it marks sent once Telegram accepts it. Command replies never count.
+   */
   async deliver() {
-    const sentTo = new Map(), blocked = new Set(), moved = new Map();
-    for (const row of this.ledger.pending()) {
-      if (this.signal.aborted) return;
-      const chatId = moved.get(row.chat_id) ?? row.chat_id;
-      if (blocked.has(chatId)) continue;
-      const count = sentTo.get(chatId) ?? 0;
-      sentTo.set(chatId, count + 1);
-      const r = await this.send(chatId, row.body, count >= LOUD_ALERTS ? { disable_notification: true } : {});
+    const sentTo = new Map(), blocked = new Set(), moved = new Map(), byChat = new Map();
+    for (const row of this.ledger.pending()) (byChat.get(row.chat_id) ?? byChat.set(row.chat_id, []).get(row.chat_id)).push(row);
+    for (const [original, rows] of byChat) {
+      const group = rows[0].type ? rows[0].type !== 'private' : original < 0;
+      const one = group && rows.length > GROUP_BUDGET ? rows.slice(0, GROUP_BUDGET - 1) : rows;
+      const rest = rows.slice(one.length);
+      for (const row of one) {
+        if (this.signal.aborted) return;
+        const chatId = moved.get(original) ?? original;
+        if (blocked.has(chatId)) break;
+        const count = sentTo.get(chatId) ?? 0;
+        sentTo.set(chatId, count + 1);
+        const r = await this.send(chatId, row.body, { ...thread(row), ...(count >= LOUD_ALERTS ? { disable_notification: true } : {}) });
+        if (r.message) {
+          if (r.chatId !== chatId) moved.set(original, r.chatId);
+          this.store.transaction(() => this.ledger.sent(row.seq, r.message.message_id));
+          this.counts.alerts++;
+        } else if (r.refused) this.store.transaction(() => this.ledger.dropped(row.seq));
+        else blocked.add(chatId);
+      }
+      const chatId = moved.get(original) ?? original;
+      if (!rest.length || blocked.has(chatId) || this.signal.aborted) continue;
+      const r = await this.send(chatId, this.summary(rest), { ...thread(rest[0]), disable_notification: true });
       if (r.message) {
-        if (r.chatId !== chatId) moved.set(row.chat_id, r.chatId);
-        this.store.transaction(() => this.ledger.sent(row.seq, r.message.message_id));
-        this.counts.alerts++;
-      } else if (r.refused) this.store.transaction(() => this.ledger.dropped(row.seq));
-      else blocked.add(chatId);
+        this.store.transaction(() => { for (const row of rest) this.ledger.sent(row.seq, r.message.message_id); });
+        this.counts.alerts += rest.length;
+      } else if (r.refused) this.store.transaction(() => { for (const row of rest) this.ledger.dropped(row.seq); });
     }
+  }
+  /** The group's third message when more were due: how many, and a link to each transaction. */
+  summary(rows) {
+    const txs = [...new Set(rows.map((r) => r.tx_hash))];
+    const lines = [`➕ ${rows.length} more alerts in this pass, summarised to keep the group readable:`];
+    for (const tx of txs.slice(0, SUMMARY_LINKS)) lines.push(`• ${this.fmt.tx(tx)}`);
+    if (txs.length > SUMMARY_LINKS) lines.push(`• and ${txs.length - SUMMARY_LINKS} more transactions`);
+    return lines.join('\n');
   }
 }
