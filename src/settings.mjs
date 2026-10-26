@@ -1,6 +1,6 @@
 import { NodeBusy } from './errors.mjs';
 import { normalize } from './felt.mjs';
-import { looksLikeName, parseStarkName, resolveName } from './names.mjs';
+import { nameOrAddress } from './names.mjs';
 import { escapeHtml, parseDecimal, plainText, short, unescapeHtml } from './format.mjs';
 import { LIMITS } from './subscriptions.mjs';
 
@@ -27,23 +27,10 @@ export async function setting(command, ctx) {
 
 const FEED_USAGE = 'Usage: /feed &lt;SYMBOL|token address&gt; [&lt;min&gt;|$&lt;usd&gt;] [buys|all], for example /feed STRK $100 all.';
 
-/**
- * A `name.stark` typed where an address goes: its address from `domain_to_address`, or { error } when names
- * are switched off, the name is malformed, or it points nowhere (0x0).
- */
-async function nameAddress(text, ctx) {
-  const naming = ctx.config.contracts.naming;
-  if (!naming) return { error: 'Names are unavailable: this network file configures no naming contract (contracts.naming). Use the address instead.' };
-  const parsed = parseStarkName(text);
-  if (parsed.error) return { error: escapeHtml(parsed.error) };
-  let address;
-  try { address = await resolveName(ctx.rpc, naming, [parsed.encoded]); }
-  catch (error) {
-    if (ctx.signal.aborted) throw error;
-    return { error: 'Name lookup unavailable right now: nothing was changed. Please try again shortly.' };
-  }
-  if (!address) return { error: `Unknown name: ${escapeHtml(parsed.name)} is not registered on Starknet ID. Nothing was changed.` };
-  return { address, name: parsed.name };
+/** A token a person named, by symbol, address or `name.stark`: { token } or { error }. */
+async function resolveToken(arg, ctx) {
+  const named = await nameOrAddress(arg, ctx);
+  return named.error ? named : ctx.tokens.resolve(named.value, ctx.head?.timestamp ?? 0);
 }
 
 /** How a watched address reads in this chat: its label, or its short form, linked. */
@@ -53,14 +40,11 @@ const HANDLERS = {
   async watch(arg, ctx) {
     const m = /^(\S+)(?:\s+([\s\S]+))?$/.exec(arg);
     if (!m) return say('Usage: /watch &lt;address&gt; [label], for example /watch 0x0471…938d Treasury.');
-    let address, name = null;
-    if (looksLikeName(m[1])) {
-      const named = await nameAddress(m[1], ctx);
-      if (named.error) return say(named.error);
-      ({ address, name } = named);
-    } else {
-      try { address = normalize(m[1]); } catch (error) { return say(escapeHtml(error.message)); }
-    }
+    const named = await nameOrAddress(m[1], ctx);
+    if (named.error) return say(escapeHtml(named.error));
+    let address;
+    try { address = normalize(named.value); } catch (error) { return say(escapeHtml(error.message)); }
+    const name = named.name ?? null;
     const label = plainText(m[2] ?? '', Infinity) || (name && Array.from(name).length <= LIMITS.label ? name : null);
     if (label && Array.from(label).length > LIMITS.label) return say(`Labels are at most ${LIMITS.label} characters; that one has ${Array.from(label).length}. Nothing was changed.`);
     if (label && /^0x[0-9a-f]*$/i.test(label)) return say('A label cannot look like an address, or /unwatch could not tell them apart. Nothing was changed.');
@@ -77,8 +61,11 @@ const HANDLERS = {
 
   async unwatch(arg, ctx) {
     if (!arg) return say('Usage: /unwatch &lt;address|label&gt;. /list shows what this chat watches.');
+    // A name that resolves stands for its address; one that does not may still be a label (a watch set up
+    // by name is labelled with it).
+    const named = await nameOrAddress(arg, ctx);
     let address = null;
-    try { address = normalize(arg); } catch { /* a label */ }
+    try { address = normalize(named.error ? arg : named.value); } catch { /* a label */ }
     return () => {
       const r = ctx.subs.unwatch(ctx.chat.id, address ? { address } : { label: plainText(arg, Infinity) });
       if (r.watch) return say(`Stopped watching ${watchName(ctx, r.watch)}.`)();
@@ -102,7 +89,7 @@ const HANDLERS = {
       else return say(FEED_USAGE);
     }
     if (!ctx.head) return say(BUSY);
-    const { token, error } = await ctx.tokens.resolve(tokenArg, ctx.head.timestamp);
+    const { token, error } = await resolveToken(tokenArg, ctx);
     if (error) return say(escapeHtml(error));
     let units = 0n, floor = null, cents = null;
     if (floorArg?.startsWith('$')) {
@@ -134,7 +121,7 @@ const HANDLERS = {
     const m = /^(\S+)\s+(\S+)$/.exec(arg);
     if (!m) return say('Usage: /whale &lt;SYMBOL|token address&gt; &lt;amount&gt;, for example /whale STRK 1000000.');
     if (!ctx.head) return say(BUSY);
-    const { token, error } = await ctx.tokens.resolve(m[1], ctx.head.timestamp);
+    const { token, error } = await resolveToken(m[1], ctx);
     if (error) return say(escapeHtml(error));
     const amount = parseDecimal(m[2], token.decimals);
     if (amount.error) return say(`${escapeHtml(amount.error)} Nothing was changed.`);
@@ -161,7 +148,7 @@ const HANDLERS = {
   async min(arg, ctx) {
     const m = /^(\S+)\s+(\S+)$/.exec(arg);
     if (!m) return say('Usage: /min &lt;SYMBOL|token address&gt; &lt;amount&gt;, for example /min STRK 5. Use 0 to remove a floor.');
-    const { token, error } = await ctx.tokens.resolve(m[1], ctx.head?.timestamp ?? 0);
+    const { token, error } = await resolveToken(m[1], ctx);
     if (error) return say(escapeHtml(error));
     const amount = parseDecimal(m[2], token.decimals);
     if (amount.error) return say(`${escapeHtml(amount.error)} Nothing was changed.`);
@@ -232,6 +219,9 @@ function trackCommit(ctx, chat, hash, reply = say) {
 /** A token address for /mute, /unmute and /unwhale: a registry symbol works for /unwhale only. */
 async function tokenAddress(arg, ctx, command) {
   if (!arg) return { error: command ? `Usage: /${command} <token address>.` : 'Usage: /unwhale <SYMBOL|token address>.' };
+  const named = await nameOrAddress(arg, ctx);
+  if (named.error) return named;
+  arg = named.value;
   if (!/^0x/i.test(arg)) {
     if (command) return { error: `Use the token's contract address: /${command} 0x… (any token can claim any symbol).` };
     const token = ctx.tokens.bySymbol(arg);

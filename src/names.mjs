@@ -152,3 +152,24 @@ export function reverseNames(rpc, config) {
     },
   };
 }
+
+/**
+ * Wherever a person types an address, a `name.stark` stands for the address `domain_to_address` gives it.
+ * Returns { value } (the text itself when it is not a name), { value, name } for a resolved name, or
+ * { error } in plain text: names switched off, a malformed name, a lookup failure, or 0x0 (unknown).
+ */
+export async function nameOrAddress(text, { config, rpc, signal }) {
+  if (!looksLikeName(text)) return { value: text };
+  const naming = config.contracts.naming;
+  if (!naming) return { error: 'Names are unavailable: this network file configures no naming contract (contracts.naming). Use the address instead.' };
+  const parsed = parseStarkName(text);
+  if (parsed.error) return parsed;
+  let address;
+  try { address = await resolveName(rpc, naming, [parsed.encoded]); }
+  catch (error) {
+    if (signal?.aborted) throw error;
+    return { error: 'Name lookup unavailable right now: nothing was changed. Please try again shortly.' };
+  }
+  if (!address) return { error: `Unknown name: ${parsed.name} is not registered on Starknet ID. Nothing was changed.` };
+  return { value: address, name: parsed.name };
+}

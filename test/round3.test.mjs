@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { findAlerts } from '../src/alerts.mjs';
 import { hex64 } from '../src/felt.mjs';
-import { decodeLabel, encodeLabel, parseStarkName } from '../src/names.mjs';
+import { links } from '../src/format.mjs';
+import { decodeLabel, encodeLabel, nameOrAddress, parseStarkName } from '../src/names.mjs';
 import { atLeastUsd, usdValue } from '../src/prices.mjs';
 import { decodeSwaps, findTrader, netTrade, VENUES } from '../src/venues.mjs';
 
@@ -56,4 +58,35 @@ test('USD values and dollar floors are exact, equality included', () => {
   assert.equal(usdValue(100n, 0, quote), '125.00');
   assert.ok(atLeastUsd(100n, 0, quote, 12500n));
   assert.ok(!atLeastUsd(100n, 0, quote, 12600n));
+});
+
+test('a name.stark stands for its address wherever an address is typed, and 0x0 is refused', async () => {
+  const calls = [];
+  const rpc = { call: async (method, { request }) => { calls.push(request.calldata); return [request.calldata[1] === '0x49ed' ? A.trader : '0x0']; } };
+  const ctx = { config: { contracts: { naming: hex64('0x77') } }, rpc };
+  assert.deepEqual(await nameOrAddress('0x123', ctx), { value: '0x123' });
+  assert.deepEqual(await nameOrAddress('ben.stark', ctx), { value: A.trader, name: 'ben.stark' });
+  assert.deepEqual(calls, [['0x1', '0x49ed', '0x0']]);
+  assert.match((await nameOrAddress('nobody.stark', ctx)).error, /Unknown name/);
+  assert.match((await nameOrAddress('a.b.stark', ctx)).error, /not supported/);
+  assert.match((await nameOrAddress('ben.stark', { ...ctx, config: { contracts: { naming: null } } })).error, /unavailable/);
+});
+
+test('watch and whale alerts show a verified reverse name, a chat label first, else the short address', async () => {
+  const ev = (a, b, index) => ({ kind: 'Transfer', token: A.token, a, b, amount: 5n, legacy: false, block: 9, tx: hex64('0x99'), index });
+  const interests = { watchers: new Map([[A.trader, [{ chatId: 1, since: 0, thread: null }]]]), whales: new Map(), muted: new Set(),
+    floors: new Map(), labels: new Map(), feeds: new Map() };
+  const context = {
+    interests, now: 1000, fmt: links({ explorer: 'https://scan.example' }, (v) => v),
+    tokens: { get: async () => ({ address: A.token, symbol: 'STRK', decimals: 0, verified: true }), strk: hex64('0x4718') },
+    rpc: { call: async () => ({ timestamp: 1000, sequencer_address: '0x5' }) },
+    names: { reverse: async (address) => (address === A.trader ? 'ben.stark' : null) },
+  };
+  const [named] = (await findAlerts([ev(A.other, A.trader, 1)], context)).deliveries;
+  assert.match(named.body, />ben\.stark</);
+  assert.ok(named.body.includes(`https://scan.example/contract/${A.other}`));
+  interests.labels.set(1, new Map([[A.trader, 'Treasury']]));
+  const [labelled] = (await findAlerts([ev(A.other, A.trader, 2)], context)).deliveries;
+  assert.match(labelled.body, />Treasury</);
+  assert.doesNotMatch(labelled.body, /ben\.stark/);
 });

@@ -151,7 +151,7 @@ configuration or an incompatible chain/spec, and 3 for a rejected Telegram token
 | --- | --- | --- |
 | `/start`, `/help` | everyone | Commands, privacy, and a link to add the bot to a group |
 | `/status` | everyone | Chain, head, UTC block time, L1/L1-data/L2 gas in FRI, RPC spec |
-| `/balance 0x… [token]` | everyone | Exact balances of every registry token, or of one token (a symbol or any token address); for a watched address, also the other tokens seen moving for it |
+| `/balance 0x… [token]` or `/balance name.stark` | everyone | Exact balances of every registry token, or of one token (a symbol or any token address); for a watched address, also the other tokens seen moving for it |
 | `/tx 0x…` | everyone | Finality, execution, block, fee, escaped revert reason, explorer link |
 | `/price [SYMBOL…]` | everyone | Pragma's median USD price of each named registry token (all priced ones by default), with its age in chain time and its number of sources; older than `CAIRN_PRICE_MAX_AGE` (default 900 s) is marked stale, and an empty Pragma answer reads "no price". One failed pair never hides the others |
 | `/list` | everyone | The chat's watches, whale alerts, floors, mutes and tracks, with Remove buttons |
@@ -171,7 +171,10 @@ In a private chat, pasting an address gives its `/balance` with a **Watch** butt
 transaction hash gives its `/tx` with a **Track** button. In groups, use `/command` or
 `/command@your_bot_username`; plain text and commands for other bots are ignored. Administrators are the
 members `getChatMember` reports as creator or administrator, and anonymous administrators posting as the
-group. Amounts are typed as exact decimals (`1000000`, `2.5`, `1,000.5`), never with an exponent. Each person
+group. Wherever an address is typed (`/balance`, `/watch`, `/unwatch`, a token in `/whale`, `/unwhale`, `/min`, `/mute`, `/unmute` and `/feed`), a
+`name.stark` works too: it is resolved with Starknet ID's `domain_to_address`, and an unknown name (0x0), a
+subdomain or an invalid label is refused with a reply. In alerts and feed posts an address without a label
+in the chat is shown by its reverse name, only when that name resolves back to the same address. Amounts are typed as exact decimals (`1000000`, `2.5`, `1,000.5`), never with an exponent. Each person
 gets 10 commands per minute of `message.date`; beyond that, one slow-down notice, then silence until the
 minute has passed.
 
@@ -222,8 +225,9 @@ The trader comes from the token's own `Transfer` events in the transaction, neve
 and paymasters send for others): each address's net change, leaving out the fee payment (the transfer to
 the block's sequencer), the zero address and the venue contracts; the largest gain for a buy, the largest
 loss for a sell, a tie to the earliest `event_index`. No candidate means no trader and no "new holder".
-"New holder" means `balance_of` at the previous block read 0; a failed read never claims it. The trader is
-shown by its Starknet ID reverse name only when every label resolves back to the same address.
+"New holder" means `balance_of` at the previous block read 0; a failed read never claims it. The trader, like
+any address in watch and whale alerts, is shown by its Starknet ID reverse name only when every label
+resolves back to the same address.
 
 USD values, in feed posts and in watch and whale alerts, use Pragma's `get_data_median` and only a fresh
 price (at most `CAIRN_PRICE_MAX_AGE` seconds old in chain time); a stale or failed price leaves them out, and

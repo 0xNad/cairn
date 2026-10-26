@@ -27,7 +27,7 @@ const MAX_ITEMS = 10; // lines per message: a busy transaction does not bury the
  * muted tokens, contracts that are not coins, and anything at or before a subscription's since_block.
  * Extra calls happen only for events some chat cares about: token metadata, block headers, and the fee rule.
  */
-export async function findAlerts(events, { interests, tokens, rpc, now, fmt, quotes }) {
+export async function findAlerts(events, { interests, tokens, rpc, now, fmt, quotes, names }) {
   const candidates = [];
   for (const ev of events) {
     const roles = new Map();
@@ -68,6 +68,9 @@ export async function findAlerts(events, { interests, tokens, rpc, now, fmt, quo
   // From round 3 a transfer of a priced token shows its USD value, from a fresh price only.
   const usd = new Map();
   for (const { token } of alertable) if (!usd.has(token.address)) usd.set(token.address, token.verified && quotes ? await quotes.fresh(token) : null);
+  // And an address without a label in the chat is shown by its verified reverse name, when it has one.
+  const known = new Map();
+  if (names) for (const { ev } of alertable) for (const address of [ev.a, ev.b]) if (address !== ZERO && !known.has(address)) known.set(address, await names.reverse(address));
 
   const groups = new Map();
   for (const c of alertable) {
@@ -80,7 +83,7 @@ export async function findAlerts(events, { interests, tokens, rpc, now, fmt, quo
   const deliveries = [...groups.values()].map((g) => ({
     chatId: g.chatId, txHash: g.tx, eventIndex: g.items[0].ev.index, kind: 'alert', events: g.items.map((i) => i.ev.index),
     block: g.block, chainTime: headers.get(g.block).timestamp, thread: g.thread,
-    body: render(g, headers.get(g.block).timestamp, interests.labels.get(g.chatId) ?? new Map(), fmt),
+    body: render(g, headers.get(g.block).timestamp, interests.labels.get(g.chatId) ?? new Map(), known, fmt),
   }));
   return { deliveries, seen };
 }
@@ -113,10 +116,10 @@ async function isFee(ev, block, strk, rpc, cache) {
 }
 
 /** One chat's message for one transaction: a line per matching event, then where and when. */
-function render(group, time, labels, fmt) {
+function render(group, time, labels, known, fmt) {
   const name = (address) => labels.has(address)
     ? fmt.contract(address, labels.get(address) ? escapeHtml(labels.get(address)) : short(address))
-    : fmt.contract(address);
+    : fmt.contract(address, known.get(address) ? escapeHtml(known.get(address)) : undefined);
   const items = routes(group.items);
   const lines = items.slice(0, MAX_ITEMS).map((item) => line(item, name, fmt));
   if (items.length > MAX_ITEMS) lines.push(`… and ${items.length - MAX_ITEMS} more in this transaction.`);

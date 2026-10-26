@@ -2,6 +2,7 @@ import { NodeBusy, RpcError } from './errors.mjs';
 import { normalize, unsigned } from './felt.mjs';
 import { amount, decimal, escapeHtml, links, textLines, utc } from './format.mjs';
 import { callback, setting, SETTINGS } from './settings.mjs';
+import { nameOrAddress } from './names.mjs';
 import { readPrice } from './prices.mjs';
 import { balanceOf } from './tokens.mjs';
 
@@ -41,7 +42,7 @@ export function parsePaste(message) {
 const HELP = `Cairn · Starknet lookups and wallet alerts
 Lookups, for everyone:
 /status — Chain head and gas prices
-/balance <address> [token] — Exact balances, one token or every verified one
+/balance <address|name.stark> [token] — Exact balances, one token or every verified one
 /tx <hash> — Status, fee and revert reason
 /price [SYMBOL…] — Pragma USD prices, with their age and number of sources
 In a private chat, paste an address or a transaction hash to look it up.
@@ -87,7 +88,9 @@ export async function answer(command, context) {
   let input, tokenArgument;
   if (command.name === 'balance') {
     const [address = '', token, ...extra] = command.argument.split(/\s+/).filter(Boolean);
-    try { input = normalize(address, 'address'); } catch (error) { return text(error.message); }
+    const named = await nameOrAddress(address, context);
+    if (named.error) return text(named.error);
+    try { input = normalize(named.value, 'address'); } catch (error) { return text(error.message); }
     if (extra.length) return text('Usage: /balance <address> [SYMBOL|token address].');
     tokenArgument = token;
   } else if (command.name === 'tx') {
@@ -101,7 +104,8 @@ export async function answer(command, context) {
       case 'balance': {
         let chosen = null;
         if (tokenArgument !== undefined) {
-          const resolved = await context.tokens.resolve(tokenArgument, head.timestamp);
+          const namedToken = await nameOrAddress(tokenArgument, context);
+          const resolved = namedToken.error ? namedToken : await context.tokens.resolve(namedToken.value, head.timestamp);
           if (resolved.error) return text(resolved.error);
           chosen = resolved.token;
         }
