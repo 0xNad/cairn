@@ -30,8 +30,12 @@ CREATE TABLE IF NOT EXISTS deliveries (seq INTEGER PRIMARY KEY AUTOINCREMENT, ch
   event_index INTEGER NOT NULL, kind TEXT NOT NULL, events TEXT NOT NULL, block INTEGER, chain_time INTEGER NOT NULL,
   state TEXT NOT NULL, message_id INTEGER, body TEXT, UNIQUE (chat_id, tx_hash, event_index)) STRICT;
 CREATE INDEX IF NOT EXISTS deliveries_state ON deliveries (state, seq);
+CREATE TABLE IF NOT EXISTS feeds (chat_id INTEGER PRIMARY KEY, token TEXT NOT NULL, symbol TEXT NOT NULL, floor TEXT,
+  units TEXT NOT NULL, usd_cents TEXT, sides TEXT NOT NULL, thread INTEGER, since_block INTEGER NOT NULL) STRICT;
 `;
 const SCHEMA_VERSION = '2';
+/** Round 3 adds the forum topic a subscription was set up in, which its deliveries post into. */
+const THREAD_TABLES = ['watches', 'whales', 'deliveries'];
 
 function safeFile(path, what) {
   if (!existsSync(path)) return;
@@ -59,6 +63,10 @@ export class Store {
       chmodSync(this.file, 0o600);
       this.db.exec('PRAGMA journal_mode = DELETE; PRAGMA synchronous = FULL; PRAGMA secure_delete = ON; PRAGMA temp_store = MEMORY;');
       this.db.exec(SCHEMA);
+      for (const table of THREAD_TABLES) {
+        const columns = this.db.prepare(`PRAGMA table_info(${table})`).all();
+        if (!columns.some((c) => c.name === 'thread')) this.db.exec(`ALTER TABLE ${table} ADD COLUMN thread INTEGER`);
+      }
       const version = this.get('schema');
       if (version !== null && version !== SCHEMA_VERSION) throw new Error('unknown schema');
       this.transaction(() => this.set('schema', SCHEMA_VERSION));
