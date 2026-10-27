@@ -1,0 +1,6 @@
+.git
+.launchpad
+.env
+data
+*.log
+node_modules

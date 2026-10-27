@@ -1,3 +1,7 @@
+import { Guards, guardWarning } from './guard.mjs';
+import { startHttp } from './http.mjs';
+import { Network } from './network.mjs';
+import { RpcPool } from './rpcpool.mjs';
 import { performance } from 'node:perf_hooks';
 import { walletAlerts } from './alerts.mjs';
 import { callback, COMMANDS, parseCommand, parsePaste, respond } from './commands.mjs';
@@ -15,7 +19,7 @@ import { plan, summarise } from './summary.mjs';
 import { Tokens } from './tokens.mjs';
 import { trackStep } from './tracks.mjs';
 import { tradeFeed } from './trades.mjs';
-import { Rpc, Telegram, sleep } from './transport.mjs';
+import { Telegram, sleep } from './transport.mjs';
 import { VENUES, venuesOf } from './venues.mjs';
 
 const ALLOWED_UPDATES = ['message', 'callback_query', 'my_chat_member'];
@@ -28,14 +32,18 @@ const NO_TOPIC = /thread|topic/i;
 /** The network file's contracts as alerts name them, in place of a short address. */
 const CONTRACT_NAMES = { pragma: 'Pragma oracle', naming: 'Starknet ID naming', ...Object.fromEntries(VENUES.map((v) => [v.contract, v.label])) };
 /** Ledger rows in chain order: block, then transaction, then event. */
-const chainOrder = (a, b) => a.position[0] - b.position[0] || a.position[1] - b.position[1] || a.position[2] - b.position[2];
+export const chainOrder = (a, b) => {
+  const x = a.position ?? [a.block ?? 0, 0, a.eventIndex ?? 0], y = b.position ?? [b.block ?? 0, 0, b.eventIndex ?? 0];
+  return x[0] - y[0] || x[1] - y[1] || x[2] - y[2];
+};
 const SLOW_DOWN = 'Slow down: Cairn answers at most 10 commands a minute from one person, and ignores the rest until that minute has passed.';
 /** Chain failures that leave the work for the next pass. */
 const retriable = (error) => error instanceof NodeBusy || error instanceof RpcError || error instanceof NodeValueError;
 
-async function handshake(rpc, config, clean) {
+export async function handshake(rpc, config, clean) {
+  if (rpc instanceof RpcPool) return rpc.identify(client => handshake(client, config, clean));
   const chain = decodeChain(await rpc.call('starknet_chainId'));
-  if (chain !== config.chain) throw new CairnError(`Node reports ${clean(chain)}; expected ${config.chain}.`, 2);
+  if (chain !== config.chain) throw new CairnError(`Node reports chain ${clean(chain)}; expected ${config.chain}.`, 2);
   const spec = await rpc.call('starknet_specVersion');
   const version = typeof spec === 'string' ? /^(\d+)\.(\d+)\.(\d+)$/.exec(spec) : null;
   if (!version || !(Number(version[1]) > 0 || Number(version[2]) >= 10)) {
@@ -44,7 +52,7 @@ async function handshake(rpc, config, clean) {
   return { chain, spec: clean(spec) };
 }
 export async function serve(config, signal) {
-  const clean = redactor(config), rpc = new Rpc(config, signal), tg = new Telegram(config, signal);
+  const clean = redactor(config), rpc = new RpcPool(config, signal), tg = new Telegram(config, signal);
   const me = await tg.call('getMe');
   if (!/^[A-Za-z0-9_]{1,64}$/.test(me?.username ?? '')) throw new CairnError('Telegram returned an invalid bot username.');
   const username = clean(me.username);
@@ -68,7 +76,9 @@ export async function serve(config, signal) {
       store.transaction(() => store.set('commands', commandList));
     }
     const bot = new Bot({ config, store, rpc, tg, clean, username, me, signal, identity });
-    return config.mode === 'tick' ? await bot.tick() : await bot.run();
+    const http = await startHttp(config, () => bot.snapshot());
+    try { return config.mode === 'tick' ? await bot.tick() : await bot.run(); }
+    finally { if (http) { http.closeAllConnections(); await new Promise(resolve => http.close(resolve)); } }
   } finally { store.close(); }
 }
 
@@ -78,11 +88,13 @@ export async function serve(config, signal) {
  * pending; then deliver the pending alerts, each marked sent only once Telegram accepts it, within each
  * group's budget.
  */
-class Bot {
+export class Bot {
   constructor(o) {
     Object.assign(this, o);
     this.subs = new Subscriptions(o.store, o.config);
     this.ledger = new Ledger(o.store);
+    this.guards = new Guards(o.store, o.config.blocklist);
+    this.network = new Network(o.config, o.store, o.rpc, this.ledger);
     this.tokens = new Tokens(o.config, o.store, o.rpc);
     this.rate = new RateLimit(o.store);
     this.scanner = new Scanner(o.rpc, o.config);
@@ -109,6 +121,12 @@ class Bot {
     this.names.reset();
     const now = performance.now();
     if (now - this.budget.start >= this.config.pollMs) this.budget = { start: now, used: new Map() };
+  }
+
+  snapshot() {
+    const reason = this.tg.healthy === false ? 'telegram' : !this.head ? 'rpc' : Date.now() - this.network.since >= this.config.stallSeconds * 1000 ? 'stalled' : null;
+    return { ...this.counts, head: this.head?.block_number ?? null, lag: Math.max(0, Math.floor(Date.now() / 1000) - (this.head?.timestamp ?? 0)),
+      errors: this.rpc.errors + this.rpc.clients.reduce((n, c) => n + c.errors, 0), reason };
   }
 
   async tick() {
@@ -139,7 +157,13 @@ class Bot {
       }
       const wait = Math.max(0, due - performance.now());
       const timeout = this.config.tgTimeout === 0 || this.behind ? 0 : Math.min(this.config.tgTimeout, Math.max(1, Math.ceil(wait / 1000)));
-      const batch = await this.poll(timeout);
+      let batch;
+      try { batch = await this.poll(timeout); }
+      catch (error) {
+        if (this.signal.aborted || error.exitCode === 3 || /conflict/i.test(error.message)) throw error;
+        await sleep(this.config.pollMs, this.signal);
+        continue;
+      }
       if (batch.length) {
         await this.readHead();
         for (const update of batch) {
@@ -158,7 +182,7 @@ class Bot {
       if (!Number.isSafeInteger(block?.block_number) || block.block_number < 0 || !Number.isSafeInteger(block.timestamp)) throw new Error('invalid header');
       this.head = block;
       // The first head ever read becomes the cursor: Cairn never backfills.
-      if (this.store.cursor === null) this.store.transaction(() => { this.store.cursor = block.block_number; });
+      if (this.store.cursor === null) this.store.transaction(() => { this.store.cursor = Math.max(0, block.block_number - this.config.confirmations); });
     } catch (error) {
       if (this.signal.aborted || (error instanceof CairnError && error.exitCode === 2)) throw error;
       this.head = null;
@@ -193,6 +217,13 @@ class Bot {
     if (!Number.isSafeInteger(chat?.id)) return () => null;
     if (Number.isSafeInteger(message.migrate_to_chat_id)) return () => { this.subs.migrate(chat.id, message.migrate_to_chat_id); return null; };
     if (Number.isSafeInteger(message.migrate_from_chat_id)) return () => { this.subs.migrate(message.migrate_from_chat_id, chat.id); return null; };
+    const protectedKind = this.guards.match(message);
+    if (protectedKind) {
+      let removed = false;
+      try { removed = (await this.tg.call('deleteMessage', { chat_id: chat.id, message_id: message.message_id })) !== null; }
+      catch (error) { if (!(error instanceof TelegramRefused)) throw error; }
+      return () => ({ chat_id: chat.id, ...topic(message.message_thread_id), lines: guardWarning(protectedKind, removed) });
+    }
     // A chat that writes again gets its pending alerts.
     const resume = () => this.subs.resume(chat.id);
     const command = parseCommand(message, this.username) ?? parsePaste(message);
@@ -206,6 +237,15 @@ class Bot {
         this.rate.note(sender, message.date, verdict);
         return verdict === 'notice' ? { ...target, lines: textLines(SLOW_DOWN, this.clean) } : null;
       };
+    }
+    if (['network', 'guard'].includes(command.name)) {
+      const ctx = this.context(chat, message);
+      const reply = lines => () => { resume(); this.rate.note(sender, message.date, 'ok'); return { ...target, lines }; };
+      if (!(await ctx.admin())) return reply(['Only an administrator can change these settings.']);
+      const match = command.name === 'network' ? /^(on|off)$/.exec(command.argument) : /^(seed|links) (on|off)$/.exec(command.argument);
+      if (!match) return reply([command.name === 'network' ? 'Usage: /network on|off' : 'Usage: /guard seed|links on|off']);
+      const key = command.name === 'network' ? 'network' : match[1], on = match.at(-1) === 'on';
+      return () => { this.guards.set(chat, key, on); return reply([`${key === 'network' ? 'Network alerts' : `${key} guard`}: ${on ? 'on' : 'off'}.`])(); };
     }
     if (command.name === 'track') this.wake = true;
     const reply = await respond(command, this.context(chat, message));
@@ -329,7 +369,12 @@ class Bot {
   // ---- alerts --------------------------------------------------------------------------------------------
 
   async background() {
+    try { await this.network.step(this.head); }
+    catch (error) { if (this.signal.aborted || !retriable(error)) throw error; return; }
     if (!this.head) return;
+    // Persist the hashes before scanning: a failed history read cannot leave an accepted alert unguarded.
+    try { await this.network.remember(this.head); }
+    catch (error) { if (this.signal.aborted || !retriable(error)) throw error; return; }
     await this.scan();
     await this.trackPass();
     const now = this.head.timestamp;
@@ -345,12 +390,11 @@ class Bot {
    */
   async scan() {
     const cursor = this.store.cursor;
-    const range = cursor === null ? null : this.scanner.next(cursor, this.head.block_number);
+    const range = cursor === null ? null : this.scanner.next(cursor, this.head.block_number - this.config.confirmations);
     this.behind = false;
     if (!range) return;
     const interests = this.subs.interests();
     const feeds = this.feeds.filter((f) => f.wanted(interests));
-    this.prices.horizon(range.from, range.to);
     const context = { interests, tokens: this.tokens, rpc: this.rpc, now: this.head.timestamp, fmt: this.fmt,
       header: blockHeaders(this.rpc), prices: this.prices, names: this.names, known: this.known };
     const found = { deliveries: [], seen: [] };
@@ -373,7 +417,7 @@ class Bot {
       for (const [chatId, address, token] of found.seen) this.subs.noteSeen(chatId, address, token);
       this.store.cursor = range.to;
     });
-    this.behind = range.to < this.head.block_number;
+    this.behind = range.to < this.head.block_number - this.config.confirmations;
   }
   async trackPass() {
     for (const track of this.subs.allTracks()) {
@@ -403,11 +447,16 @@ class Bot {
     for (const [chatId, rows] of byChat) {
       if (this.signal.aborted) return;
       const used = this.budget.used.get(chatId) ?? 0;
-      const { full, rest } = plan(rows, rows[0].type, used);
+      const special = rows.filter(r => ['network', 'correction'].includes(r.kind));
+      const normal = rows.filter(r => !special.includes(r));
+      const slots = ['group', 'supergroup'].includes(rows[0].type) ? Math.max(0, 3 - used) : special.length;
+      const chosen = special.slice(0, slots);
+      const planned = plan(normal, rows[0].type, used + chosen.length);
+      const full = [...chosen, ...planned.full], rest = planned.rest;
       let target = chatId, sent = 0, open = true;
       for (const row of full) {
         if (this.signal.aborted) return;
-        const r = await this.send(target, row.body, { ...topic(row.thread_id), ...(sent >= LOUD_ALERTS ? { disable_notification: true } : {}) });
+        const r = await this.send(target, row.body, { ...topic(row.thread_id), ...(row.kind === 'correction' ? { reply_parameters: { message_id: JSON.parse(row.digest).reply } } : {}), ...(sent >= LOUD_ALERTS ? { disable_notification: true } : {}) });
         if (r.message) {
           target = r.chatId;
           sent++;

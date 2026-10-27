@@ -54,15 +54,14 @@ function validBlockId(value) {
 }
 
 export class Rpc {
-  #times = [];
   #id = 0;
-  constructor(config, signal) { this.config = config; this.signal = signal; }
+  constructor(config, signal, rate = { times: [] }) { this.config = config; this.signal = signal; this.errors = 0; this.rate = rate; }
   async #slot() {
     for (;;) {
       const now = performance.now();
-      this.#times = this.#times.filter((t) => now - t < 1010);
-      if (this.#times.length < this.config.rpcRps) { this.#times.push(now); return; }
-      await sleep(Math.max(1, 1010 - (now - this.#times[0])), this.signal);
+      this.rate.times = this.rate.times.filter((t) => now - t < 1010);
+      if (this.rate.times.length < this.config.rpcRps) { this.rate.times.push(now); return; }
+      await sleep(Math.max(1, 1010 - (now - this.rate.times[0])), this.signal);
     }
   }
   async call(method, params = {}) {
@@ -93,13 +92,14 @@ export class Rpc {
         if (this.signal.aborted || error instanceof RpcError || error instanceof NodeBusy) throw error;
         // Interrupted connections, timeouts and malformed bodies are retried, never logged verbatim.
       }
+      this.errors++;
       if (attempt < 2) await sleep(wait, this.signal);
     }
     throw new NodeBusy();
   }
 }
 export class Telegram {
-  constructor(config, signal) { this.config = config; this.signal = signal; }
+  constructor(config, signal) { this.config = config; this.signal = signal; this.errors = 0; this.healthy = true; }
   async call(method, params = {}) {
     for (let attempt = 0; attempt < 3; attempt++) {
       let result;
@@ -108,11 +108,13 @@ export class Telegram {
           (params.timeout ?? 0) * 1000 + 5000, this.signal);
       } catch (error) {
         if (this.signal.aborted) throw error;
+        this.healthy = false;
         // A send may have been accepted before connection failure. Never resend ambiguously.
         throw new CairnError('Telegram unreachable; check TELEGRAM_API_ROOT and connectivity.');
       }
       const { response, json } = result;
-      if (response.ok && json?.ok === true) return json.result;
+      if (response.ok && json?.ok === true) { this.healthy = true; return json.result; }
+      this.healthy = false;
       const code = json?.error_code ?? response.status;
       switch (code) {
         case 401: throw new CairnError('Telegram rejected the token (401); replace it through BotFather.', 3);

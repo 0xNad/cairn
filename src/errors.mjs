@@ -28,10 +28,11 @@ export function log(level, event) {
   const levels = ['error', 'warn', 'info', 'debug'];
   const configured = levels.indexOf(process.env.CAIRN_LOG ?? 'info');
   if (configured >= 0 && levels.indexOf(level) > configured) return;
-  const secrets = [process.env.TELEGRAM_BOT_TOKEN, process.env.STARKNET_RPC_URL];
+  const urls = (process.env.STARKNET_RPC_URLS ?? process.env.STARKNET_RPC_URL ?? '').split(',').map(s => s.trim());
+  const secrets = [process.env.TELEGRAM_BOT_TOKEN, ...urls];
   if (process.env.TELEGRAM_BOT_TOKEN) secrets.push(process.env.TELEGRAM_BOT_TOKEN.split(':')[1]);
-  try {
-    const rpc = new URL(process.env.STARKNET_RPC_URL);
+  for (const value of urls) try {
+    const rpc = new URL(value);
     secrets.push(...rpc.pathname.split('/').filter((v) => v.length >= 4), ...rpc.searchParams.values());
   } catch { /* Invalid URL validation errors still redact its complete environment value. */ }
   for (const secret of secrets) if (secret) event = event.replaceAll(secret, '[redacted]');

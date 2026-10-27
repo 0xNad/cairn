@@ -3,6 +3,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CairnError } from './errors.mjs';
 import { normalize } from './felt.mjs';
+import { readBlocklist } from './guard.mjs';
 import { VENUES } from './venues.mjs';
 
 /** Round 3's optional contracts, each venue's included: each one switches its feature on, a missing one off. */
@@ -51,12 +52,21 @@ export function loadConfig(args, env = process.env) {
   const token = env.TELEGRAM_BOT_TOKEN;
   if (typeof token !== 'string' || !/^\d+:[A-Za-z0-9_-]{30,}$/.test(token)) bad('TELEGRAM_BOT_TOKEN: missing or malformed BotFather token.');
   const telegramRoot = url(env.TELEGRAM_API_ROOT ?? 'https://api.telegram.org', 'TELEGRAM_API_ROOT', true);
-  const rpcUrl = url(env.STARKNET_RPC_URL, 'STARKNET_RPC_URL');
+  const rpcUrls = (env.STARKNET_RPC_URLS === undefined ? [env.STARKNET_RPC_URL] : env.STARKNET_RPC_URLS.split(',')).map(v => url(v?.trim(), 'STARKNET_RPC_URLS / STARKNET_RPC_URL'));
+  const rpcUrl = rpcUrls[0];
   const chain = env.CAIRN_CHAIN ?? 'SN_MAIN';
   if (!['SN_MAIN', 'SN_SEPOLIA'].includes(chain)) bad('CAIRN_CHAIN: must be SN_MAIN or SN_SEPOLIA.');
   const explorer = url(env.CAIRN_EXPLORER_URL ?? 'https://voyager.online', 'CAIRN_EXPLORER_URL').replace(/\/$/, '');
   const config = {
-    mode: args[0], token, telegramRoot, rpcUrl, chain, explorer,
+    mode: args[0], token, telegramRoot, rpcUrl, rpcUrls, chain, explorer,
+    confirmations: integer(env, 'CAIRN_CONFIRMATIONS', 0, 0, 100),
+    stallSeconds: integer(env, 'CAIRN_STALL_SECONDS', 120, 2),
+    reorgDepth: integer(env, 'CAIRN_REORG_DEPTH', 64, 1, 1000),
+    maxGap: integer(env, 'CAIRN_MAX_GAP', 50000, 1),
+    httpPort: env.CAIRN_HTTP_PORT === undefined ? null : integer(env, 'CAIRN_HTTP_PORT', 0, 0, 65535),
+    httpHost: env.CAIRN_HTTP_HOST ?? '127.0.0.1',
+    operatorChat: env.CAIRN_OPERATOR_CHAT === undefined ? null : Number(env.CAIRN_OPERATOR_CHAT),
+    blocklist: readBlocklist(env.CAIRN_BLOCKLIST ?? fileURLToPath(new URL('../blocklist/domains.txt', import.meta.url))),
     data: dataDirectory(env.CAIRN_DATA ?? './data'),
     pollMs: integer(env, 'CAIRN_POLL_MS', 10000, 50),
     tgTimeout: integer(env, 'CAIRN_TG_TIMEOUT', 30, 0, 50),
@@ -67,6 +77,8 @@ export function loadConfig(args, env = process.env) {
     priceMaxAge: integer(env, 'CAIRN_PRICE_MAX_AGE', 900, 1, 31_536_000),
     logLevel: env.CAIRN_LOG ?? 'info',
   };
+  if (config.operatorChat !== null && (!/^-?\d+$/.test(env.CAIRN_OPERATOR_CHAT) || !Number.isSafeInteger(config.operatorChat))) bad('CAIRN_OPERATOR_CHAT: invalid chat id.');
+  if (!config.httpHost.trim()) bad('CAIRN_HTTP_HOST: empty bind address.');
   if (!['error', 'warn', 'info', 'debug'].includes(config.logLevel)) bad('CAIRN_LOG: must be error, warn, info or debug.');
   const path = env.CAIRN_NETWORK_FILE ?? fileURLToPath(new URL(`../networks/${chain}.json`, import.meta.url));
   let network;

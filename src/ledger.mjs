@@ -6,7 +6,7 @@
 // alerts a summary covered are marked summarized, with the summary's message_id.
 
 export const LEDGER_TTL = 7 * 24 * 3600;
-export const STAGE = Object.freeze({ accepted: -1, final: -2, missing: -3 });
+export const STAGE = Object.freeze({ accepted: -1, final: -2, missing: -3, correction: -4 });
 
 export class Ledger {
   constructor(store) { this.store = store; }
@@ -30,6 +30,11 @@ export class Ledger {
   /** The message an alert became, for later corrections. */
   messageId(chatId, txHash, eventIndex) {
     return this.#q('SELECT message_id FROM deliveries WHERE chat_id = ? AND tx_hash = ? AND event_index = ?').get(chatId, txHash, eventIndex)?.message_id ?? null;
+  }
+  /** Corrections share the original transaction's ledger key space and reply to its saved message. */
+  correct(original, { block, chainTime, body }) {
+    return this.add({ chatId: original.chat_id, txHash: original.tx_hash, eventIndex: STAGE.correction,
+      kind: 'correction', block, chainTime, body, thread: original.thread_id, digest: { reply: original.message_id } });
   }
   prune(now) { this.#q('DELETE FROM deliveries WHERE chain_time < ?').run(now - LEDGER_TTL); }
 }

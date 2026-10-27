@@ -1,0 +1,27 @@
+[Unit]
+Description=Cairn Starknet Telegram bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cairn
+Group=cairn
+WorkingDirectory=/opt/cairn
+EnvironmentFile=/etc/cairn.env
+Environment=CAIRN_DATA=/var/lib/cairn
+ExecStart=/usr/local/bin/node /opt/cairn/cairn.mjs run
+Restart=on-failure
+RestartPreventExitStatus=2 3
+RestartSec=5
+TimeoutStopSec=3
+StateDirectory=cairn
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

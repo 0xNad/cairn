@@ -7,6 +7,8 @@ import { callback, setting, SETTINGS } from './settings.mjs';
 import { balanceOf } from './tokens.mjs';
 
 export const COMMANDS = Object.freeze([
+  { command: 'network', description: 'Enable or disable chain alerts' },
+  { command: 'guard', description: 'Configure seed and link protection' },
   { command: 'start', description: 'Welcome and privacy' },
   { command: 'help', description: 'Commands and privacy' },
   { command: 'status', description: 'Chain head and gas prices' },
@@ -48,6 +50,8 @@ Lookups, for everyone:
 In a private chat, paste an address, a name.stark or a transaction hash to look it up.
 Feeds and alerts, set by group administrators (anyone in a private chat):
 /feed <token> [min|$usd] [buys|all] — Every buy of a token on Ekubo and AVNU (all: sells too), with its USD value and trader
+/network on|off — Chain stall and recovery alerts
+/guard seed|links on|off — Message protection (on by default)
 /unfeed — Stop this chat's feed
 /watch <address> [label] — Every transfer in or out, on any token, and every approval
 /unwatch <address|label> — Stop watching
@@ -116,6 +120,7 @@ export async function answer(command, context) {
           chosen = resolved.token;
         }
         const block_id = { block_number: head.block_number };
+        name ??= await context.names?.display(input, head.timestamp) ?? null;
         const who = name === null ? link('contract', input) : fmt.contract(input, `${escapeHtml(name)} · ${short(input)}`);
         const lines = [...text(`Balances · ${config.chain} · block ${head.block_number}\n${utc(head.timestamp)}`), who];
         try { await rpc.call('starknet_getClassHashAt', { block_id, contract_address: input }); }

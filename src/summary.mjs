@@ -70,8 +70,9 @@ export function summarise(rows, fmt) {
       if (valueIn(d)) {
         t.value = add(t.value, valueIn(d));
         t.priced++;
-        if (!largest || BigInt(d.cents) > BigInt(largest.d.cents)) largest = { d, tx: row.tx_hash };
+
       }
+      if (!largest || heavier(weight(row), weight(largest.row)) > 0) largest = { d, tx: row.tx_hash, row };
     } else if (row.kind === 'track') tracks.push(row);
     else {
       alerts.push(row);
@@ -99,8 +100,8 @@ export function summarise(rows, fmt) {
   if (tracks.length) lines.push(`⏱ ${plural(tracks.length, 'tracked transaction update')}: ${linked(tracks)}`);
   if (largest) {
     const { d } = largest;
-    const worth = escapeHtml(usdText(valueIn(d)));
-    lines.push(`Largest: ${fmt.tx(largest.tx, `${d.side === 'buy' ? 'Buy' : 'Sell'} ${decimal(BigInt(d.amount), d.decimals)} ${escapeHtml(d.symbol)} ≈${worth}`)}`);
+    const worth = valueIn(d) ? ` ≈${escapeHtml(usdText(valueIn(d)))}` : '';
+    lines.push(`Largest: ${fmt.tx(largest.tx, `${d.side === 'buy' ? 'Buy' : 'Sell'} ${decimal(BigInt(d.amount), d.decimals)} ${escapeHtml(d.symbol)}${worth}`)}`);
   }
   return lines.join('\n');
 }
