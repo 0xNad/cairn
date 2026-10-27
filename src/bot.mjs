@@ -223,7 +223,7 @@ class Bot {
       if (!validHeader(block)) throw new NodeValueError();
       if (this.rpc.endpoints.length > 1 && this.network.stalling(block, now)) block = await this.freshest(block);
       this.head = block;
-      this.rpcOk = true;
+      this.rpcOk ||= this.store.cursor === null || this.scanner.next(this.store.cursor, block.block_number - this.config.confirmations) === null;
       // The first head ever read sets the cursor (with confirmations, the first safe block): Cairn never backfills.
       if (this.store.cursor === null) this.store.transaction(() => { this.store.cursor = Math.max(0, block.block_number - this.config.confirmations); });
       this.network.observe(block, { now, endpoint: this.rpc.name(this.rpc.current) });
@@ -564,7 +564,7 @@ class Bot {
       if (!end) throw new NodeValueError(); // the node lost the block it just served: read the range again
     } catch (error) {
       if (this.signal.aborted || !retriable(error)) throw error;
-      if (error instanceof NodeBusy) this.rpcOk = false;
+      this.rpcOk = false; // until a pass reads its range: /healthz says rpc while alerts cannot be found
       log('warn', `node busy: blocks ${range.from} to ${range.to} will be scanned again.`);
       return;
     }
@@ -575,6 +575,7 @@ class Bot {
       this.store.cursor = range.to;
       this.forks.remember(end);
     });
+    this.rpcOk = true;
     this.behind = range.to < safe;
   }
   async trackPass() {

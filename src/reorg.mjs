@@ -1,4 +1,4 @@
-import { RpcError } from './errors.mjs';
+import { NodeBusy, RpcError } from './errors.mjs';
 import { hex64, NodeValueError } from './felt.mjs';
 import { CORRECTION } from './ledger.mjs';
 
@@ -18,10 +18,10 @@ import { CORRECTION } from './ledger.mjs';
 
 export const DOUBT_TTL = 600;
 
-/** Where a transaction stands after a reorg: 'included' (in a block), 'waiting' (known, in no block) or 'gone'. */
-export async function standing(rpc, hash) {
+/** Where one endpoint says a transaction stands: 'included' (in a block), 'waiting' (known, in no block) or 'gone'. */
+async function standingAt(rpc, hash, endpoint) {
   let status;
-  try { status = await rpc.call('starknet_getTransactionStatus', { transaction_hash: hash }); }
+  try { status = await rpc.call('starknet_getTransactionStatus', { transaction_hash: hash }, { endpoint }); }
   catch (error) {
     if (error instanceof RpcError && error.code === 29) return 'gone';
     throw error;
@@ -29,6 +29,22 @@ export async function standing(rpc, hash) {
   const finality = String(status?.finality_status ?? '');
   if (finality === 'ACCEPTED_ON_L2' || finality === 'ACCEPTED_ON_L1') return 'included';
   return finality === 'REJECTED' ? 'gone' : 'waiting';
+}
+/**
+ * Where a transaction stands after a reorg. With several endpoints, each one that answers is asked, and the most
+ * hopeful answer counts: a transaction is gone only when no endpoint has it, so an endpoint still on the old fork,
+ * or one behind, never sends a false correction. Throws NodeBusy when none answers.
+ */
+export async function standing(rpc, hash) {
+  const endpoints = rpc.endpoints?.length > 1 ? rpc.endpoints.map((e) => e.index) : [undefined];
+  const answers = [];
+  for (const endpoint of endpoints) {
+    try { answers.push(await standingAt(rpc, hash, endpoint)); }
+    catch (error) { if (!(error instanceof NodeBusy) || endpoints.length === 1) throw error; }
+    if (answers.includes('included')) return 'included';
+  }
+  if (!answers.length) throw new NodeBusy();
+  return answers.includes('waiting') ? 'waiting' : 'gone';
 }
 
 /**

@@ -14,7 +14,7 @@ import { Guards, linkHosts, listed, loadBlocklist, loadWordlist, longestRun, war
 import { listen, prometheus } from '../src/http.mjs';
 import { CORRECTION, Ledger } from '../src/ledger.mjs';
 import { duration, Network } from '../src/network.mjs';
-import { correction, Forks, verdicts } from '../src/reorg.mjs';
+import { correction, Forks, standing, verdicts } from '../src/reorg.mjs';
 import { Scanner, TOKEN_EVENTS } from '../src/scanner.mjs';
 import { Store } from '../src/store.mjs';
 import { Subscriptions } from '../src/subscriptions.mjs';
@@ -335,6 +335,21 @@ test('after a reorg: one correction per message whose transaction is gone, none 
   const summary = correction(v.corrections[1], 'x', fmt, 900);
   assert.deepEqual([summary.replyTo, summary.thread], [600, 9]);
   assert.match(plain(summary.body), /2 of the transactions this message counted are no longer on chain/);
+});
+
+test('with several endpoints, a transaction is gone only when none of them has it', async () => {
+  const of = (...answers) => ({ endpoints: answers.map((_, index) => ({ index })), async call(_, __, { endpoint }) {
+    const a = answers[endpoint];
+    if (a === 'busy') throw new EndpointLost();
+    if (a === 'unknown') throw new RpcError(29);
+    return { finality_status: a };
+  } });
+  assert.equal(await standing(of('unknown', 'ACCEPTED_ON_L2'), '0x1'), 'included', 'an endpoint still on the old fork, or behind, is not believed alone');
+  assert.equal(await standing(of('unknown', 'RECEIVED'), '0x1'), 'waiting');
+  assert.equal(await standing(of('busy', 'unknown'), '0x1'), 'gone');
+  assert.equal(await standing(of('REJECTED', 'unknown'), '0x1'), 'gone');
+  await assert.rejects(standing(of('busy', 'busy'), '0x1'), NodeBusy);
+  assert.equal(await standing({ async call() { return { finality_status: 'ACCEPTED_ON_L1' }; } }, '0x1'), 'included');
 });
 
 test('in the ledger, a correction is keyed by its alert, so no later fork or restart sends a second one', () => {

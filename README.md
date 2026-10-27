@@ -243,7 +243,12 @@ them by default. Any other token is read from its contract (`symbol` and `decima
 [choosing RPC endpoints](#2-choose-rpc-endpoints). The public `starknet-rpc.publicnode.com` works out of the box.
 
 **Which venues?** Ekubo and the AVNU aggregator, on mainnet. AVNU routes through Ekubo and other pools, so a
-transaction AVNU swapped the token in counts once, as AVNU. A third venue is one entry in `src/venues.mjs`.
+transaction AVNU swapped the token in counts once, as AVNU. A third venue is one entry in `src/venues.mjs`
+and one contract in the network file: say a pool contract `0x0123…` that emits `Swap` events. A selector is
+the hash of the event's name, so its `Swap` has AVNU's selector, and the scanner adds one filter on the same
+ranges, `{"address": "0x0123…", "keys": [["0x00e316f0d9d2a3affa97de1d99bb2aac0538e2666d0d8545545ead241ef0ccab"]]}`;
+the entry's `legs` function turns that event's data into the tokens it moved, signed from the trader's side,
+and its place in the list sets its precedence. The netting and trader rules apply unchanged.
 
 **Where do prices come from?** The Pragma oracle on Starknet, `get_data_median` of each verified token's
 `pragma_pair`. A price older than `CAIRN_PRICE_MAX_AGE` (900 s of chain time by default) gives no USD value.
@@ -302,6 +307,7 @@ docker build -t cairn .
 docker volume create cairn-data
 docker run --rm --env-file .env -v cairn-data:/data cairn doctor
 docker run -d --name cairn --restart unless-stopped --env-file .env \
+  --log-opt max-size=10m --log-opt max-file=3 \
   -v cairn-data:/data -p 127.0.0.1:8080:8080 cairn
 docker logs -f cairn
 ```
@@ -309,7 +315,8 @@ docker logs -f cairn
 `doctor` prints one line with the bot's username and each endpoint's chain, head block and spec, or says
 what is wrong. The image serves `/healthz` and `/metrics` on port 8080 (`CAIRN_HTTP_PORT`), and Docker's own
 health check reads `/healthz`: `docker ps` shows `healthy` once blocks arrive. `-p 127.0.0.1:8080:8080`
-publishes it on the host's loopback only. With Compose, `docker compose up -d --build` does the same from
+publishes it on the host's loopback only, and the log options keep at most 30 MB of logs. Write `.env` values
+without quotes: `--env-file` keeps them. With Compose, `docker compose up -d --build` does the same from
 `compose.yaml`.
 
 ### 3b. Or run it with systemd
@@ -348,8 +355,10 @@ exit 2 (a configuration error) or 3 (a rejected token), which restarting cannot 
   `cairn_updates_total`, `cairn_messages_sent_total`, `cairn_alerts_total`, `cairn_pending_alerts`,
   `cairn_rpc_requests_total{endpoint}`, `cairn_rpc_errors_total{endpoint}`, `cairn_rpc_endpoint`,
   `cairn_telegram_errors_total`, `cairn_reorgs_total`, `cairn_corrections_total` and
-  `cairn_guard_deletions_total{guard}`. Scrape it with `- targets: ['127.0.0.1:8080']`, and alert on
-  `cairn_healthy == 0` for 5 minutes. Nothing else is served: other paths are 404, other methods 405.
+  `cairn_guard_deletions_total{guard}`. Scrape it with `- targets: ['127.0.0.1:8080']`;
+  [`deploy/prometheus-rules.yml`](deploy/prometheus-rules.yml) alerts when Cairn is down or unhealthy for 5
+  minutes, when alerts fall 10 minutes behind, when an endpoint keeps failing and when deliveries pile up.
+  Nothing else is served: other paths are 404, other methods 405.
 - **In Telegram:** send `/start` and `/status` to the bot (`/status` names the endpoint in use when there are
   several), then `/network on` in your group. `/export` in a private chat shows your chat id: set it as
   `CAIRN_OPERATOR_CHAT` and restart, and Cairn tells you, and only you, when every endpoint fails and when
@@ -566,7 +575,8 @@ through the kept hashes, newest first and never deeper than `CAIRN_REORG_DEPTH`,
 still has (the common ancestor), then works with round 2's ledger:
 
 1. Each alert or trade post about a block after the ancestor is checked against the node
-   (`starknet_getTransactionStatus`). A transaction the node no longer finds gets **one correction, as a
+   (`starknet_getTransactionStatus`; with several endpoints, against each one, so that an endpoint still on
+   the old fork never causes a false correction). A transaction no endpoint finds gets **one correction, as a
    reply to the alert** (`reply_parameters` with the stored `message_id`), and its ledger row is marked
    `corrected`, so that no later fork or restart corrects it twice. A summary that counted several such
    transactions gets one correction listing them. An alert still pending (never sent) is dropped instead.

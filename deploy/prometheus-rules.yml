@@ -1,0 +1,29 @@
+# Prometheus alerting rules for Cairn's /metrics (CAIRN_HTTP_PORT). Load with rule_files: [prometheus-rules.yml]
+# next to a scrape job such as: - job_name: cairn  static_configs: [{ targets: ['127.0.0.1:8080'] }]
+groups:
+  - name: cairn
+    rules:
+      - alert: CairnDown
+        expr: up{job="cairn"} == 0
+        for: 5m
+        annotations:
+          summary: Cairn's /metrics has not answered for 5 minutes (process stopped or port unreachable).
+      - alert: CairnUnhealthy
+        expr: cairn_healthy == 0
+        for: 5m
+        annotations:
+          summary: /healthz has answered 503 for 5 minutes; its "reason" says why (rpc, telegram or stalled).
+      - alert: CairnAlertsLate
+        expr: cairn_lag_seconds > 600
+        for: 10m
+        annotations:
+          summary: Alerts are more than 10 minutes of chain time behind the head; check the RPC's event filter limits.
+      - alert: CairnEndpointFailing
+        expr: increase(cairn_rpc_errors_total[15m]) > 30
+        annotations:
+          summary: RPC endpoint {{ $labels.endpoint }} keeps failing; Cairn uses the others meanwhile.
+      - alert: CairnAlertsQueued
+        expr: cairn_pending_alerts > 100
+        for: 15m
+        annotations:
+          summary: More than 100 deliveries wait to be sent; Telegram may be refusing or rate-limiting the bot.
