@@ -2,6 +2,13 @@ import { createServer } from 'node:http';
 import { CairnError, NodeBusy, RpcError } from './errors.mjs';
 import { normalize, NodeValueError } from './felt.mjs';
 
+/** Canonical hashes prevent formatting changes from masquerading as head changes; reject malformed data. */
+export function observedHead(block) {
+  if (!Number.isSafeInteger(block?.block_number) || block.block_number < 0 ||
+      !Number.isSafeInteger(block.timestamp) || block.timestamp < 0 || block.timestamp > 8_640_000_000_000) throw new NodeValueError();
+  return { ...block, block_hash: normalize(block.block_hash, 'hash') };
+}
+
 /** Round 4 shares the scanner cursor and delivery ledger. Only hashes and delivery IDs are retained. */
 export class Operations {
   constructor(bot) { this.bot = bot; this.store = bot.store; this.config = bot.config; this.rpcDown = true; this.telegramDown = false; }

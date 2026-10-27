@@ -5,7 +5,9 @@ const WORDS = new Set(readFileSync(new URL('../resources/bip39-english.txt', imp
 export function containsSeed(text) {
   let run = 0;
   for (const token of String(text).normalize('NFKD').toLowerCase().split(/\s+/u)) {
-    run = WORDS.has(token) ? run + 1 : 0;
+    // Wrapping punctuation (quotes, brackets or a trailing full stop) is not part of a word.
+    const word = token.replace(/^[^\p{L}\p{N}_]+|[^\p{L}\p{N}_]+$/gu, '');
+    run = WORDS.has(word) ? run + 1 : 0;
     if (run >= 12) return true; // every supported length contains a 12-word run; no checksum needed
   }
   return false;

@@ -565,7 +565,7 @@ and all guard/network settings for that chat; a returning chat gets defaults.
 
 Seed detection uses the complete bundled English BIP-39 vocabulary offline. A
 whitespace-separated run of at least 12 words is protected, including 15, 18, 21
-and 24 words; checksum validation is deliberately unnecessary. Nonword tokens
+and 24 words; checksum validation is deliberately unnecessary. Wrapping punctuation is ignored; nonword tokens
 interrupt a run. Text, captions, and edits are checked before command parsing;
 only a fixed warning is returned, and message bodies never enter SQLite or logs.
 The warning cannot revoke an already shared phrase. Link matching parses hosts,

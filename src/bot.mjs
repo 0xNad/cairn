@@ -1,5 +1,5 @@
 import { guarded } from './guards.mjs';
-import { Operations } from './operations.mjs';
+import { observedHead, Operations } from './operations.mjs';
 import { performance } from 'node:perf_hooks';
 import { walletAlerts } from './alerts.mjs';
 import { callback, COMMANDS, parseCommand, parsePaste, respond } from './commands.mjs';
@@ -162,8 +162,7 @@ class Bot {
   async readHead() {
     try {
       this.identity ??= await handshake(this.rpc, this.config, this.clean);
-      const block = await this.rpc.call('starknet_getBlockWithTxHashes', { block_id: 'latest' });
-      if (!Number.isSafeInteger(block?.block_number) || block.block_number < 0 || !Number.isSafeInteger(block.timestamp)) throw new Error('invalid header');
+      const block = observedHead(await this.rpc.call('starknet_getBlockWithTxHashes', { block_id: 'latest' }));
       this.head = block;
       // The first head ever read becomes the cursor: Cairn never backfills.
       if (this.store.cursor === null) this.store.transaction(() => { this.store.cursor = Math.max(-1, block.block_number - this.config.confirmations); });

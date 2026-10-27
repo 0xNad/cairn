@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { containsSeed, blockedLink, guarded } from '../src/guards.mjs';
-import { Operations } from '../src/operations.mjs';
+import { observedHead, Operations } from '../src/operations.mjs';
 import { Store } from '../src/store.mjs';
 import { Subscriptions } from '../src/subscriptions.mjs';
 import { Ledger } from '../src/ledger.mjs';
@@ -175,4 +175,19 @@ test('correction records follow the ledger retention limit', t => {
   store.sql('INSERT INTO corrections (seq,chat_id,tx_hash,message_id) VALUES (1,1,?,88)').run(hex64('0x123'));
   ledger.prune(100 + 7 * 24 * 3600); assert.equal(store.sql('SELECT count(*) AS n FROM corrections').get().n, 1);
   ledger.prune(101 + 7 * 24 * 3600); assert.equal(store.sql('SELECT count(*) AS n FROM corrections').get().n, 0);
+});
+
+
+test('wrapping punctuation cannot bypass seed protection', () => {
+  const phrase = words.slice(500, 512).join(' ');
+  for (const text of [`(${phrase})`, `"${phrase}"`, `Recovery: ${phrase}.`, words.slice(500, 512).join(', ')]) assert.equal(containsSeed(text), true);
+  assert.equal(containsSeed(words.slice(500, 506).join(' ') + ' unknown_word ' + words.slice(506, 512).join(' ')), false);
+});
+
+test('observed headers are canonical and reject malformed hashes before persistence', () => {
+  const a = observedHead({ block_number: 4, timestamp: 100, block_hash: '0x1' });
+  const b = observedHead({ block_number: 4, timestamp: 100, block_hash: hex64('0x1') });
+  assert.deepEqual(a, b);
+  for (const hash of ['secret-content', null, '0x0']) assert.throws(() => observedHead({ block_number: 4, timestamp: 100, block_hash: hash }));
+  assert.throws(() => observedHead({ block_number: -1, timestamp: 100, block_hash: '0x1' }));
 });
