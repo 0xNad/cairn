@@ -10,7 +10,8 @@ import { CairnError } from './errors.mjs';
 // trade feed, the name cache, and the digest a group's summary counts.
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS protection (chat_id INTEGER PRIMARY KEY, seed INTEGER NOT NULL DEFAULT 1,
- links INTEGER NOT NULL DEFAULT 1, network INTEGER NOT NULL DEFAULT 0) STRICT;
+ links INTEGER NOT NULL DEFAULT 1) STRICT;
+CREATE TABLE IF NOT EXISTS network_subscriptions (chat_id INTEGER PRIMARY KEY) STRICT;
 CREATE TABLE IF NOT EXISTS blocks (number INTEGER PRIMARY KEY, hash TEXT NOT NULL) STRICT;
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
 CREATE TABLE IF NOT EXISTS chats (chat_id INTEGER PRIMARY KEY, type TEXT NOT NULL, paused INTEGER NOT NULL DEFAULT 0) STRICT;
@@ -84,6 +85,10 @@ export class Store {
       this.transaction(() => {
         if (version === '2') this.db.exec(MIGRATE_2_TO_3);
         this.db.exec(SCHEMA);
+        if (this.sql('PRAGMA table_info(protection)').all().some(column => column.name === 'network')) {
+          this.db.exec(`INSERT OR IGNORE INTO network_subscriptions SELECT chat_id FROM protection WHERE network = 1;
+            ALTER TABLE protection DROP COLUMN network;`);
+        }
         if (this.get('reorg_layout') === null) {
           // One-time upgrade of the earlier round-4 digest flags; runtime state now lives only in reorg_checks.
           this.db.exec(`INSERT OR IGNORE INTO reorg_checks (original_seq, since_block, phase)

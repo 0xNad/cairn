@@ -1,5 +1,6 @@
 import { hex64 } from './felt.mjs';
 import { RpcError } from './errors.mjs';
+import { Subscriptions } from './subscriptions.mjs';
 
 export function duration(ms) {
   const seconds = Math.max(0, Math.floor(ms / 1000));
@@ -7,10 +8,9 @@ export function duration(ms) {
 }
 /** Persisted wall-clock latches and bounded chain history, stepped only by the bot's pass. */
 export class Network {
-  constructor(config, store, rpc, ledger) { Object.assign(this, { config, store, rpc, ledger }); }
+  constructor(config, store, rpc, ledger, subs = new Subscriptions(store, config)) { Object.assign(this, { config, store, rpc, ledger, subs }); }
   get since() { return Number(this.store.get('head_since') ?? Date.now()); }
-  subscribers() { return this.store.sql('SELECT p.chat_id FROM protection p JOIN chats c USING(chat_id) WHERE network = 1 AND paused = 0').all(); }
-  notice(key, body, head, chats = this.subscribers()) {
+  notice(key, body, head, chats = this.subs.networkSubscribers()) {
     for (const { chat_id } of chats) this.ledger.add({ chatId: chat_id, txHash: key, eventIndex: -10, kind: 'network', chainTime: head?.timestamp ?? Number(this.store.get('chain_time') ?? 0), body });
   }
   async step(head, now = Date.now(), endpoint = this.rpc.generation ?? 0) {

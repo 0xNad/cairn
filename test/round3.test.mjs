@@ -259,7 +259,7 @@ test('the trade feed posts what a chat asked for: dollar floors at equality, fre
     const [post, ...others] = await run([ekubo(-1000n, 78n), transfer(EKUBO, TRADER, 1000n)]);
     assert.equal(others.length, 0);
     assert.equal(post.chatId, 1);
-    assert.equal(plain(post.body), '🟢🟢 Buy STRK · ≈$78.20\n1,000 STRK\nPaid 78 USDC\n👤 ben.stark · new holder\nEkubo · 00:18 UTC · tx');
+    assert.equal(plain(post.body), '🟢🟢🟢 Buy STRK · ≈$78.20\n1,000 STRK\nPaid 78 USDC\n👤 ben.stark · new holder\nEkubo · 00:18 UTC · tx');
     assert.ok(calls.some(([m, p]) => m === 'starknet_call' && p.request.entry_point_selector === SELECTORS.balance_of && p.block_id.block_number === 10)); // block − 1
     // The outside-registry token's sell goes to the chat that follows it, with no dollar sign anywhere.
     const [odd] = await run([ekubo(5n, -9n, STRANGE, QUOTE), transfer(PEER, EKUBO, 5n, STRANGE)]);

@@ -32,9 +32,9 @@ export function blockedLink(text, domains) {
 }
 export class Guards {
   constructor(store, domains) { this.store = store; this.domains = domains; }
-  settings(chatId) { return this.store.sql('SELECT * FROM protection WHERE chat_id = ?').get(chatId) ?? { seed: 1, links: 1, network: 0 }; }
+  settings(chatId) { return this.store.sql('SELECT seed, links FROM protection WHERE chat_id = ?').get(chatId) ?? { seed: 1, links: 1 }; }
   set(chat, key, on) {
-    if (!['seed', 'links', 'network'].includes(key)) throw Error('Unknown setting');
+    if (!['seed', 'links'].includes(key)) throw Error('Unknown setting');
     this.store.sql('INSERT OR IGNORE INTO protection (chat_id) VALUES (?)').run(chat.id);
     this.store.sql(`UPDATE protection SET ${key} = ? WHERE chat_id = ?`).run(Number(on), chat.id);
     this.store.sql('INSERT OR IGNORE INTO chats (chat_id, type) VALUES (?, ?)').run(chat.id, chat.type);

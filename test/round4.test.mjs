@@ -7,6 +7,7 @@ import { Guards, seedRun, blockedLink } from '../src/guard.mjs';
 import { Network, duration } from '../src/network.mjs';
 import { Store } from '../src/store.mjs';
 import { Ledger } from '../src/ledger.mjs';
+import { Subscriptions } from '../src/subscriptions.mjs';
 import { Names, encode } from '../src/names.mjs';
 import { tradeOf, tradeFeed } from '../src/trades.mjs';
 import { plan, summarise } from '../src/summary.mjs';
@@ -28,8 +29,8 @@ test('guard rejects 11, 13, interrupted runs and five sentences of prose', () =>
 for (const url of ['https://STARKNET-BOT.COM/a','http://starknet-bot.com','https://sub.starknet-bot.com','https://person@starknet-bot.com/path']) test(`blocked host ${url}`,()=>assert.equal(blockedLink(url,['starknet-bot.com']),true));
 for (const url of ['https://starknet-bot.com.safe.example','https://safestarknet-bot.com','https://safe.example/starknet-bot.com','https://starknet-bot.com@safe.example','https://evil-example.com','https://example.com.evil']) test(`safe lookalike ${url}`,()=>assert.equal(blockedLink(url,['starknet-bot.com','example.com']),false));
 test('guard settings persist, forget resets defaults, other chat survives',()=>{
-  const store=storeOf(); try {const g=new Guards(store,[]);g.set({id:1,type:'private'},'seed',false);g.set({id:2,type:'private'},'network',true);
-  assert.equal(new Guards(store,[]).settings(1).seed,0);store.sql('DELETE FROM protection WHERE chat_id=1').run();assert.equal(g.settings(1).seed,1);assert.equal(g.settings(2).network,1);}finally{store.close()}
+  const store=storeOf(); try {const g=new Guards(store,[]);g.set({id:1,type:'private'},'seed',false);g.set({id:2,type:'private'},'links',false);
+  assert.equal(new Guards(store,[]).settings(1).seed,0);store.sql('DELETE FROM protection WHERE chat_id=1').run();assert.equal(g.settings(1).seed,1);assert.equal(g.settings(2).links,0);}finally{store.close()}
 });
 test('B2 nets only swaps touching the target, with signs; routed hops stay zero',()=>{
   const venue={key:'avnu',aggregator:true,address:'pool'};
@@ -69,7 +70,7 @@ test('C2 balance shows a verified reverse name',async()=>{
 });
 test('C3 absent chain position sorts safely',()=>assert.doesNotThrow(()=>[{block:1},{position:[2,0,0]},{}].sort(chainOrder)));
 test('network wall-time latch, recovery duration and outage persist',async()=>{
-  const store=storeOf();try {const ledger=new Ledger(store),g=new Guards(store,[]);g.set({id:1,type:'private'},'network',true);store.cursor=10;
+  const store=storeOf();try {const ledger=new Ledger(store),subs=new Subscriptions(store,{});subs.network({id:1,type:'private'},true);store.cursor=10;
   const network=new Network({stallSeconds:2,maxGap:100,confirmations:0,operatorChat:2},store,{},ledger);
   const h={block_number:10,block_hash:'0x1',timestamp:100};await network.step(h,1000);await network.step(h,2999);assert.equal(ledger.pending().length,0);
   await network.step(h,3000);await network.step(h,4000);assert.equal(ledger.pending().length,1);
@@ -214,7 +215,7 @@ test('network notices survive restart, reach only subscribers/operator, and rese
   const config={stallSeconds:2,maxGap:100,confirmations:0,operatorChat:3};
   const head={block_number:10,block_hash:'0xa',timestamp:100};
   try{
-    const guards=new Guards(store,[]);guards.set({id:1,type:'private'},'network',true);guards.set({id:2,type:'private'},'network',false);store.cursor=10;
+    const subs=new Subscriptions(store,config);subs.network({id:1,type:'private'},true);subs.network({id:2,type:'private'},false);store.cursor=10;
     let ledger=new Ledger(store),network=new Network(config,store,{},ledger);await network.step(head,1000);await network.step(head,3000);
     for(const row of ledger.pending())ledger.sent(row.seq,100+row.seq);
     store.close();store=new Store(directory);ledger=new Ledger(store);network=new Network(config,store,{},ledger);
@@ -369,12 +370,12 @@ test('review 5: network and guard use shared settings dispatch, persist, and rej
     for(const command of [{name:'network',argument:'on'},{name:'guard',argument:'links off'}]){
       const commit=await respond(command,ctx);w.store.transaction(commit);
     }
-    w.restart();assert.equal(w.bot.guards.settings(-2).network,1);assert.equal(w.bot.guards.settings(-2).links,0);
+    w.restart();assert.equal(w.bot.subs.networkOn(-2),true);assert.equal(w.bot.guards.settings(-2).links,0);
     await w.command(w.group,'/guard links on');w.setAdmin(false);
     for(const command of ['/network off','/guard seed off','/guard links off']){
       await w.command(w.group,command);assert.match(w.sent.at(-1).text,/administrator/);
     }
-    assert.equal(w.bot.guards.settings(-2).network,1);assert.equal(w.bot.guards.settings(-2).seed,1);assert.equal(w.bot.guards.settings(-2).links,1);
+    assert.equal(w.bot.subs.networkOn(-2),true);assert.equal(w.bot.guards.settings(-2).seed,1);assert.equal(w.bot.guards.settings(-2).links,1);
     await w.command(w.chat,'/guard seed off');w.restart();assert.equal(w.bot.guards.settings(1).seed,0);
   }finally{w.close()}
 });
@@ -618,4 +619,89 @@ test('rewrite rule 2: later-filter or enrichment failover rolls back the whole r
       assert.equal(w.store.sql("SELECT count(*) n FROM deliveries WHERE kind='alert'").get().n,1);
     }finally{w.close()}
   }
+});
+
+test('third review 1: failed validation holds queued chain alerts across restart but sends network notices',async()=>{
+  for(const failure of ['outage','history','lagging']){
+    const w=await passWorld({operatorChat:1});try{
+      await w.command(w.chat,'/watch 0x20');w.add();const tx=w.tx('0xa');
+      w.bot.newPass();await w.bot.readHead();await w.bot.background();
+      w.restart();w.add();const call=w.bot.rpc.call;
+      w.bot.rpc.call=async(method,p)=>{
+        if(method==='starknet_getBlockWithTxHashes'){
+          if(failure==='outage'||(failure==='history'&&p.block_id!=='latest'))throw new NodeBusy();
+          if(failure==='lagging'&&p.block_id==='latest')return call(method,{block_id:{block_number:10}});
+        }
+        return call(method,p);
+      };
+      if(failure!=='outage')w.bot.network.notice(`outage:${failure}`,'⚠️ Chain access is down.',null,[{chat_id:1}]);
+      const before=w.sent.length;await w.pass();
+      assert.equal(w.sent.length,before+1);assert.match(w.sent.at(-1).text,/Chain access is down/);
+      assert.ok(w.bot.ledger.pending().some(r=>r.tx_hash===tx.hash));
+      w.bot.rpc.call=call;await w.pass();await w.pass();
+      assert.equal(w.sent.filter(m=>m.text.includes(tx.hash)).length,1);
+    }finally{w.close()}
+  }
+  const rows=['alert','trade','track','correction','network'].map(kind=>({kind}));
+  for(const type of ['private','supergroup'])assert.deepEqual(plan(rows,type,0,false),{full:[rows.at(-1)],rest:[]});
+});
+
+test('third review 2: compact trade bars distinguish sizes and preserve the whale within five short lines',async()=>{
+  const {render}=await import('../src/trades.mjs');
+  const token={address:hex64('0x1'),symbol:'STRK',decimals:0,verified:true},fmt=links({explorer:'https://x.example'},String);
+  const bars=[];
+  for(const dollars of [5n,50n,5000n,250000n]){
+    const post={token,side:'buy',amount:1000n,others:[],value:{num:dollars,den:1n},trader:hex64('0x3'),block:{timestamp:100},venue:{name:'Ekubo'},tx:'0x4'};
+    const lines=render(post,{},fmt).replace(/<[^>]+>/g,'').split('\n');
+    assert.ok(lines.length<=5);assert.ok(lines.every(l=>Array.from(l).length<=32),lines.join('\n'));
+    const bar=lines[0].split(' ')[0];assert.ok(Array.from(bar).length<=4);bars.push(bar);
+  }
+  assert.equal(new Set(bars).size,4);assert.match(bars.at(-1),/🐋/);
+});
+
+test('third review 3: successive forks preserve the first unresolved check expiry',async()=>{
+  const w=await passWorld({reorgDepth:3});try{
+    await w.command(w.chat,'/watch 0x20');w.add();w.tx('0xa');await w.pass();const original=w.sent.at(-1),call=w.bot.rpc.call;
+    w.bot.rpc.call=async(method,p)=>method==='starknet_getTransactionStatus'?{finality_status:'RECEIVED'}:call(method,p);
+    w.reorg(10);await w.pass();assert.equal(w.bot.ledger.reorgRows('check')[0].since_block,11);
+    w.add();w.reorg(10);await w.pass();assert.equal(w.bot.ledger.reorgRows('check')[0].since_block,11);
+    w.restart();w.add(2);await w.pass();
+    assert.equal(w.bot.ledger.reorgRows('check').length,0);
+    assert.equal(w.store.sql("SELECT message_id FROM deliveries WHERE kind='alert'").get().message_id,original.message_id);
+    assert.equal(w.sent.filter(m=>m.reply_parameters).length,0);
+  }finally{w.close()}
+});
+
+test('third review 4: paused pending correction retains its expired original and reply target until sent',async()=>{
+  const w=await passWorld();try{
+    await w.command(w.chat,'/watch 0x20');w.add();w.tx('0xa');await w.pass();const original=w.store.sql("SELECT * FROM deliveries WHERE kind='alert'").get();
+    w.bot.ledger.correct(original,{block:11,chainTime:original.chain_time+86400,body:'↩️ Correction.'});
+    w.bot.subs.pause(1);const now=original.chain_time+7*86400+1;w.bot.ledger.prune(now);
+    assert.ok(w.store.sql('SELECT seq FROM deliveries WHERE seq=?').get(original.seq));
+    w.restart();await w.pass();assert.equal(w.sent.filter(m=>m.reply_parameters).length,0);
+    w.bot.subs.resume(1);await w.pass();await w.pass();
+    const corrections=w.sent.filter(m=>m.reply_parameters);assert.equal(corrections.length,1);
+    assert.deepEqual(corrections[0].reply_parameters,{message_id:original.message_id,allow_sending_without_reply:true});
+    w.bot.ledger.prune(now);assert.equal(w.store.sql('SELECT seq FROM deliveries WHERE seq=?').get(original.seq),undefined);
+  }finally{w.close()}
+});
+
+test('third review 5: network subscriptions persist independently of guards and forget clears both',async()=>{
+  const w=await passWorld();try{
+    await w.command(w.group,'/network on');assert.equal(w.bot.subs.networkOn(-2),true);
+    assert.deepEqual(w.bot.guards.settings(-2),{seed:1,links:1});
+    await w.command(w.group,'/guard links off');w.restart();
+    assert.equal(w.bot.subs.networkOn(-2),true);assert.deepEqual({...w.bot.guards.settings(-2)},{seed:1,links:0});
+    // Earlier round-4 files stored network subscriptions beside the guards: upgrade them once.
+    w.store.db.exec('ALTER TABLE protection ADD COLUMN network INTEGER NOT NULL DEFAULT 0; UPDATE protection SET network = 1; DELETE FROM network_subscriptions');
+    w.restart();assert.equal(w.bot.subs.networkOn(-2),true);assert.equal(w.bot.guards.settings(-2).links,0);
+    assert.ok(!w.store.sql('PRAGMA table_info(protection)').all().some(c=>c.name==='network'));
+    await w.command(w.group,'/network off');assert.equal(w.bot.subs.networkOn(-2),false);assert.equal(w.bot.guards.settings(-2).links,0);
+    await w.command(w.group,'/network on');w.bot.subs.pause(-2);assert.equal(w.bot.subs.networkSubscribers().length,0);
+    w.bot.subs.resume(-2);assert.deepEqual(w.bot.subs.networkSubscribers().map(r=>r.chat_id),[-2]);
+    assert.throws(()=>w.bot.guards.set(w.group,'network',true),/Unknown setting/);
+    w.restart();await w.command(w.group,'/forget');w.restart();
+    assert.equal(w.bot.subs.networkOn(-2),false);assert.deepEqual(w.bot.guards.settings(-2),{seed:1,links:1});
+    assert.equal(w.store.sql('SELECT count(*) n FROM protection').get().n,0);
+  }finally{w.close()}
 });

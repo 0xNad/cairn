@@ -44,7 +44,7 @@ export class Ledger {
   /** Lifecycle state is keyed by the original delivery; digests contain summary data only. */
   recheck(row, block) {
     this.#q(`INSERT INTO reorg_checks (original_seq, since_block, phase) VALUES (?, ?, 'check')
-      ON CONFLICT (original_seq) DO UPDATE SET phase = 'check', since_block = excluded.since_block
+      ON CONFLICT (original_seq) DO UPDATE SET phase = 'check'
       WHERE phase != 'corrected'`).run(row.seq, block);
   }
   reorgRows(phase) {
@@ -74,5 +74,7 @@ export class Ledger {
         VALUES (?, ?, 'corrected', ?, ?)`).run(original.seq, block, correction.seq, original.message_id);
     });
   }
-  prune(now) { this.#q('DELETE FROM deliveries WHERE chain_time < ?').run(now - LEDGER_TTL); }
+  prune(now) { this.#q(`DELETE FROM deliveries WHERE chain_time < ? AND NOT EXISTS
+    (SELECT 1 FROM reorg_checks r JOIN deliveries c ON c.seq = r.correction_seq
+      WHERE r.original_seq = deliveries.seq AND c.state = 'pending')`).run(now - LEDGER_TTL); }
 }

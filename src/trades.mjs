@@ -211,7 +211,9 @@ export function render(post, feed, fmt) {
   const cents = value ? centsOf(value) : null;
   const symbol = token.verified ? escapeHtml(token.symbol) : `<code>${escapeHtml(token.symbol)}</code>`;
   const worth = value ? ` · ≈${escapeHtml(usdText(value))}` : '';
-  const lines = [`${sizeBar(side, cents, amount, feed.minUnits).slice(0, 4)} <b>${side === 'buy' ? 'Buy' : 'Sell'}</b> ${fmt.token(token)}${worth}`];
+  const whale = cents !== null && cents >= WHALE;
+  const bar = [...sizeBar(side, cents, amount, feed.minUnits)].slice(0, whale ? 3 : 4).join('') + (whale ? '🐋' : '');
+  const lines = [`${bar} <b>${side === 'buy' ? 'Buy' : 'Sell'}</b> ${fmt.token(token)}${worth}`];
   const paid = others.map((o) => `${decimal(o.amount, o.token.decimals)} ${fmt.token(o.token)}`).join(' + ');
   lines.push(`${decimal(amount, token.decimals)} ${symbol}`);
   if (paid) lines.push(`${side === 'buy' ? 'Paid' : 'Received'} ${paid}`);

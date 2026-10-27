@@ -94,7 +94,7 @@ export class Bot {
     this.subs = new Subscriptions(o.store, o.config);
     this.ledger = new Ledger(o.store);
     this.guards = new Guards(o.store, o.config.blocklist);
-    this.network = new Network(o.config, o.store, o.rpc, this.ledger);
+    this.network = new Network(o.config, o.store, o.rpc, this.ledger, this.subs);
     this.tokens = new Tokens(o.config, o.store, o.rpc);
     this.rate = new RateLimit(o.store);
     this.scanner = new Scanner(o.rpc, o.config);
@@ -106,6 +106,7 @@ export class Bot {
     this.names = new Names(o.config, o.store, o.rpc);
     this.known = new Map(Object.entries(o.config.contracts).map(([key, address]) => [address, CONTRACT_NAMES[key]]));
     this.head = null;
+    this.chainReady = false; // pending chain facts wait for this instance to validate their history
     this.behind = false; // the last scan stopped below the head: the next pass comes at once
     this.wake = false; // a new track wants its first stage without waiting for the next pass
     this.budget = { start: -Infinity, used: new Map() }; // messages per group in the current pass
@@ -176,6 +177,7 @@ export class Bot {
   }
 
   async readHead() {
+    this.chainReady = false;
     try {
       this.identity ??= await handshake(this.rpc, this.config, this.clean);
       const block = await this.rpc.call('starknet_getBlockWithTxHashes', { block_id: 'latest' });
@@ -372,16 +374,17 @@ export class Bot {
   // ---- alerts --------------------------------------------------------------------------------------------
 
   async networkPass() {
+    this.chainReady = false;
     try {
       if (await this.network.step(this.head, Date.now(), this.headEndpoint) === false || !this.head) return false;
       await this.network.remember(this.head, this.headEndpoint);
-      return true;
+      return this.chainReady = true;
     } catch (error) { if (this.signal.aborted || !retriable(error)) throw error; return false; }
   }
   async background() {
     this.behind = false;
     if (!await this.networkPass()) return;
-    if (await this.scan() === false) return;
+    if (await this.scan() === false) { this.chainReady = false; return; }
     await this.trackPass();
     const now = this.head.timestamp;
     this.store.transaction(() => {
@@ -464,7 +467,7 @@ export class Bot {
     for (const [chatId, rows] of byChat) {
       if (this.signal.aborted) return;
       const used = this.budget.used.get(chatId) ?? 0;
-      const { full, rest } = plan(rows, rows[0].type, used);
+      const { full, rest } = plan(rows, rows[0].type, used, this.chainReady && (this.rpc.generation ?? 0) === this.headEndpoint);
       let target = chatId, sent = 0, open = true;
       for (const row of full) {
         if (this.signal.aborted) return;

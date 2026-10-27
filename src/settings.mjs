@@ -39,7 +39,7 @@ const watchName = (ctx, w, name = null) => ctx.fmt.contract(w.address, w.label ?
 const HANDLERS = {
   async network(arg, ctx) {
     if (!/^(on|off)$/.test(arg)) return say('Usage: /network on|off');
-    return () => { ctx.guards.set(ctx.chat, 'network', arg === 'on'); return say(`Network alerts: ${arg}.`)(); };
+    return () => { ctx.subs.network(ctx.chat, arg === 'on'); return say(`Network alerts: ${arg}.`)(); };
   },
 
   async guard(arg, ctx) {
