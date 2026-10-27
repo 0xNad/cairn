@@ -435,8 +435,9 @@ class Bot {
    */
   async deliver() {
     await this.ops.deliver();
+    if (!this.head || this.ops.reorgBlocked) return;
     const byChat = new Map();
-    for (const row of this.ledger.pending()) (byChat.get(row.chat_id) ?? byChat.set(row.chat_id, []).get(row.chat_id)).push(row);
+    for (const row of this.ledger.pending().filter(row => row.block === null || row.block <= this.head.block_number - this.config.confirmations)) (byChat.get(row.chat_id) ?? byChat.set(row.chat_id, []).get(row.chat_id)).push(row);
     for (const [chatId, rows] of byChat) {
       if (this.signal.aborted) return;
       const used = this.budget.used.get(chatId) ?? 0;
