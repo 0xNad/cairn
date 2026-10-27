@@ -60,7 +60,7 @@ async function world(extra={}){
   const child={c,r,kill,exited};w.children.push(child);return child;
  };
  w.http=async(host='127.0.0.1')=>{
-  w.env.CAIRN_HTTP_PORT='0';w.env.CAIRN_HTTP_HOST=host;const child=w.start();
+  (w.bindHosts??=new Set()).add(host);w.env.CAIRN_HTTP_PORT='0';w.env.CAIRN_HTTP_HOST=host;const child=w.start();
   const port=await until(()=>{
    for(const line of (child.r.out+'\n'+child.r.err).split('\n'))try{const j=JSON.parse(line);if(j.event==='http'&&Number.isInteger(j.port)&&j.port>0)return j.port}catch{}
   },'HTTP port-0 announcement absent');
@@ -86,7 +86,7 @@ function safety(w){
  for(const marker of [TOKEN,TOKEN.split(':')[1],SECRET,...w.protected])check(!saved.includes(marker)&&!logs.includes(marker),'secret/protected input persisted or logged');
  for(const person of w.people)for(const marker of [person.first_name,person.username])check(!saved.includes(marker),'fixture identity persisted');
  const allowed=new Set([`127.0.0.1:${w.tg.port}`,...w.nodes.map(n=>`127.0.0.1:${n.port}`)]);
- if(existsSync(w.env.CAIRN_TRAP_LOG))for(const line of readFileSync(w.env.CAIRN_TRAP_LOG,'utf8').split('\n').filter(Boolean)){const x=JSON.parse(line);if(x.kind!=='loaded'){const bindLookup=x.kind.startsWith('dns.')&&w.env.CAIRN_HTTP_PORT!==undefined&&x.dest===w.env.CAIRN_HTTP_HOST;check(bindLookup||allowed.has(x.dest),'unconfigured outbound host')}}
+ if(existsSync(w.env.CAIRN_TRAP_LOG))for(const line of readFileSync(w.env.CAIRN_TRAP_LOG,'utf8').split('\n').filter(Boolean)){const x=JSON.parse(line);if(x.kind!=='loaded'){const bindLookup=x.kind.startsWith('dns.')&&w.bindHosts?.has(x.dest);check(bindLookup||allowed.has(x.dest),'unconfigured outbound host')}}
 }
 
 spec('01','network subscription persists and group controls require administrators',async w=>{
