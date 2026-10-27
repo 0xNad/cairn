@@ -93,6 +93,11 @@ export class Network {
       if (!result?.missing && !Number.isSafeInteger(result?.receipt?.block_number)) continue;
       this.store.transaction(() => {
         for (const row of rows) {
+          if (result.receipt && row.state === 'pending') {
+            this.ledger.rebuild(row, result.receipt.block_number);
+            this.store.cursor = Math.min(this.store.cursor, result.receipt.block_number - 1);
+            continue;
+          }
           this.ledger.checked(row, result.receipt?.block_number ?? row.block);
           if (result.missing) {
             if (row.message_id !== null) this.ledger.correct(row, { block: head.block_number, chainTime: head.timestamp,

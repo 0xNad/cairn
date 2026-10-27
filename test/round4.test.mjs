@@ -461,3 +461,80 @@ test('review 2 status failover: not-found from a new provider is deferred until 
     assert.equal(w.sent.filter(m=>m.reply_parameters?.message_id===original.message_id).length,1);
   }finally{w.close()}
 });
+
+test('second review 1: edits run both guards without executing commands or other message handlers',async()=>{
+  const w=await passWorld();try{
+    const call=w.bot.tg.call;let requested;
+    w.bot.tg.call=async(method,p)=>{if(method==='getUpdates')requested=p.allowed_updates;return call(method,p)};
+    await w.bot.poll(0);assert.ok(requested.includes('edited_message'));
+    await w.command(w.group,'Harmless text');
+    let update=1000;
+    const edit=async(text,extra={})=>w.bot.handle({update_id:++update,edited_message:{message_id:1,chat:w.group,from:{id:2},date:200000,text,...extra}});
+    const phrase=words.slice(0,12).join(' ');
+    for(const text of [phrase,'https://example.com/claim']){
+      const n=w.deletes.length;await edit(text);assert.equal(w.deletes.length,n+1);assert.equal(w.deletes.at(-1).message_id,1);
+      assert.ok(!w.sent.at(-1).text.includes(text));
+    }
+    const n=w.sent.length,d=w.deletes.length;
+    w.bot.subs.chat(w.group);w.bot.subs.pause(w.group.id);
+    await edit('Harmless again');await edit('/guard seed off');await edit('/watch 0x20');await edit('Ordinary edit',{migrate_to_chat_id:-3});
+    assert.equal(w.sent.length,n);assert.equal(w.deletes.length,d);assert.equal(w.bot.guards.settings(-2).seed,1);
+    assert.equal(w.bot.subs.watches(-2).length,0);assert.equal(w.bot.subs.isPaused(-2),true);
+  }finally{w.close()}
+});
+
+test('second review 2: systemd ExecStart keeps CAIRN_DATA writable despite EnvironmentFile precedence',()=>{
+  const unit=readFileSync(new URL('../deploy/cairn.service',import.meta.url),'utf8');
+  const example=readFileSync(new URL('../.env.example',import.meta.url),'utf8');
+  const assignments=text=>Object.fromEntries(text.split('\n').map(l=>/^([A-Z_]+)=(.*)$/.exec(l.trim())).filter(Boolean).map(m=>[m[1],m[2]]));
+  const values=Object.fromEntries([...unit.matchAll(/^Environment=(\w+)=(.*)$/gm)].map(m=>[m[1],m[2]]));
+  Object.assign(values,assignments(example)); // systemd EnvironmentFile overrides Environment.
+  const exec=/^ExecStart=(.*)$/m.exec(unit)[1].split(/\s+/);
+  if(exec[0]==='/usr/bin/env')for(const arg of exec.slice(1)){const m=/^(\w+)=(.*)$/.exec(arg);if(!m)break;values[m[1]]=m[2]}
+  const working=/^WorkingDirectory=(.*)$/m.exec(unit)[1];
+  const data=values.CAIRN_DATA.startsWith('/')?values.CAIRN_DATA:`${working}/${values.CAIRN_DATA.replace(/^\.\//,'')}`;
+  const writable=[...unit.matchAll(/^StateDirectory=(.*)$/gm)].flatMap(m=>m[1].split(/\s+/).map(d=>`/var/lib/${d}`));
+  writable.push(...[...unit.matchAll(/^ReadWritePaths=(.*)$/gm)].flatMap(m=>m[1].split(/\s+/)));
+  assert.ok(writable.some(path=>data===path||data.startsWith(`${path}/`)),`${data} must be writable with ProtectSystem=strict`);
+});
+
+test('second review 3: pending re-included facts are rebuilt through scanner and trackStep exactly once',async()=>{
+  for(const amount of [777n,0n]){
+    const w=await passWorld();try{
+      await w.command(w.chat,'/watch 0x20');w.add();const tx=w.tx('0xa',11,100n);
+      w.bot.newPass();await w.bot.readHead();await w.bot.background(); // Save the old execution without sending it.
+      const row=w.bot.ledger.pending()[0];assert.match(row.body,/100 STRK/);
+      w.reorg(10);w.tx('0xa',11,amount);w.restart();await w.pass();await w.pass();
+      const posts=w.sent.filter(m=>m.text.includes(tx.hash));assert.equal(posts.length,amount?1:0);
+      if(amount){assert.match(posts[0].text,/777 STRK/);assert.doesNotMatch(posts[0].text,/100 STRK/)}
+      assert.equal(w.sent.filter(m=>/Correction/.test(m.text)).length,0);
+    }finally{w.close()}
+  }
+  const w=await passWorld();try{
+    let fee=10n**18n;const call=w.bot.rpc.call;
+    w.bot.rpc.call=async(method,p)=>{
+      const result=await call(method,p);
+      if(method==='starknet_getTransactionStatus')return {...result,execution_status:'SUCCEEDED'};
+      if(method==='starknet_getTransactionReceipt')return {...result,execution_status:'SUCCEEDED',actual_fee:{unit:'FRI',amount:`0x${fee.toString(16)}`}};
+      return result;
+    };
+    await w.command(w.chat,'/track 0xa');w.add();w.tx('0xa');
+    w.bot.newPass();await w.bot.readHead();await w.bot.background();assert.match(w.bot.ledger.pending()[0].body,/Fee: 1 STRK/);
+    w.reorg(10);w.tx('0xa');fee=25n*10n**17n;w.restart();await w.pass();await w.pass();
+    const posts=w.sent.filter(m=>/Accepted on L2/.test(m.text));assert.equal(posts.length,1);assert.match(posts[0].text,/Fee: 2.5 STRK/);
+  }finally{w.close()}
+});
+
+test('second review 4: one planner keeps individual corrections and notices inside the group budget',()=>{
+  const individual=[{kind:'correction',seq:1},{kind:'network',seq:2}];
+  const trades=[1,2,900000,4,5].map((amount,i)=>({kind:'trade',seq:i+3,block:1,tx_hash:`tx${i}`,digest:JSON.stringify({k:'trade',side:'buy',token:'STRK',symbol:'STRK',verified:true,decimals:0,amount:String(amount),cents:null})}));
+  const rows=[trades[0],individual[0],...trades.slice(1),individual[1]];
+  const result=plan(rows,'supergroup',0);
+  assert.deepEqual(result.full,individual);assert.deepEqual(result.rest,trades);
+  assert.equal(result.full.length+Number(result.rest.length>0),3);
+  assert.match(summarise(result.rest,{tx:(tx,text)=>`${text} [${tx}]`}),/Largest: Buy 900,000 STRK.*tx2/);
+  const next=plan(trades,'supergroup',0);assert.ok(next.full.includes(trades[2]));
+  assert.deepEqual(plan(rows,'supergroup',2),{full:[individual[0]],rest:[]});
+  assert.deepEqual(plan(rows,'supergroup',3),{full:[],rest:[]});
+  assert.deepEqual(plan(rows,'private',0),{full:rows,rest:[]});
+});

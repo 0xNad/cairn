@@ -6,6 +6,7 @@ import { usdText } from './prices.mjs';
 
 export const GROUP_BUDGET = 3;
 export const GROUP_TYPES = new Set(['group', 'supergroup']);
+const POLICY = Object.freeze({ network: { individual: true }, correction: { individual: true } });
 const MAX_LINKS = 10; // transaction links a summary lists for its wallet alerts and for its track updates
 
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
@@ -34,17 +35,21 @@ function heavier(a, b) {
  * How a chat's due alerts fit its budget this pass: { full, rest } — `full` sent one by one, `rest` covered
  * by one summary. When more are due than fit, the ones sent in full are the weightiest (above), kept in chain
  * order, so a burst shows its biggest trades. Private chats have no budget; a group that already used its
- * budget waits for the next pass.
+ * budget waits for the next pass. Individual notices consume slots first and are never summarized.
  */
 export function plan(rows, type, used) {
   if (!GROUP_TYPES.has(type)) return { full: rows, rest: [] };
   const left = GROUP_BUDGET - used;
   if (left <= 0) return { full: [], rest: [] };
-  if (rows.length <= left) return { full: rows, rest: [] };
-  const weights = rows.map(weight);
-  const order = rows.map((_, i) => i).sort((i, j) => heavier(weights[j], weights[i]) || i - j);
-  const chosen = new Set(order.slice(0, left - 1));
-  return { full: rows.filter((_, i) => chosen.has(i)), rest: rows.filter((_, i) => !chosen.has(i)) };
+  const individual = rows.filter(row => POLICY[row?.kind]?.individual);
+  const full = individual.slice(0, left), remaining = left - full.length;
+  if (!remaining) return { full, rest: [] };
+  const candidates = rows.filter(row => !POLICY[row?.kind]?.individual);
+  if (candidates.length <= remaining) return { full: [...full, ...candidates], rest: [] };
+  const weights = candidates.map(weight);
+  const order = candidates.map((_, i) => i).sort((i, j) => heavier(weights[j], weights[i]) || i - j);
+  const chosen = new Set(order.slice(0, remaining - 1));
+  return { full: [...full, ...candidates.filter((_, i) => chosen.has(i))], rest: candidates.filter((_, i) => !chosen.has(i)) };
 }
 
 /** Exact USD values with power-of-ten denominators, added up. */

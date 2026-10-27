@@ -63,7 +63,8 @@ with `--network host` also permits their loopback addresses).
 ## systemd
 
 Install Node 24 at `/usr/local/bin/node` (verify `node --version`), copy this checkout to `/opt/cairn`,
-and create a dedicated service account. The unit uses `/var/lib/cairn` for state:
+and create a dedicated service account. The unit sets `CAIRN_DATA=/var/lib/cairn` in `ExecStart`,
+overriding the value in the environment file:
 
 ```sh
 sudo useradd --system --home-dir /var/lib/cairn --shell /usr/sbin/nologin cairn
@@ -135,7 +136,7 @@ In groups, settings, `/track`, `/export` and `/forget` require an administrator;
 are open to everyone. Anonymous administrators posting as the group can change settings.
 Commands addressed to another bot are ignored. A forum subscription posts into its saved topic.
 
-Guards inspect ordinary text, captions and Telegram text links before command parsing. Exact uninterrupted
+Guards inspect new and edited message text, captions and Telegram text links before command parsing. Exact uninterrupted
 runs of 12, 15, 18, 21 or 24 English BIP-39 words trigger deletion without checksum validation.
 Eleven or thirteen words and interrupted runs do not. Punctuation breaks a run. Guards never echo,
 log or persist matched content; their switches persist. `/forget` restores guards to on and network

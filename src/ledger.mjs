@@ -11,16 +11,20 @@ export const STAGE = Object.freeze({ accepted: -1, final: -2, missing: -3, corre
 export class Ledger {
   constructor(store) { this.store = store; }
   #q(text) { return this.store.sql(text); }
-  /** Saves an alert before it is sent; false when its key is already in the ledger. */
+  /** Saves an alert or refreshes an invalidated pending execution; false for an unchanged ledger key. */
   add({ chatId, txHash, eventIndex, kind, events = [eventIndex], block = null, chainTime, body, thread = null, digest = null }) {
     return this.#q(`INSERT OR IGNORE INTO deliveries (chat_id, tx_hash, event_index, kind, events, block, chain_time, state, body, thread_id, digest)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`).run(chatId, txHash, eventIndex, kind, JSON.stringify(events), block, chainTime, body,
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+      ON CONFLICT (chat_id, tx_hash, event_index) DO UPDATE SET kind = excluded.kind, events = excluded.events,
+        block = excluded.block, chain_time = excluded.chain_time, body = excluded.body,
+        thread_id = excluded.thread_id, digest = excluded.digest
+      WHERE deliveries.state = 'pending' AND json_extract(deliveries.digest, '$.rebuild') = 1`).run(chatId, txHash, eventIndex, kind, JSON.stringify(events), block, chainTime, body,
       thread, digest === null ? null : JSON.stringify(digest)).changes === 1;
   }
   /** Pending alerts of chats that are not paused, in the order they were found (chain order), with the chat's type. */
   pending(limit = 1000) {
     return this.#q(`SELECT d.seq, d.chat_id, d.body, d.thread_id, d.digest, d.kind, d.tx_hash, d.block, c.type FROM deliveries d
-      LEFT JOIN chats c ON c.chat_id = d.chat_id WHERE d.state = 'pending' AND json_extract(d.digest, '$.reorg') IS NULL AND coalesce(c.paused, 0) = 0 ORDER BY d.seq LIMIT ?`).all(limit);
+      LEFT JOIN chats c ON c.chat_id = d.chat_id WHERE d.state = 'pending' AND json_extract(d.digest, '$.reorg') IS NULL AND json_extract(d.digest, '$.rebuild') IS NULL AND coalesce(c.paused, 0) = 0 ORDER BY d.seq LIMIT ?`).all(limit);
   }
   sent(seq, messageId) { this.#q("UPDATE deliveries SET state = 'sent', message_id = ?, body = NULL, digest = NULL WHERE seq = ?").run(messageId, seq); }
   /** Delivered inside a group's summary: the key stays, the text goes, and the summary's message_id is kept. */
@@ -43,6 +47,18 @@ export class Ledger {
     delete digest.reorg;
     this.#q('UPDATE deliveries SET digest = ?, block = ? WHERE seq = ?')
       .run(Object.keys(digest).length ? JSON.stringify(digest) : null, block, row.seq);
+  }
+  /** Discard orphaned execution facts; only the normal scanner or track formatter can release the row. */
+  rebuild(row, block) {
+    this.#q(`UPDATE deliveries SET block = ?, body = NULL, digest = '{"rebuild":true}' WHERE seq = ?`).run(block, row.seq);
+  }
+  rebuildingTracks() {
+    return this.#q("SELECT * FROM deliveries WHERE state = 'pending' AND kind = 'track' AND json_extract(digest, '$.rebuild') = 1").all();
+  }
+  /** A fully scanned replacement range may no longer contain any event matching the original alert. */
+  finishRebuilds(through) {
+    this.#q(`UPDATE deliveries SET state = 'dropped', body = NULL, digest = NULL WHERE state = 'pending'
+      AND kind IN ('alert', 'trade') AND block <= ? AND json_extract(digest, '$.rebuild') = 1`).run(through);
   }
   /** Corrections share the original transaction's ledger key space and reply to its saved message. */
   correct(original, { block, chainTime, body }) {

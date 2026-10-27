@@ -8,7 +8,7 @@ import { callback, COMMANDS, parseCommand, parsePaste, respond } from './command
 import { CairnError, log, NodeBusy, RpcError, TelegramRefused } from './errors.mjs';
 import { decodeChain, NodeValueError } from './felt.mjs';
 import { links, messages, redactor, textLines } from './format.mjs';
-import { Ledger } from './ledger.mjs';
+import { Ledger, STAGE } from './ledger.mjs';
 import { Names } from './names.mjs';
 import { Prices } from './prices.mjs';
 import { RateLimit } from './rate.mjs';
@@ -22,7 +22,7 @@ import { tradeFeed } from './trades.mjs';
 import { Telegram, sleep } from './transport.mjs';
 import { VENUES, venuesOf } from './venues.mjs';
 
-const ALLOWED_UPDATES = ['message', 'callback_query', 'my_chat_member'];
+const ALLOWED_UPDATES = ['message', 'edited_message', 'callback_query', 'my_chat_member'];
 const ADMINS = new Set(['creator', 'administrator']);
 const LOUD_ALERTS = 3; // alerts per private chat and pass with a notification; later ones in the same pass arrive silently
 /** A 400 that means the bot may not write to the chat for now, rather than that one message was bad. */
@@ -205,6 +205,7 @@ export class Bot {
     if (update.update_id < this.store.offset) return;
     let commit = () => null;
     if (update.message) commit = await this.onMessage(update.message);
+    else if (update.edited_message) commit = await this.protect(update.edited_message) ?? commit;
     else if (update.callback_query) commit = await this.onCallback(update.callback_query);
     else if (update.my_chat_member) commit = this.onMembership(update.my_chat_member);
     // Claim durably before replying: Telegram has no idempotency key, so a crash can lose a reply but never
@@ -215,11 +216,10 @@ export class Bot {
     this.counts.updates++;
     if (out) await this.respond(out);
   }
-  async onMessage(message) {
+  /** Shared inspection for new messages and edits; edits never run message handlers. */
+  async protect(message) {
     const chat = message?.chat;
-    if (!Number.isSafeInteger(chat?.id)) return () => null;
-    if (Number.isSafeInteger(message.migrate_to_chat_id)) return () => { this.subs.migrate(chat.id, message.migrate_to_chat_id); return null; };
-    if (Number.isSafeInteger(message.migrate_from_chat_id)) return () => { this.subs.migrate(message.migrate_from_chat_id, chat.id); return null; };
+    if (!Number.isSafeInteger(chat?.id)) return null;
     const protectedKind = this.guards.match(message);
     if (protectedKind) {
       let removed = false;
@@ -227,6 +227,15 @@ export class Bot {
       catch (error) { if (!(error instanceof TelegramRefused)) throw error; }
       return () => ({ chat_id: chat.id, ...topic(message.message_thread_id), lines: guardWarning(protectedKind, removed) });
     }
+    return null;
+  }
+  async onMessage(message) {
+    const chat = message?.chat;
+    if (!Number.isSafeInteger(chat?.id)) return () => null;
+    if (Number.isSafeInteger(message.migrate_to_chat_id)) return () => { this.subs.migrate(chat.id, message.migrate_to_chat_id); return null; };
+    if (Number.isSafeInteger(message.migrate_from_chat_id)) return () => { this.subs.migrate(message.migrate_from_chat_id, chat.id); return null; };
+    const protection = await this.protect(message);
+    if (protection) return protection;
     // A chat that writes again gets its pending alerts.
     const resume = () => this.subs.resume(chat.id);
     const command = parseCommand(message, this.username) ?? parsePaste(message);
@@ -408,13 +417,21 @@ export class Bot {
     found.deliveries.sort(chainOrder);
     this.store.transaction(() => {
       for (const delivery of found.deliveries) this.ledger.add(delivery);
+      this.ledger.finishRebuilds(range.to);
       for (const [chatId, address, token] of found.seen) this.subs.noteSeen(chatId, address, token);
       this.store.cursor = range.to;
     });
     this.behind = range.to < this.head.block_number - this.config.confirmations;
   }
   async trackPass() {
-    for (const track of this.subs.allTracks()) {
+    const live = this.subs.allTracks(), rebuilding = this.ledger.rebuildingTracks();
+    const same = (track, row) => track.chat_id === row.chat_id && track.hash === row.tx_hash;
+    const tracks = rebuilding.map(row => ({
+      id: live.find(track => same(track, row))?.id ?? null, chat_id: row.chat_id, hash: row.tx_hash,
+      stage: row.event_index === STAGE.accepted ? 0 : 1, since_time: this.head.timestamp, thread_id: row.thread_id,
+    }));
+    tracks.push(...live.filter(track => !rebuilding.some(row => same(track, row))));
+    for (const track of tracks) {
       let step;
       try { step = await trackStep(track, { rpc: this.rpc, head: this.head, fmt: this.fmt }); }
       catch (error) {
@@ -425,8 +442,10 @@ export class Bot {
       if (!step) continue;
       this.store.transaction(() => {
         if (step.delivery) this.ledger.add(step.delivery);
-        if (step.stage === 'done') this.subs.trackDone(track.id);
-        else this.subs.trackStage(track.id, step.stage);
+        if (track.id !== null) {
+          if (step.stage === 'done') this.subs.trackDone(track.id);
+          else this.subs.trackStage(track.id, step.stage);
+        }
       });
     }
   }
@@ -441,12 +460,7 @@ export class Bot {
     for (const [chatId, rows] of byChat) {
       if (this.signal.aborted) return;
       const used = this.budget.used.get(chatId) ?? 0;
-      const special = rows.filter(r => ['network', 'correction'].includes(r.kind));
-      const normal = rows.filter(r => !special.includes(r));
-      const slots = ['group', 'supergroup'].includes(rows[0].type) ? Math.max(0, 3 - used) : special.length;
-      const chosen = special.slice(0, slots);
-      const planned = plan(normal, rows[0].type, used + chosen.length);
-      const full = [...chosen, ...planned.full], rest = planned.rest;
+      const { full, rest } = plan(rows, rows[0].type, used);
       let target = chatId, sent = 0, open = true;
       for (const row of full) {
         if (this.signal.aborted) return;

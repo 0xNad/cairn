@@ -9,8 +9,7 @@ User=cairn
 Group=cairn
 WorkingDirectory=/opt/cairn
 EnvironmentFile=/etc/cairn.env
-Environment=CAIRN_DATA=/var/lib/cairn
-ExecStart=/usr/local/bin/node /opt/cairn/cairn.mjs run
+ExecStart=/usr/bin/env CAIRN_DATA=/var/lib/cairn /usr/local/bin/node /opt/cairn/cairn.mjs run
 Restart=on-failure
 RestartPreventExitStatus=2 3
 RestartSec=5
