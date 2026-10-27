@@ -829,3 +829,52 @@ test('judge 8: deployment guide explains operator id without tokens and keeps se
   for(const pattern of [/docker build/,/docker run/,/systemctl enable --now/,/Delete messages/,/setprivacy/,/STARKNET_RPC_URLS/])assert.match(readme,pattern);
   assert.doesNotMatch(readme,/Eleven or thirteen words|Punctuation breaks a run/);
 });
+
+test('cubic v5 1',async()=>{
+  const rows=Array.from({length:200000},(_,i)=>({kind:'alert',block:i+1,tx_hash:'tx',digest:null}));
+  assert.match(summarise(rows,{tx:(_tx,label)=>label}),/in blocks 1–200000/);
+  const w=await passWorld();try{
+    w.bot.subs.chat(w.group);
+    w.store.transaction(()=>{for(let i=1;i<=1005;i++)w.bot.ledger.add({chatId:-2,txHash:`tx${i}`,eventIndex:0,kind:'trade',block:10,chainTime:1020,
+      body:`Buy ${i} STRK`,digest:{k:'trade',side:'buy',token:'STRK',symbol:'STRK',verified:true,decimals:0,amount:String(i),cents:String(i*100)}})});
+    assert.equal(w.bot.ledger.pending().length,1000);
+    await w.bot.deliver();assert.equal(w.sent.length,3);assert.ok(w.sent.some(m=>m.text==='Buy 1005 STRK'));
+    const summaries=w.sent.filter(m=>/summaris/.test(m.text));assert.equal(summaries.length,1);assert.match(summaries[0].text,/1003 more/);
+    assert.equal(w.store.sql("SELECT count(*) n FROM deliveries WHERE state='summarized'").get().n,1003);
+    w.restart();await w.pass();assert.equal(w.sent.length,3);assert.equal(w.bot.ledger.pending().length,0);
+  }finally{w.close()}
+});
+
+test('cubic v5 2',async()=>{
+  const w=await passWorld();try{
+    await w.command(w.chat,'/watch 0x20');w.add();w.tx('0xa');await w.pass();
+    const original=w.store.sql("SELECT * FROM deliveries WHERE kind='alert'").get();
+    w.bot.ledger.correct(original,{block:w.head,chainTime:original.chain_time,body:'↩️ Correction.'});
+    w.bot.subs.pause(1);w.bot.ledger.prune(original.chain_time+8*86400);w.restart();await w.pass();
+    assert.equal(w.sent.filter(m=>m.reply_parameters).length,0);
+    assert.equal(w.store.sql("SELECT count(*) n FROM deliveries WHERE kind='correction' AND state='pending'").get().n,1);
+    w.bot.subs.resume(1);await w.pass();await w.pass();
+    const corrections=w.sent.filter(m=>m.reply_parameters);assert.equal(corrections.length,1);
+    assert.deepEqual(corrections[0].reply_parameters,{message_id:original.message_id,allow_sending_without_reply:true});
+  }finally{w.close()}
+});
+
+test('cubic v5 3',async()=>{
+  const {TelegramRefused}=await import('../src/errors.mjs');
+  const w=await passWorld();try{
+    await w.command(w.group,'/network on',{message_thread_id:17,is_topic_message:true});w.restart();
+    w.store.set('head_since',Date.now()-121000);await w.pass();
+    const stall=w.sent.find(m=>/No new block for/.test(m.text));assert.equal(stall.message_thread_id,17);
+    w.add();await w.pass();assert.equal(w.sent.find(m=>/Recovered after/.test(m.text)).message_thread_id,17);
+    await w.command(w.group,'/network on',{message_thread_id:23,is_topic_message:true});
+    const call=w.bot.tg.call,attempts=[];
+    w.bot.tg.call=async(method,p)=>{
+      if(method==='sendMessage'){attempts.push(p.message_thread_id);if(p.message_thread_id===23)throw new TelegramRefused(method,400,{description:'message thread not found'})}
+      return call(method,p);
+    };
+    w.bot.budget.start=-Infinity;w.store.set('head_since',Date.now()-121000);await w.pass();
+    assert.deepEqual(attempts,[23,undefined]);assert.equal(w.sent.at(-1).message_thread_id,undefined);
+    w.store.db.exec('ALTER TABLE network_subscriptions DROP COLUMN thread_id');w.restart();
+    assert.equal(w.bot.subs.networkOn(-2),true);assert.equal(w.bot.subs.networkSubscribers()[0].thread_id,null);
+  }finally{w.close()}
+});

@@ -27,10 +27,10 @@ export class Ledger {
     });
   }
   /** Pending alerts of chats that are not paused, in the order they were found (chain order), with the chat's type. */
-  pending(limit = -1) {
+  pending(limit = 1000, after = 0) {
     return this.#q(`SELECT d.seq, d.chat_id, d.body, d.thread_id, d.digest, d.kind, d.tx_hash, d.block, c.type, r.reply_to FROM deliveries d
       LEFT JOIN reorg_checks r ON r.correction_seq = d.seq
-      LEFT JOIN chats c ON c.chat_id = d.chat_id WHERE d.state = 'pending' AND NOT EXISTS (SELECT 1 FROM reorg_checks WHERE original_seq = d.seq AND phase != 'corrected') AND coalesce(c.paused, 0) = 0 ORDER BY d.seq LIMIT ?`).all(limit);
+      LEFT JOIN chats c ON c.chat_id = d.chat_id WHERE d.seq > ? AND d.state = 'pending' AND NOT EXISTS (SELECT 1 FROM reorg_checks WHERE original_seq = d.seq AND phase != 'corrected') AND coalesce(c.paused, 0) = 0 ORDER BY d.seq LIMIT ?`).all(after, limit);
   }
   sent(seq, messageId) { this.#q("UPDATE deliveries SET state = 'sent', message_id = ?, body = NULL, digest = NULL WHERE seq = ?").run(messageId, seq); }
   /** Delivered inside a group's summary: the key stays, the text goes, and the summary's message_id is kept. */
@@ -74,7 +74,7 @@ export class Ledger {
         VALUES (?, ?, 'corrected', ?, ?)`).run(original.seq, block, correction.seq, original.message_id);
     });
   }
-  prune(now) { this.#q(`DELETE FROM deliveries WHERE chain_time < ? AND NOT EXISTS
+  prune(now) { this.#q(`DELETE FROM deliveries WHERE chain_time < ? AND NOT (state = 'pending' AND kind = 'correction') AND NOT EXISTS
     (SELECT 1 FROM reorg_checks r JOIN deliveries c ON c.seq = r.correction_seq
       WHERE r.original_seq = deliveries.seq AND c.state = 'pending')`).run(now - LEDGER_TTL); }
 }

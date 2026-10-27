@@ -70,7 +70,12 @@ export async function send(bot, chatId, text, extra = {}) {
 
 export async function deliver(bot) {
   const byChat = new Map();
-  for (const row of bot.ledger.pending()) (byChat.get(row.chat_id) ?? byChat.set(row.chat_id, []).get(row.chat_id)).push(row);
+  for (let after = 0; ;) {
+    const page = bot.ledger.pending(undefined, after);
+    if (!page.length) break;
+    for (const row of page) (byChat.get(row.chat_id) ?? byChat.set(row.chat_id, []).get(row.chat_id)).push(row);
+    after = page.at(-1).seq;
+  }
   for (const [chatId, rows] of byChat) {
     if (bot.signal.aborted) return;
     const used = bot.budget.used.get(chatId) ?? 0;

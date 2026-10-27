@@ -12,7 +12,7 @@ export class Network {
   constructor(config, store, rpc, ledger, subs = new Subscriptions(store, config)) { Object.assign(this, { config, store, rpc, ledger, subs }); }
   get since() { return Number(this.store.get('head_since') ?? Date.now()); }
   notice(key, body, head, chats = this.subs.networkSubscribers()) {
-    for (const { chat_id } of chats) this.ledger.add({ chatId: chat_id, txHash: key, eventIndex: STAGE.network, kind: 'network', chainTime: head?.timestamp ?? Number(this.store.get('chain_time') ?? 0), body });
+    for (const { chat_id, thread_id } of chats) this.ledger.add({ chatId: chat_id, txHash: key, eventIndex: STAGE.network, kind: 'network', thread: thread_id ?? null, chainTime: head?.timestamp ?? Number(this.store.get('chain_time') ?? 0), body });
   }
   /** A successful head read clears the outage even when updates arrive before the periodic step. */
   recovered(head, now = Date.now()) {

@@ -30,13 +30,14 @@ export class Subscriptions {
   isPaused(chatId) { return this.#q('SELECT paused FROM chats WHERE chat_id = ?').get(chatId)?.paused === 1; }
 
   /** Network alerts are subscriptions; paused chats stay subscribed but receive no notices. */
-  network(chat, on) {
+  network(chat, on, thread = null) {
     this.chat(chat);
-    if (on) this.#q('INSERT OR IGNORE INTO network_subscriptions (chat_id) VALUES (?)').run(chat.id);
+    if (on) this.#q(`INSERT INTO network_subscriptions (chat_id, thread_id) VALUES (?, ?)
+      ON CONFLICT (chat_id) DO UPDATE SET thread_id = excluded.thread_id`).run(chat.id, thread);
     else this.#q('DELETE FROM network_subscriptions WHERE chat_id = ?').run(chat.id);
   }
   networkOn(chatId) { return Boolean(this.#q('SELECT 1 FROM network_subscriptions WHERE chat_id = ?').get(chatId)); }
-  networkSubscribers() { return this.#q('SELECT chat_id FROM network_subscriptions JOIN chats USING(chat_id) WHERE paused = 0').all(); }
+  networkSubscribers() { return this.#q('SELECT chat_id, thread_id FROM network_subscriptions JOIN chats USING(chat_id) WHERE paused = 0').all(); }
 
   // ---- watches -------------------------------------------------------------------------------------
 

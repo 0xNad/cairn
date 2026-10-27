@@ -66,8 +66,9 @@ const valueIn = (d) => (d.value ? { num: BigInt(d.value[0]), den: BigInt(d.value
  */
 export function summarise(rows, fmt) {
   const trades = new Map(), alerts = [], tracks = [];
-  let whales = 0, approvals = 0, largest = null;
+  let whales = 0, approvals = 0, largest = null, low = Infinity, high = -Infinity;
   for (const row of rows) {
+    if (Number.isSafeInteger(row.block)) { low = Math.min(low, row.block); high = Math.max(high, row.block); }
     const d = read(row.digest);
     if (d?.k === 'trade') {
       const key = `${d.side} ${d.token}`;
@@ -87,9 +88,7 @@ export function summarise(rows, fmt) {
       if (d?.approval) approvals++;
     }
   }
-  const blocks = rows.map((r) => r.block).filter(Number.isSafeInteger);
-  const low = Math.min(...blocks), high = Math.max(...blocks);
-  const where = !blocks.length ? '' : low === high ? ` in block ${low}` : ` in blocks ${low}–${high}`;
+  const where = low === Infinity ? '' : low === high ? ` in block ${low}` : ` in blocks ${low}–${high}`;
   const lines = [`➕ <b>${rows.length} more</b>${where}, summarised to keep the group readable:`];
   const symbol = (t) => (t.verified ? escapeHtml(t.symbol) : `<code>${escapeHtml(t.symbol)}</code> (unverified)`);
   for (const t of trades.values()) {
