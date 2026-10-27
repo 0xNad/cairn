@@ -5,7 +5,9 @@ import { Subscriptions } from './subscriptions.mjs';
 
 export function duration(ms) {
   const seconds = Math.max(0, Math.floor(ms / 1000));
-  return seconds >= 60 ? `${Math.floor(seconds / 60)} min ${seconds % 60} s` : `${seconds} s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes >= 60) return `${Math.floor(minutes / 60)} h${minutes % 60 ? ` ${minutes % 60} min` : ''}`;
+  return minutes ? `${minutes} min${seconds % 60 ? ` ${seconds % 60} s` : ''}` : `${seconds} s`;
 }
 /** Persisted wall-clock latches and bounded chain history, stepped only by the bot's pass. */
 export class Network {

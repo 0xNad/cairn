@@ -878,3 +878,21 @@ test('cubic v5 3',async()=>{
     assert.equal(w.bot.subs.networkOn(-2),true);assert.equal(w.bot.subs.networkSubscribers()[0].thread_id,null);
   }finally{w.close()}
 });
+
+test('judge v2 1',async()=>{
+  const w=await passWorld();try{
+    const topic={message_thread_id:17,is_topic_message:true};
+    await w.command(w.group,'/network on',topic);await w.command(w.group,'/guard links off',topic);w.restart();await w.bot.readHead();
+    await w.command(w.group,'/list',topic);
+    assert.match(w.sent.at(-1).text,/📡 Network alerts: on \(this topic\)/);assert.match(w.sent.at(-1).text,/🛡 Guards: seed on · links off/);
+    assert.doesNotMatch(w.sent.at(-1).text,/Nothing is set up/);assert.match(w.sent.at(-1).text,/No feed, watch or alert yet.*Start with \/feed/);
+    await w.command(w.group,'/list',{message_thread_id:23,is_topic_message:true});assert.match(w.sent.at(-1).text,/on \(topic 17\)/);
+    await w.command(w.group,'/network on');await w.command(w.group,'/list');assert.match(w.sent.at(-1).text,/Network alerts: on\n/);
+    await w.command(w.group,'/forget');await w.command(w.group,'/watch 0x20');await w.command(w.group,'/list');
+    assert.match(w.sent.at(-1).text,/Network alerts: off/);assert.match(w.sent.at(-1).text,/Guards: seed on · links on/);assert.match(w.sent.at(-1).text,/Watches/);
+  }finally{w.close()}
+});
+
+test('judge v2 2',()=>{
+  for(const [ms,expected]of [[45000,'45 s'],[120000,'2 min'],[252000,'4 min 12 s'],[5713000,'1 h 35 min'],[3600000,'1 h'],[2000,'2 s'],[0,'0 s']])assert.equal(duration(ms),expected);
+});

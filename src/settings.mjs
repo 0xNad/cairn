@@ -292,11 +292,14 @@ export function listView(chatId, ctx) {
   const { subs, fmt } = ctx;
   const watches = subs.watches(chatId), whales = subs.whales(chatId), floors = subs.minimums(chatId);
   const muted = subs.muted(chatId), tracks = subs.tracks(chatId), feed = subs.feedOf(chatId);
+  const network = subs.networkOf(chatId), guards = ctx.guards.settings(chatId);
+  const location = network?.thread_id == null ? '' : network.thread_id === ctx.thread ? ' (this topic)' : ` (topic ${network.thread_id})`;
+  const lines = [`📡 Network alerts: ${network ? `on${location}` : 'off'}`,
+    `🛡 Guards: seed ${guards.seed ? 'on' : 'off'} · links ${guards.links ? 'on' : 'off'}`], keyboard = [];
   if (!feed && !watches.length && !whales.length && !floors.length && !muted.length && !tracks.length) {
-    return { lines: ['Nothing is set up in this chat yet.', 'Start with /feed &lt;token&gt;, /watch &lt;address&gt; [label] or /whale &lt;token&gt; &lt;amount&gt;. /help lists everything.'], keyboard: [] };
+    return { lines: [...lines, 'No feed, watch or alert yet. Start with /feed &lt;token&gt;, /watch &lt;address&gt; [label] or /whale &lt;token&gt; &lt;amount&gt;. /help lists everything.'], keyboard: [] };
   }
-  const lines = [], keyboard = [];
-  let size = 0, hidden = 0;
+  let size = lines.join('\n').length, hidden = 0;
   const add = (line, button) => {
     if (size + line.length > 3600 || keyboard.length >= 90) { hidden++; return; }
     lines.push(line);

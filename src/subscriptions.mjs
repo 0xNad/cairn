@@ -36,7 +36,8 @@ export class Subscriptions {
       ON CONFLICT (chat_id) DO UPDATE SET thread_id = excluded.thread_id`).run(chat.id, thread);
     else this.#q('DELETE FROM network_subscriptions WHERE chat_id = ?').run(chat.id);
   }
-  networkOn(chatId) { return Boolean(this.#q('SELECT 1 FROM network_subscriptions WHERE chat_id = ?').get(chatId)); }
+  networkOf(chatId) { return this.#q('SELECT thread_id FROM network_subscriptions WHERE chat_id = ?').get(chatId) ?? null; }
+  networkOn(chatId) { return this.networkOf(chatId) !== null; }
   networkSubscribers() { return this.#q('SELECT chat_id, thread_id FROM network_subscriptions JOIN chats USING(chat_id) WHERE paused = 0').all(); }
 
   // ---- watches -------------------------------------------------------------------------------------
