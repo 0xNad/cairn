@@ -1,5 +1,5 @@
 import { Rpc } from './transport.mjs';
-import { NodeBusy, RpcError } from './errors.mjs';
+import { log, NodeBusy, RpcError } from './errors.mjs';
 
 /** Sticky failover. A pagination token belongs only to the endpoint that issued it. */
 export class RpcPool {
@@ -32,6 +32,7 @@ export class RpcPool {
       } catch (error) {
         if (!(error instanceof NodeBusy)) throw error;
         this.errors++;
+        log('warn', `RPC endpoint ${i + 1} unreachable.`);
         this.generation++;
         this.active = (i + 1) % this.clients.length;
         if (n + 1 < this.clients.length && params.filter?.continuation_token) throw new RpcError(33);

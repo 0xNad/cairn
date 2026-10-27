@@ -37,8 +37,9 @@ function heavier(a, b) {
  * order, so a burst shows its biggest trades. Private chats have no budget; a group that already used its
  * budget waits for the next pass. Individual notices consume slots first and are never summarized.
  */
-export function plan(rows, type, used, chainReady = true) {
+export function plan(rows, type, used, chainReady = true, catchingUp = false) {
   if (!chainReady) rows = rows.filter(row => row.kind === 'network');
+  if (catchingUp && GROUP_TYPES.has(type)) rows = rows.filter(row => POLICY[row.kind]?.individual);
   if (!GROUP_TYPES.has(type)) return { full: rows, rest: [] };
   const left = GROUP_BUDGET - used;
   if (left <= 0) return { full: [], rest: [] };

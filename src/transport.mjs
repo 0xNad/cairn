@@ -114,8 +114,8 @@ export class Telegram {
       }
       const { response, json } = result;
       if (response.ok && json?.ok === true) { this.healthy = true; return json.result; }
-      this.healthy = false;
       const code = json?.error_code ?? response.status;
+      this.healthy = Number.isInteger(code) && code >= 400 && code < 500 && code !== 429;
       switch (code) {
         case 401: throw new CairnError('Telegram rejected the token (401); replace it through BotFather.', 3);
         case 409: throw new CairnError('Telegram conflict (409): another instance is running.');

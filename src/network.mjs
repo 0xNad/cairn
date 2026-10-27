@@ -1,5 +1,6 @@
 import { hex64 } from './felt.mjs';
 import { RpcError } from './errors.mjs';
+import { STAGE } from './ledger.mjs';
 import { Subscriptions } from './subscriptions.mjs';
 
 export function duration(ms) {
@@ -11,20 +12,31 @@ export class Network {
   constructor(config, store, rpc, ledger, subs = new Subscriptions(store, config)) { Object.assign(this, { config, store, rpc, ledger, subs }); }
   get since() { return Number(this.store.get('head_since') ?? Date.now()); }
   notice(key, body, head, chats = this.subs.networkSubscribers()) {
-    for (const { chat_id } of chats) this.ledger.add({ chatId: chat_id, txHash: key, eventIndex: -10, kind: 'network', chainTime: head?.timestamp ?? Number(this.store.get('chain_time') ?? 0), body });
+    for (const { chat_id } of chats) this.ledger.add({ chatId: chat_id, txHash: key, eventIndex: STAGE.network, kind: 'network', chainTime: head?.timestamp ?? Number(this.store.get('chain_time') ?? 0), body });
+  }
+  /** A successful head read clears the outage even when updates arrive before the periodic step. */
+  recovered(head, now = Date.now()) {
+    this.store.transaction(() => {
+      const since = this.store.get('rpc_outage_since');
+      if (since !== null && this.config.operatorChat !== null) this.notice(`rpc-recovery:${since}`,
+        `✅ Chain access restored after ${duration(now - Number(since))}.`, head, [{ chat_id: this.config.operatorChat }]);
+      this.store.sql("DELETE FROM meta WHERE key = 'rpc_outage_since'").run();
+      this.store.set('rpc_outage', 0);
+    });
   }
   async step(head, now = Date.now(), endpoint = this.rpc.generation ?? 0) {
     if (!head) {
       if (this.store.get('rpc_outage') !== '1') this.store.transaction(() => {
         this.store.set('rpc_outage', 1);
+        this.store.set('rpc_outage_since', now);
         if (this.config.operatorChat !== null) this.notice(`outage:${now}`, '⚠️ Chain access is down.\nAll configured endpoints are unavailable.', null, [{ chat_id: this.config.operatorChat }]);
       });
       return;
     }
+    this.recovered(head, now);
     const known = Number(this.store.get('head_number') ?? this.store.sql('SELECT max(number) AS n FROM blocks').get().n ?? 0);
     if (head.block_number < known) return false;
     this.store.transaction(() => {
-      this.store.set('rpc_outage', 0);
       this.store.set('head_number', head.block_number);
       this.store.set('chain_time', head.timestamp);
       const previous = this.store.get('head_hash');
@@ -34,7 +46,7 @@ export class Network {
         this.store.set('head_since', now);
         this.store.set('stalled', 0);
       } else if (now - this.since >= this.config.stallSeconds * 1000 && this.store.get('stalled') !== '1') {
-        this.notice(`stall:${this.since}`, '⏸ No new blocks.\nWaiting for the chain to resume.', head);
+        this.notice(`stall:${this.since}`, `⏸ No new block for ${duration(now - this.since)} (last: #${head.block_number.toLocaleString('en-US')} at ${new Date(head.timestamp * 1000).toISOString().slice(11, 16)} UTC).\nI'll say when blocks resume.`, head);
         this.store.set('stalled', 1);
       }
     });
@@ -105,7 +117,7 @@ export class Network {
           this.ledger.checked(row, result.receipt?.block_number ?? row.block);
           if (result.missing) {
             if (row.message_id !== null) this.ledger.correct(row, { block: head.block_number, chainTime: head.timestamp,
-              body: '↩️ Correction: this transaction\nwas dropped by a reorg.' });
+              body: '↩️ Correction: a chain reorganisation dropped this transaction; ignore the alert above.' });
             else this.ledger.dropped(row.seq);
           }
         }

@@ -1,31 +1,40 @@
 # Cairn
 
-Cairn is a read-only Starknet Telegram bot, running on Node.js 24 with no npm dependencies.
-It answers balance and transaction lookups, watches wallets, posts Ekubo and AVNU trades,
-and reports chain stalls and transaction corrections. It never holds keys or signs transactions.
+Cairn is a read-only Starknet Telegram bot. It answers lookups, watches wallets and trades,
+reports network trouble, and protects chats from recovery phrases and listed phishing links.
+It never holds keys or signs transactions. It needs Node.js 24 and no npm dependencies.
 
-## Set up Telegram and RPC
+## Set up Telegram
 
-1. In [BotFather](https://t.me/BotFather), run `/newbot` and save the token in `.env`.
-   Keep this file private (`chmod 600 .env`); never put tokens in command arguments.
-2. For group protection, use BotFather's `/setprivacy` → Disable, then remove and re-add
-   the bot if it was already in the group. Cairn must receive ordinary messages to inspect them.
-3. Add Cairn as a group administrator with **Delete messages** enabled. Without that right it
-   warns about dangerous messages but cannot delete them. Group members can use lookups;
-   administrators control subscriptions and guards. Private chats need no administrator setup.
-4. Choose two independent Starknet JSON-RPC providers on the same chain, supporting spec 0.10.0
-   or later and the chain-wide `getEvents` filter without a contract address. For older trade prices,
-   choose providers that serve historical contract calls. Put both complete URLs in
-   `STARKNET_RPC_URLS`, separated by a comma. Cairn tries them in order, stays with a working
-   endpoint, and starts paginated ranges over after a switch. It validates each endpoint's chain
-   before using it; a different chain exits 2. An unavailable endpoint is checked when next used.
-
-From a checkout, with Node 24 installed:
+From a checkout, prepare the private configuration file:
 
 ```sh
 cp .env.example .env
 chmod 600 .env
-# Edit .env: token, two RPC URLs, and optionally CAIRN_OPERATOR_CHAT.
+```
+
+1. Open [BotFather](https://t.me/BotFather), run `/newbot`, and save the token in `.env`.
+2. Use `/setprivacy` → Disable so Cairn receives ordinary group messages.
+   Remove and re-add an existing bot after changing this setting.
+3. Add Cairn as a group administrator with **Delete messages** enabled.
+   Without it, Cairn warns but cannot delete dangerous messages.
+4. Send `/start` privately to Cairn. Private chats need no administrator setup.
+
+## Choose two RPC endpoints
+
+Set `STARKNET_RPC_URLS` to two complete URLs, separated by a comma. Choose independent
+providers on the same Starknet chain with:
+
+- JSON-RPC spec 0.10.0 or later;
+- chain-wide `getEvents` queries without a contract address;
+- historical contract calls if you want prices at older trade blocks.
+
+Cairn stays with a working endpoint and retries a complete scan range after switching.
+A provider on another chain stops startup with exit 2.
+
+With Node 24 installed, load `.env` and check connectivity:
+
+```sh
 set -a
 . ./.env
 set +a
@@ -33,14 +42,24 @@ node cairn.mjs doctor
 node cairn.mjs run
 ```
 
-`doctor` prints one JSON line with `bot`, `chain`, `block`, `spec`. In a test group, send
-`/network on`, `/watch <address>`, and optionally `/feed STRK $100 all`. Use `/status` to check
-connectivity and `/list` to inspect subscriptions. For Sepolia also set `CAIRN_CHAIN=SN_SEPOLIA`
-and `CAIRN_EXPLORER_URL=https://sepolia.voyager.online`.
+`doctor` prints the bot, chain, block and RPC spec. In a test group, send `/network on`,
+`/watch <address>` and optionally `/feed STRK $100 all`.
+Use `/status` for connectivity and `/list` for subscriptions.
+
+For Sepolia, also set `CAIRN_CHAIN=SN_SEPOLIA` and
+`CAIRN_EXPLORER_URL=https://sepolia.voyager.online`.
+
+## Find your operator chat id
+
+1. Open [@userinfobot](https://t.me/userinfobot) privately, send `/start`, and copy your numeric **Id**.
+2. Send `/start` to your own Cairn bot so it can message you.
+3. Set `CAIRN_OPERATOR_CHAT` to that id in `.env`, then restart Cairn.
+
+Never share your BotFather token. Finding your chat id does not require giving it to another bot.
 
 ## Docker
 
-Install Docker Engine on the host, then build from the checkout:
+Install Docker Engine, then build and run from the checkout with the configured `.env`:
 
 ```sh
 docker build -t cairn:local .
@@ -52,19 +71,20 @@ docker logs cairn
 docker stop --time 3 cairn
 ```
 
-The image runs as the `node` user. The named volume holds SQLite state across container replacements;
-keep it when upgrading. For a bind mount, create the directory owned by uid 1000 and mode 700 first.
-Do not run two containers with the same token or data directory.
-To expose monitoring through Docker, set `CAIRN_HTTP_PORT=8080` and `CAIRN_HTTP_HOST=0.0.0.0`
-in `.env`, and add `-p 127.0.0.1:8080:8080` to `docker run`.
-For RPC fixtures running on the host, use their container-reachable addresses (on Linux, host networking
-with `--network host` also permits their loopback addresses).
+- Keep the `cairn-data` volume when replacing the container: it holds subscriptions and delivery history.
+- The image runs as `node` (uid 1000). For a bind mount, give that user ownership and use mode 700.
+- Run one instance per bot token and data directory.
+
+To expose monitoring, set `CAIRN_HTTP_PORT=8080` and `CAIRN_HTTP_HOST=0.0.0.0` in `.env`.
+Add `-p 127.0.0.1:8080:8080` to `docker run`.
+
+RPC services running on the host need container-reachable addresses.
+On Linux, `--network host` also permits their loopback addresses.
 
 ## systemd
 
-Install Node 24 at `/usr/local/bin/node` (verify `node --version`), copy this checkout to `/opt/cairn`,
-and create a dedicated service account. The unit sets `CAIRN_DATA=/var/lib/cairn` in `ExecStart`,
-overriding the value in the environment file:
+Install Node 24 at `/usr/local/bin/node` and verify `node --version`.
+Copy the checkout to `/opt/cairn`, then install the service:
 
 ```sh
 sudo useradd --system --home-dir /var/lib/cairn --shell /usr/sbin/nologin cairn
@@ -76,16 +96,19 @@ sudo journalctl -u cairn -f
 sudo systemctl stop cairn
 ```
 
-If Node is elsewhere, edit `ExecStart` in the unit first. SIGTERM and SIGINT abort polling, requests and
-backoff, close HTTP and SQLite, and exit 0 within three seconds. Stop Cairn before backing up the data
-directory. On upgrade, replace the code and restart; existing databases migrate in place.
-Exit codes: 0 completed, 1 connectivity or instance conflict, 2 invalid configuration/chain/spec,
-3 rejected Telegram token. The unit avoids restarting exits 2 and 3 until configuration is repaired.
+The unit forces `CAIRN_DATA=/var/lib/cairn`, overriding `.env`.
+If Node lives elsewhere, edit `ExecStart` before starting the service.
+
+- SIGTERM and SIGINT close polling, HTTP and SQLite and exit 0 within three seconds.
+- Stop Cairn before backing up its data directory.
+- To upgrade, replace the code and restart. Existing databases migrate automatically.
+- Exit codes: 0 completed; 1 connectivity or instance conflict; 2 invalid configuration/chain/spec;
+  3 rejected Telegram token. Repair configuration before restarting exits 2 or 3.
 
 ## Configuration
 
-All configuration comes from the environment; no command-line flags. RPC URLs and tokens are secrets.
-Only configured Telegram and RPC hosts are contacted. Explorer URLs create links and are never fetched.
+Configuration comes from the environment. Keep tokens and RPC URLs private.
+Only configured Telegram and RPC hosts are contacted; explorer links are never fetched.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -132,55 +155,81 @@ Only configured Telegram and RPC hosts are contacted. Explorer URLs create links
 | `/network on\|off` | Subscribe to stalls, recoveries and skipped-gap notices; default off |
 | `/guard seed\|links on\|off` | Configure each guard; both default on |
 
-In groups, settings, `/track`, `/export` and `/forget` require an administrator; lookups and `/list`
-are open to everyone. Anonymous administrators posting as the group can change settings.
-Commands addressed to another bot are ignored. A forum subscription posts into its saved topic.
+In groups, administrators control settings, `/track`, `/export` and `/forget`.
+Everyone can use lookups and `/list`. Anonymous administrators posting as the group can change settings.
+Subscriptions created in a forum topic post there.
 
-Guards inspect new and edited message text, captions and Telegram text links before command parsing. Exact uninterrupted
-runs of 12, 15, 18, 21 or 24 English BIP-39 words trigger deletion without checksum validation.
-Eleven or thirteen words and interrupted runs do not. Punctuation breaks a run. Guards never echo,
-log or persist matched content; their switches persist. `/forget` restores guards to on and network
-subscriptions to off for that chat. Never test using a real recovery phrase.
+Both guards start enabled and inspect new messages, edits, captions and Telegram text links:
 
-The link blacklist matches the parsed hostname or its subdomains, ignoring case, scheme, userinfo and path.
-`claim.starknet-bot.com` matches; `starknet-bot.com.safe.example` and
-`starknet-bot.com@safe.example` do not. A custom list replaces the starter list. Missing delete rights
-produce a warning naming **Delete messages**.
+- **Seeds:** a run of 12 or more English BIP-39 words triggers deletion, including numbered and
+  punctuated lists. Other non-BIP-39 words interrupt a run. No checksum is required.
+- **Links:** the parsed host must equal a blacklisted domain or be its subdomain.
+  Case, scheme, userinfo and path do not change the match.
+
+For example, `claim.starknet-bot.com` matches the starter blacklist.
+`starknet-bot.com.safe.example` and `starknet-bot.com@safe.example` do not.
+A custom `CAIRN_BLOCKLIST` replaces the starter list.
+
+Warnings explain what happened without quoting the protected content.
+Missing rights produce a warning naming **Delete messages**.
+Guards never log or store inspected text. Never test using a real recovery phrase.
+`/forget` clears subscriptions and restores both guards to on.
 
 ## Network and delivery
 
-There is one scanner pass. It reads the head and updates, prepares network checks, scans confirmed ranges,
-steps tracked transactions and delivers the ledger within a shared group budget. A first start sets the
-cursor to the confirmed head. Stored hashes cover blocks observed since startup, up to the configured
-depth. Only a conflicting block hash establishes a fork; a lagging endpoint is left to catch up.
-An endpoint change discards the entire scanned range, including enrichment caches, before retrying it.
-A fork walks back to a retained common ancestor, rewinds the same scanner, and checks receipts for
-transactions already alerted. An orphan gets one correction replying to its original message; a transaction
-found elsewhere gets no duplicate or correction.
-A missing receipt is corrected only after the same endpoint also reports transaction status not-found;
-ambiguous or failed checks stay in a dedicated `reorg_checks` table linked to the delivery ledger for retry on each pass and are silently abandoned
-after `CAIRN_REORG_DEPTH` additional head blocks. If no retained ancestor remains, Cairn rescans the retained
-window. Older history cannot be recovered by that bounded check. Pending alerts are rebuilt from the
-replacement execution; rebuilt tracking resumes persistently through L1 acceptance.
+- `/network on` enables one stall notice and one recovery notice per incident.
+  Stalls show elapsed wall time and the last block's number and time.
+- When every endpoint is unavailable, only the operator receives an outage notice and a restoration notice.
+  Both survive restarts without repeating.
+- A chain reorganisation can remove a transaction. Cairn replies to each affected original message
+  with a correction; re-included transactions receive no duplicate alert.
+- `CAIRN_CONFIRMATIONS` delays scanning. Gaps beyond `CAIRN_MAX_GAP` are skipped with one subscriber notice.
 
-Stall duration uses wall time from the first sight of the unchanged head, surviving restarts. Subscribers
-receive one stall and one recovery notice per incident. When all endpoints are down only the operator
-receives one outage notice, persisted across restarts. A long gap skips to the confirmed head with one
-subscriber notice; scanning then resumes normally. Groups receive at most three alert messages per pass,
-including network notices and corrections. Command replies and guard warnings are immediate.
+Groups receive at most three alert messages per pass. During a multi-block catch-up, ordinary group
+posts wait until the saved backlog is scanned. The planner then selects the two weightiest posts and
+one summary covering the remainder, with a link to the largest remaining trade.
+New blocks arriving meanwhile form the next batch. Network notices and corrections remain immediate;
+command replies and guard warnings do not consume the alert budget.
 
-The round-2 delivery ledger records each chat/transaction/event before sending and stores Telegram's
-message id on acceptance. Corrections use that ledger too. No accepted key is replayed on rescan.
-Telegram provides no send idempotency key: a kill after acceptance but before the database update can
-repeat that message. Sent bodies are discarded; delivery keys expire after seven days of chain time.
-A blocked chat pauses pending alerts until it writes again or re-adds the bot.
+A lagging endpoint is allowed to catch up. Only conflicting block hashes establish a fork.
+Chain alerts wait while history cannot be validated.
+A missing receipt is corrected only when the same endpoint also reports the transaction status as
+not-found; ambiguous checks retry and expire silently after `CAIRN_REORG_DEPTH` blocks from the first fork.
+Changes deeper than retained history cannot be fully recovered.
 
-Trade netting uses signed legs of swaps touching the watched token, with AVNU preceding its underlying
-pools. Routed intermediate tokens and round trips net to zero. Traders come from Transfer flows, excluding
-fees and venue contracts. Sellers show **Received**, buyers **Paid**. Prices are read at each trade's
-block, including replacement blocks, and zero or stale answers give no USD value. Names display only after
-forward verification; failed verification is retried next pass. Unverified tokens have no USD values.
-A burst posts its biggest trades in full and links the largest remaining trade in its summary.
+Trade posts show **Paid** for buys and **Received** for sells.
+Prices come from the trade's block; zero or stale answers give no USD value.
+Names appear only after forward verification. Unverified tokens have no USD values.
+Size bars grow at $100, $1,000 and $10,000; trades at $100,000 or above carry a whale marker.
+
+## Monitoring
+
+With HTTP enabled:
+
+- `GET /healthz`: 200 `{"ok":true,"head":123,"lag_s":2}`, or 503 with reason `rpc`, `telegram` or `stalled`.
+  RPC failure takes priority. Lag is recalculated from the observed head's timestamp for each request.
+- `GET /metrics`: Prometheus head, updates, messages, alerts and RPC-error metrics.
+  `cairn_head_block` keeps the last known head during an outage; counters cover the current process.
+- Other routes and methods return 404. Without a configured port, nothing listens.
+
+```sh
+curl -f http://127.0.0.1:8080/healthz
+curl http://127.0.0.1:8080/metrics
+```
+
+## Data and development
+
+SQLite keeps subscriptions and delivery records in `CAIRN_DATA` (directory mode 700, files 600).
+Sent bodies are discarded. Delivery keys expire after seven days of chain time; an original awaiting
+its correction is retained until that correction is resolved. A blocked chat pauses until it writes
+again or re-adds the bot.
+
+Telegram has no send idempotency key: stopping after acceptance but before the database update can
+repeat that message. Accepted ledger keys otherwise prevent rescan and restart duplicates.
+
+There is one pass loop. It validates history, scans confirmed ranges, steps tracking and delivers
+through the shared planner. HTTP only reads state. Reorg checks and correction replies use the delivery
+ledger's dedicated reconciliation table; pending executions are rebuilt through the normal scanner.
 
 To add a third venue using an existing event layout, add one row to `VENUES` in `src/venues.mjs`, for example:
 
@@ -193,23 +242,13 @@ Set `contracts.pool3_core` in the network JSON. The generated event filter has e
 `{ address: config.contracts.pool3_core, keys: [[SELECTORS.Swapped]] }`; `from_block`, `to_block`,
 `chunk_size` and `continuation_token` come from the same scanner. Another layout needs its own decoder.
 
-## Monitoring and checks
-
-With HTTP enabled, `GET /healthz` returns 200 `{"ok":true,"head":123,"lag_s":2}` or
-503 `{"ok":false,"reason":"stalled"}` (`rpc` or `telegram` for service failures). Lag is wall time since
-the currently observed head's chain timestamp, recalculated per request. `GET /metrics` serves
-Prometheus `cairn_head_block`, `cairn_updates_total`, `cairn_messages_sent_total`, `cairn_alerts_total`
-and `cairn_rpc_errors_total`. Counters cover the current process. Other routes and methods return 404.
-Handlers only read pass state. Telegram connectivity failures in `run` remain visible and are retried;
-401 and 409 still stop the process. Without a configured port, nothing listens.
+Run the unit tests and all four local check suites:
 
 ```sh
-curl -f http://127.0.0.1:8080/healthz
-curl http://127.0.0.1:8080/metrics
 npm test
 npm run check
 ```
 
-`tick` drains updates, performs one pass and prints `{"updates":0,"sent":0,"head":123,"alerts":0,"cursor":123}`.
-The four check suites use local fake services. The tests require permission to bind loopback sockets.
+The tests need permission to bind loopback sockets.
+`tick` drains updates, performs one pass and prints a JSON result.
 See [ARCHITECTURE.md](ARCHITECTURE.md) for selectors, contract layouts and the frozen interface.

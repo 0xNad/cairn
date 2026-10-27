@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { Guards, seedRun, blockedLink } from '../src/guard.mjs';
 import { Network, duration } from '../src/network.mjs';
 import { Store } from '../src/store.mjs';
-import { Ledger } from '../src/ledger.mjs';
+import { Ledger, STAGE } from '../src/ledger.mjs';
 import { Subscriptions } from '../src/subscriptions.mjs';
 import { Names, encode } from '../src/names.mjs';
 import { tradeOf, tradeFeed } from '../src/trades.mjs';
@@ -22,9 +22,20 @@ import { NodeBusy, RpcError } from '../src/errors.mjs';
 const storeOf = () => new Store(mkdtempSync(join(tmpdir(), 'cairn-r4-')));
 const words = readFileSync(new URL('../wordlists/bip39-english.txt', import.meta.url), 'utf8').trim().split('\n');
 for (const n of [12,15,18,21,24]) test(`guard deletes exact ${n} word run`, () => assert.equal(seedRun(words.slice(0,n).join(' ')), true));
-test('guard rejects 11, 13, interrupted runs and five sentences of prose', () => {
-  for (const text of [words.slice(0,11).join(' '), words.slice(0,13).join(' '), words.slice(0,6).join(' ')+' not_a_word '+words.slice(6,12).join(' '),
-    'The sun came up over the hill. We took a walk by the river. My friend brought a book to read. After lunch we went back home. It was a good day for a quiet walk.']) assert.equal(seedRun(text),false);
+test('judge 1: guards delete numbered, punctuated and extended seed runs but keep prose',async()=>{
+  const w=await passWorld();try{
+    const phrase=words.slice(0,12),formats=[phrase.join(' '),phrase.join(', '),phrase.join('; '),phrase.join('. '),phrase.join('\n'),
+      phrase.map((x,i)=>`${i+1}. ${x}`).join(' '),phrase.map((x,i)=>`${i+1}) ${x}`).join(' '),
+      phrase.map((x,i)=>`${i+1} ${x}`).join(' '),phrase.map((x,i)=>`#${i+1} ${x}`).join(' '),
+      phrase.map((x,i)=>i%2?x.toUpperCase():x).join(', '),`My seed: "${phrase.join(' ')}" thanks`,
+      ...[13,14,25].map(n=>words.slice(0,n).join(' ')),phrase.join(' ')+' help'];
+    for(const body of formats){const n=w.deletes.length;await w.command(w.chat,body);assert.equal(w.deletes.length,n+1,body)}
+    const prose='Please check the account balance and confirm the action before you access the private area today. '+
+      'Our team will review the project status after lunch. We can help each other learn how the system works. '+
+      'Keep your account secure and ask the team if you need assistance. The market may change before our next meeting.';
+    for(const body of [phrase.slice(0,11).join(' '),phrase.slice(0,6).join(' ')+' not_a_bip39_word '+phrase.slice(6).join(' '),
+      'Please help us check this ordinary project status.',prose]){const n=w.deletes.length;await w.command(w.chat,body);assert.equal(w.deletes.length,n,body)}
+  }finally{w.close()}
 });
 for (const url of ['https://STARKNET-BOT.COM/a','http://starknet-bot.com','https://sub.starknet-bot.com','https://person@starknet-bot.com/path']) test(`blocked host ${url}`,()=>assert.equal(blockedLink(url,['starknet-bot.com']),true));
 for (const url of ['https://starknet-bot.com.safe.example','https://safestarknet-bot.com','https://safe.example/starknet-bot.com','https://starknet-bot.com@safe.example','https://evil-example.com','https://example.com.evil']) test(`safe lookalike ${url}`,()=>assert.equal(blockedLink(url,['starknet-bot.com','example.com']),false));
@@ -101,13 +112,21 @@ test('B1 sale says Received, buy says Paid; B5 250k sale stays within five short
   const html=render({...post,amount:2000000n,value:{num:250000n,den:1n},others:[{token:quote,amount:250000n}]},{},fmt);
   const lines=html.replace(/<[^>]+>/g,'').split('\n');assert.equal(lines.length,5);assert.ok(lines.every(l=>Array.from(l).length<=32),lines.join('\n'));assert.match(lines.at(-1),/Ekubo · \d\d:\d\d UTC · tx/);
 });
-test('guard warning cannot repeat any protected BIP39 word, even without delete rights',async()=>{
-  const {guardWarning}=await import('../src/guard.mjs');const vocabulary=new Set(words);
+test('judge 2: fixed guard warnings explain deletion and advice without echoing protected input',async()=>{
+  const {guardWarning}=await import('../src/guard.mjs');
   for(const kind of ['seed','links'])for(const removed of [true,false]){
-    const warning=guardWarning(kind,removed).join('\n');
-    for(const word of warning.toLowerCase().match(/[a-z]+/g)) assert.equal(vocabulary.has(word),false,word);
-    assert.ok(warning.split('\n').length<=2);if(!removed)assert.match(warning,/Delete messages/);
+    const warning=guardWarning(kind,removed).join('\n'),tokens=warning.toLowerCase().match(/[a-z]+/g);
+    for(const word of words.slice(0,24))assert.ok(!tokens.includes(word),word);
+    assert.ok(warning.split('\n').length<=2);
+    if(removed){assert.match(warning,/Deleted a message/);assert.match(warning,kind==='seed'?/Never share.*never ask/:/phishing.*\nDon't open/)}
+    else assert.match(warning,/couldn't delete.*admin.*Delete messages/);
   }
+  const w=await passWorld();try{
+    for(const body of [words.slice(0,12).join(' '),'https://example.com/private-secret']){
+      await w.command(w.chat,body);assert.equal(w.sent.at(-1).text,guardWarning(body.startsWith('https')?'links':'seed',true).join('\n'));
+      assert.ok(!w.sent.at(-1).text.includes(body));
+    }
+  }finally{w.close()}
 });
 test('HTTP handler health reasons, live counters and method boundaries without IO',async()=>{
   const {httpHandler}=await import('../src/http.mjs');let reason=null,updates=0;
@@ -190,11 +209,11 @@ test('B3 six-block catch-up and repeated deliver share the group budget, includi
   const w=await passWorld({maxBlocks:1});try{
     await w.command(w.group,'/watch 0x20');for(let i=0;i<6;i++){w.add();for(let j=0;j<4;j++)w.tx(`0x${(100+i*4+j).toString(16)}`)}
     const before=w.sent.length;for(let i=0;i<6;i++)await w.pass();assert.equal(w.sent.length-before,3);
-    w.bot.ledger.add({chatId:-2,txHash:'stall:test',eventIndex:-10,kind:'network',chainTime:1012,body:'⏸ No new blocks.'});
+    w.bot.ledger.add({chatId:-2,txHash:'stall:test',eventIndex:STAGE.network,kind:'network',chainTime:1012,body:'⏸ No new blocks.'});
     const original=w.store.sql("SELECT * FROM deliveries WHERE message_id IS NOT NULL ORDER BY seq LIMIT 1").get();
     w.bot.ledger.correct(original,{block:16,chainTime:1012,body:'↩️ Correction.'});
     await w.bot.deliver();assert.equal(w.sent.length-before,3);
-    w.bot.budget.start=-Infinity;w.bot.newPass();await w.bot.deliver();assert.equal(w.sent.length-before,6);assert.ok(w.sent.some(m=>m.reply_parameters?.message_id===original.message_id));
+    w.bot.budget.start=-Infinity;w.bot.newPass();await w.bot.deliver();assert.equal(w.sent.length-before,5);assert.ok(w.sent.some(m=>m.reply_parameters?.message_id===original.message_id));
   }finally{w.close()}
 });
 test('guard deletes privately and in groups, warns without rights, and member cannot disable',async()=>{
@@ -224,7 +243,7 @@ test('network notices survive restart, reach only subscribers/operator, and rese
     await network.step(null,6000);assert.equal(ledger.pending().filter(r=>r.chat_id===3).length,1);
     store.close();store=new Store(directory);ledger=new Ledger(store);network=new Network(config,store,{},ledger);
     await network.step(null,7000);assert.equal(ledger.pending().filter(r=>r.chat_id===3).length,1);
-    await network.step({...head,block_hash:'0xc'},8000);await network.step(null,9000);assert.equal(ledger.pending().filter(r=>r.chat_id===3).length,2);
+    await network.step({...head,block_hash:'0xc'},8000);await network.step(null,9000);assert.equal(ledger.pending().filter(r=>r.chat_id===3&&/Chain access is down/.test(r.body)).length,2);
     assert.equal(ledger.pending().filter(r=>r.chat_id===2).length,0);
   }finally{store.close()}
 });
@@ -301,7 +320,7 @@ test('run resets outage latch on update-path recovery and sends exactly two oper
           down=false;now+=1000;w.add();
           return [{update_id:1000,message:{message_id:1000,chat:w.chat,from:{id:1},date:200000,text:'/status'}}];
         case 2:
-          assert.match(w.sent.at(-1).text,/Head: 11/);
+          assert.ok(w.sent.slice(before).some(m=>m.chat_id===1&&/Head: 11/.test(m.text)));
           assert.equal(w.store.get('rpc_outage'),'0','successful update-path head read must clear outage before its reply');
           down=true;now+=1000;w.bot.wake=true;return [];
         case 3:
@@ -650,7 +669,7 @@ test('third review 2: compact trade bars distinguish sizes and preserve the whal
   const {render}=await import('../src/trades.mjs');
   const token={address:hex64('0x1'),symbol:'STRK',decimals:0,verified:true},fmt=links({explorer:'https://x.example'},String);
   const bars=[];
-  for(const dollars of [5n,50n,5000n,250000n]){
+  for(const dollars of [5n,500n,5000n,250000n]){
     const post={token,side:'buy',amount:1000n,others:[],value:{num:dollars,den:1n},trader:hex64('0x3'),block:{timestamp:100},venue:{name:'Ekubo'},tx:'0x4'};
     const lines=render(post,{},fmt).replace(/<[^>]+>/g,'').split('\n');
     assert.ok(lines.length<=5);assert.ok(lines.every(l=>Array.from(l).length<=32),lines.join('\n'));
@@ -704,4 +723,109 @@ test('third review 5: network subscriptions persist independently of guards and 
     assert.equal(w.bot.subs.networkOn(-2),false);assert.deepEqual(w.bot.guards.settings(-2),{seed:1,links:1});
     assert.equal(w.store.sql('SELECT count(*) n FROM protection').get().n,0);
   }finally{w.close()}
+});
+
+test('judge 3: network texts show last block, durations and one persisted operator recovery',async()=>{
+  const directory=mkdtempSync(join(tmpdir(),'cairn-texts-'));let store=new Store(directory);
+  const config={stallSeconds:120,maxGap:50000,reorgDepth:4,confirmations:0,operatorChat:3};
+  const head={block_number:4200010,block_hash:'0xa',timestamp:Date.UTC(2026,9,27,12,3)/1000};
+  try{
+    new Subscriptions(store,config).network({id:1,type:'private'},true);store.cursor=head.block_number;
+    let ledger=new Ledger(store),network=new Network(config,store,{},ledger);
+    await network.step(head,0);await network.step(head,120000);
+    assert.match(ledger.pending()[0].body,/No new block for 2 min.*#4,200,010 at 12:03 UTC/);
+    await network.step(null,200000);await network.step(null,210000);
+    store.close();store=new Store(directory);ledger=new Ledger(store);network=new Network(config,store,{},ledger);
+    await network.step({...head,block_hash:'0xb'},380000);
+    const restored=()=>ledger.pending().filter(r=>r.chat_id===3&&/restored/.test(r.body));
+    assert.equal(restored().length,1);assert.match(restored()[0].body,/restored after 3 min/);
+    store.close();store=new Store(directory);ledger=new Ledger(store);network=new Network(config,store,{},ledger);
+    await network.step({...head,block_hash:'0xb'},381000);assert.equal(restored().length,1);
+  }finally{store.close()}
+  const w=await passWorld();try{
+    await w.command(w.chat,'/watch 0x20');w.add();w.tx('0xa');await w.pass();w.reorg(10);await w.pass();
+    const correction=w.sent.find(m=>m.reply_parameters);assert.match(correction.text,/Correction:.*reorganisation.*ignore the alert/);assert.ok(!correction.text.includes('\n'));
+  }finally{w.close()}
+});
+
+test('judge 4: RPC outage retains head metrics, outranks Telegram and logs unreachable endpoints',async()=>{
+  const {Telegram}=await import('../src/transport.mjs'),{httpHandler}=await import('../src/http.mjs');
+  const w=await passWorld({operatorChat:3}),fetchBefore=globalThis.fetch,write=process.stderr.write;let logs='';
+  try{
+    w.add();await w.pass();const head=w.head,call=w.bot.rpc.call;
+    const tg=new Telegram({telegramRoot:'http://127.0.0.1',token:'fixture'},w.bot.signal);
+    globalThis.fetch=async()=>new Response(JSON.stringify({ok:false,error_code:403,description:'Forbidden: bot cannot initiate conversation'}),{status:403});
+    tg.healthy=false;assert.equal(await tg.call('sendMessage',{chat_id:3,text:'test'}),null);assert.equal(tg.healthy,true);
+    w.bot.tg=tg;tg.healthy=false;
+    w.bot.rpc.call=async()=>{throw new NodeBusy()};
+    process.stderr.write=(chunk)=>{logs+=chunk;return true};
+    const pool=new RpcPool({rpcUrls:['http://a','http://b']},w.bot.signal);pool.clients=[{call:async()=>{throw new NodeBusy()}},{call:async()=>11}];
+    assert.equal(await pool.call('starknet_blockNumber'),11);assert.match(logs,/RPC endpoint 1 unreachable/);
+    await w.bot.readHead();assert.equal(w.bot.snapshot().reason,'rpc');tg.healthy=true;
+    await w.bot.background();await w.bot.deliver();assert.equal(tg.healthy,true);
+    assert.equal(w.bot.snapshot().head,head);assert.equal(w.bot.snapshot().reason,'rpc');
+    let body;httpHandler(()=>w.bot.snapshot())({method:'GET',url:'/metrics'},{writeHead(){},end(text){body=text}});
+    assert.match(body,new RegExp(`cairn_head_block ${head}\\n`));assert.match(logs,/unreachable/i);assert.doesNotMatch(logs,/node busy/);
+    w.restart();await w.bot.readHead();assert.equal(w.bot.snapshot().head,head);
+    w.bot.rpc.call=call;
+  }finally{globalThis.fetch=fetchBefore;process.stderr.write=write;w.close()}
+});
+
+test('judge 5: six-block trade catch-up sends two largest and one complete summary across restart',async()=>{
+  const w=await passWorld({maxBlocks:1});try{
+    w.bot.subs.chat(w.group);const filter={keys:[[SELECTORS.Transfer]]};
+    const feeds=()=>[{filters:[filter],wanted:()=>true,find:async(events)=>({deliveries:events.get(filter).map(e=>{
+      const amount=BigInt(e.data[0]);return {chatId:-2,txHash:e.transaction_hash,eventIndex:0,kind:'trade',block:e.block_number,chainTime:1000+e.block_number*2,
+        body:`Buy ${Number(amount).toLocaleString('en-US')} STRK`,digest:{k:'trade',side:'buy',token:'STRK',symbol:'STRK',verified:true,decimals:0,amount:String(amount),cents:String(amount*100n)}};
+    })})}];
+    w.bot.feeds=feeds();
+    for(let i=0;i<24;i++){if(i%4===0)w.add();w.tx(`0x${(100+i).toString(16)}`,w.head,i===23?900000n:i===22?800000n:BigInt(i+1))}
+    for(let i=0;i<6;i++){
+      w.bot.budget.start=-Infinity;await w.pass();
+      if(i<5)assert.equal(w.sent.length,0);
+      if(i===2){w.restart();w.bot.feeds=feeds()}
+    }
+    assert.equal(w.sent.length,3);assert.ok(w.sent.some(m=>m.text==='Buy 900,000 STRK'));assert.ok(w.sent.some(m=>m.text==='Buy 800,000 STRK'));
+    const summaries=w.sent.filter(m=>/summaris/.test(m.text));assert.equal(summaries.length,1);assert.match(summaries[0].text,/22 more/);assert.match(summaries[0].text.replace(/<[^>]+>/g,''),/Largest: Buy 22 STRK/);
+    assert.equal(w.store.sql("SELECT count(*) n FROM deliveries WHERE state='summarized'").get().n,22);
+    await w.pass();assert.equal(w.sent.length,3);
+    w.add();w.tx('0xffff',w.head,7n);w.bot.budget.start=-Infinity;await w.pass();assert.equal(w.sent.length,4);
+  }finally{w.close()}
+});
+
+test('judge 6: extracted updates and delivery preserve topics, replies and named network stage',async()=>{
+  const {deliver}=await import('../src/delivery.mjs'),{handle,context}=await import('../src/updates.mjs');
+  const w=await passWorld();try{
+    await handle(w.bot,{update_id:0,message:{message_id:7,chat:w.chat,text:'ordinary'}});assert.equal(context(w.bot,w.chat,null).head.block_number,10);
+    await w.command(w.group,'/watch 0x20',{message_thread_id:17,is_topic_message:true});w.add();w.tx('0xa');
+    await w.bot.readHead();await w.bot.background();const before=w.sent.length;await deliver(w.bot);
+    assert.equal(w.sent.length,before+1);assert.equal(w.sent.at(-1).message_thread_id,17);
+    const original=w.store.sql("SELECT * FROM deliveries WHERE kind='alert'").get();
+    w.bot.ledger.correct(original,{block:w.head,chainTime:1022,body:'↩️ Correction.'});
+    w.bot.network.notice('test:notice','⏸ No new block.',{timestamp:1022},[{chat_id:-2}]);
+    assert.equal(w.store.sql("SELECT event_index FROM deliveries WHERE kind='network'").get().event_index,STAGE.network);
+    await w.bot.deliver();assert.equal(w.sent.length,before+3);
+    assert.deepEqual(w.sent.find(m=>m.reply_parameters).reply_parameters,{message_id:original.message_id,allow_sending_without_reply:true});
+    await deliver(w.bot);assert.equal(w.sent.length,before+3);
+  }finally{w.close()}
+});
+
+test('judge 7: logarithmic size tiers distinguish hundreds through whales for buys and sells',async()=>{
+  const {sizeBar,render}=await import('../src/trades.mjs');
+  const tiers=[1,1,2,3,4,0],sizes=[5n,50n,500n,5000n,50000n,250000n];
+  for(const side of ['buy','sell'])for(const [i,usd]of sizes.entries()){
+    const dot=side==='buy'?'🟢':'🔴',bar=sizeBar(side,usd*100n,1000n,null);
+    assert.equal(bar,tiers[i]?dot.repeat(tiers[i]):`${dot}🐋`);
+    const token={address:hex64('0x1'),symbol:'STRK',decimals:0,verified:true};
+    const text=render({token,side,amount:1000n,others:[],value:{num:usd,den:1n},trader:hex64('0x3'),block:{timestamp:100},venue:{name:'Ekubo'},tx:'0x4'},{},links({explorer:'https://x.example'},String));
+    const lines=text.replace(/<[^>]+>/g,'').split('\n');assert.ok(lines.length<=5);assert.ok(lines.every(l=>Array.from(l).length<=34));assert.ok(lines[0].startsWith(bar));
+  }
+});
+
+test('judge 8: deployment guide explains operator id without tokens and keeps setup commands',()=>{
+  const readme=readFileSync(new URL('../README.md',import.meta.url),'utf8');
+  const section=readme.match(/## Find your operator chat id\n([\s\S]*?)(?=\n## )/)?.[1];assert.ok(section);
+  for(const pattern of [/@userinfobot|t\.me\/userinfobot/,/\/start/,/CAIRN_OPERATOR_CHAT/,/never share.*token/i])assert.match(section,pattern);
+  for(const pattern of [/docker build/,/docker run/,/systemctl enable --now/,/Delete messages/,/setprivacy/,/STARKNET_RPC_URLS/])assert.match(readme,pattern);
+  assert.doesNotMatch(readme,/Eleven or thirteen words|Punctuation breaks a run/);
 });

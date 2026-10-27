@@ -187,19 +187,14 @@ async function heldNone(rpc, token, owner, block) {
   }
 }
 
-// Half-decades of US dollars: the size bar grows by one dot at $10, $30, $100, $300, $1,000 … $1,000,000.
-const STEPS = [10n, 30n, 100n, 300n, 1_000n, 3_000n, 10_000n, 30_000n, 100_000n, 300_000n, 1_000_000n].map((d) => d * 100n);
 const WHALE = 100_000n * 100n;
-
-/**
- * One dot per half-decade of USD value, green for a buy and red for a sell, so a feed reads by size at a glance;
- * a trade with no USD value grows with its amount over the chat's floor instead.
- */
+/** Logarithmic dollar tiers; unpriced trades grow by multiples of the chat's floor. */
 export function sizeBar(side, cents, amount, floor) {
-  let dots = 1;
-  if (cents !== null) dots += STEPS.filter((s) => cents >= s).length;
-  else if (floor) dots += [3n, 10n, 30n, 100n, 300n, 1000n].filter((m) => amount >= floor * m).length;
-  return `${(side === 'buy' ? '🟢' : '🔴').repeat(dots)}${cents !== null && cents >= WHALE ? ' 🐋' : ''}`;
+  const dot = side === 'buy' ? '🟢' : '🔴';
+  if (cents !== null && cents >= WHALE) return `${dot}🐋`;
+  const dots = cents !== null ? [100n, 1000n, 10000n].filter(d => cents >= d * 100n).length
+    : floor ? [3n, 10n, 30n, 100n, 300n, 1000n].filter(m => amount >= floor * m).length : 0;
+  return dot.repeat(Math.min(4, 1 + dots));
 }
 
 /**
@@ -211,9 +206,7 @@ export function render(post, feed, fmt) {
   const cents = value ? centsOf(value) : null;
   const symbol = token.verified ? escapeHtml(token.symbol) : `<code>${escapeHtml(token.symbol)}</code>`;
   const worth = value ? ` · ≈${escapeHtml(usdText(value))}` : '';
-  const whale = cents !== null && cents >= WHALE;
-  const bar = [...sizeBar(side, cents, amount, feed.minUnits)].slice(0, whale ? 3 : 4).join('') + (whale ? '🐋' : '');
-  const lines = [`${bar} <b>${side === 'buy' ? 'Buy' : 'Sell'}</b> ${fmt.token(token)}${worth}`];
+  const lines = [`${sizeBar(side, cents, amount, feed.minUnits)} <b>${side === 'buy' ? 'Buy' : 'Sell'}</b> ${fmt.token(token)}${worth}`];
   const paid = others.map((o) => `${decimal(o.amount, o.token.decimals)} ${fmt.token(o.token)}`).join(' + ');
   lines.push(`${decimal(amount, token.decimals)} ${symbol}`);
   if (paid) lines.push(`${side === 'buy' ? 'Paid' : 'Received'} ${paid}`);

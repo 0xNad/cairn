@@ -2,13 +2,13 @@ import { readFileSync } from 'node:fs';
 import { CairnError } from './errors.mjs';
 
 const words = new Set(readFileSync(new URL('../wordlists/bip39-english.txt', import.meta.url), 'utf8').trim().split('\n'));
-const lengths = new Set([12, 15, 18, 21, 24]);
-/** Match whole, uninterrupted whitespace-separated runs; punctuation breaks a run. */
+/** Numbering and punctuation separate words; any other word interrupts the run. */
 export function seedRun(text) {
   let count = 0;
-  for (const token of `${text} !`.toLowerCase().split(/\s+/)) {
-    if (words.has(token)) count++;
-    else { if (lengths.has(count)) return true; count = 0; }
+  for (const token of text.toLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? []) {
+    if (/^\d+$/.test(token)) continue;
+    if (words.has(token)) { if (++count >= 12) return true; }
+    else count = 0;
   }
   return false;
 }
@@ -48,8 +48,12 @@ export class Guards {
   }
 }
 
-/** Fixed wording contains no BIP-39 word and never interpolates protected input. */
+/** Fixed templates never interpolate inspected content. */
 export function guardWarning(kind, removed) {
-  return [kind === 'seed' ? '🛡 Wallet recovery details detected.' : '🛡 Blocked links detected.',
-    ...(removed ? [] : ['Cairn needs “Delete messages” permission.'])];
+  const subject = kind === 'seed' ? 'a wallet recovery phrase' : 'a blocked link (known phishing domain)';
+  return removed
+    ? [`🛡 Deleted a message ${kind === 'seed' ? 'that looked like' : 'with'} ${subject}.`,
+      kind === 'seed' ? 'Never share yours: admins and support will never ask for it.' : "Don't open it."]
+    : [`🛡 This message looks like ${subject}.`,
+      "I couldn't delete it: make me an admin with the “Delete messages” right."];
 }

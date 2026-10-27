@@ -6,7 +6,7 @@
 // alerts a summary covered are marked summarized, with the summary's message_id.
 
 export const LEDGER_TTL = 7 * 24 * 3600;
-export const STAGE = Object.freeze({ accepted: -1, final: -2, missing: -3, correction: -4 });
+export const STAGE = Object.freeze({ accepted: -1, final: -2, missing: -3, correction: -4, network: -10 });
 
 export class Ledger {
   constructor(store) { this.store = store; }
@@ -27,7 +27,7 @@ export class Ledger {
     });
   }
   /** Pending alerts of chats that are not paused, in the order they were found (chain order), with the chat's type. */
-  pending(limit = 1000) {
+  pending(limit = -1) {
     return this.#q(`SELECT d.seq, d.chat_id, d.body, d.thread_id, d.digest, d.kind, d.tx_hash, d.block, c.type, r.reply_to FROM deliveries d
       LEFT JOIN reorg_checks r ON r.correction_seq = d.seq
       LEFT JOIN chats c ON c.chat_id = d.chat_id WHERE d.state = 'pending' AND NOT EXISTS (SELECT 1 FROM reorg_checks WHERE original_seq = d.seq AND phase != 'corrected') AND coalesce(c.paused, 0) = 0 ORDER BY d.seq LIMIT ?`).all(limit);
