@@ -190,9 +190,10 @@ test('B3 six-block catch-up and repeated deliver share the group budget, includi
     await w.command(w.group,'/watch 0x20');for(let i=0;i<6;i++){w.add();for(let j=0;j<4;j++)w.tx(`0x${(100+i*4+j).toString(16)}`)}
     const before=w.sent.length;for(let i=0;i<6;i++)await w.pass();assert.equal(w.sent.length-before,3);
     w.bot.ledger.add({chatId:-2,txHash:'stall:test',eventIndex:-10,kind:'network',chainTime:1012,body:'⏸ No new blocks.'});
-    w.bot.ledger.add({chatId:-2,txHash:'0x123',eventIndex:-10000000,kind:'correction',chainTime:1012,body:'↩️ Correction.',digest:{reply:101}});
+    const original=w.store.sql("SELECT * FROM deliveries WHERE message_id IS NOT NULL ORDER BY seq LIMIT 1").get();
+    w.bot.ledger.correct(original,{block:16,chainTime:1012,body:'↩️ Correction.'});
     await w.bot.deliver();assert.equal(w.sent.length-before,3);
-    w.bot.budget.start=-Infinity;w.bot.newPass();await w.bot.deliver();assert.equal(w.sent.length-before,6);assert.ok(w.sent.some(m=>m.reply_parameters?.message_id===101));
+    w.bot.budget.start=-Infinity;w.bot.newPass();await w.bot.deliver();assert.equal(w.sent.length-before,6);assert.ok(w.sent.some(m=>m.reply_parameters?.message_id===original.message_id));
   }finally{w.close()}
 });
 test('guard deletes privately and in groups, warns without rights, and member cannot disable',async()=>{
@@ -403,14 +404,28 @@ test('review 2b: receipt and status not-found correct immediately once across re
   }finally{w.close()}
 });
 
-test('review 2c: failed status read survives restart and a later pass confirms removal once',async()=>{
+test('review 2c: dedicated reorg checks and correction replies survive restart without digest flags',async()=>{
   const w=await passWorld();try{
     await w.command(w.chat,'/watch 0x20');w.add();w.tx('0xa');await w.pass();const original=w.sent.at(-1),call=w.bot.rpc.call;
     w.reorg(10);
     w.bot.rpc.call=async(method,p)=>{if(method==='starknet_getTransactionStatus')throw new NodeBusy();return call(method,p)};
     await w.pass();assert.equal(w.sent.filter(m=>m.reply_parameters?.message_id===original.message_id).length,0);
-    w.bot.rpc.call=call;w.restart();await w.pass();await w.pass();
+    assert.equal(w.bot.ledger.reorgRows('check').length,1);
+    assert.ok(w.store.sql('SELECT digest FROM deliveries').all().every(r=>r.digest===null||!Object.keys(JSON.parse(r.digest)).some(k=>['reorg','rebuild','reply'].includes(k))));
+    w.bot.rpc.call=call;w.restart();assert.equal(w.bot.ledger.reorgRows('check').length,1);
+    w.bot.newPass();await w.bot.readHead();await w.bot.background(); // Correction is persisted before Telegram sees it.
+    assert.equal(w.bot.ledger.pending()[0].reply_to,original.message_id);
+    assert.equal(w.bot.ledger.pending()[0].digest,null);
+    w.restart();await w.pass();w.restart();await w.pass();
     assert.equal(w.sent.filter(m=>m.reply_parameters?.message_id===original.message_id).length,1);
+    // Upgrade prior round-4 files once; preserve correction reply metadata outside the digest.
+    w.store.sql("UPDATE deliveries SET digest = ? WHERE kind = 'correction'").run(JSON.stringify({reply:original.message_id}));
+    w.store.sql('DELETE FROM reorg_checks').run();w.store.sql("DELETE FROM meta WHERE key = 'reorg_layout'").run();
+    w.restart();await w.pass();
+    assert.equal(w.store.sql('SELECT reply_to FROM reorg_checks').get().reply_to,original.message_id);
+    assert.equal(w.store.sql("SELECT digest FROM deliveries WHERE kind = 'correction'").get().digest,null);
+    assert.equal(w.sent.filter(m=>m.reply_parameters?.message_id===original.message_id).length,1);
+    await w.command(w.chat,'/forget');assert.equal(w.store.sql('SELECT count(*) n FROM reorg_checks').get().n,0);
   }finally{w.close()}
 });
 
@@ -441,10 +456,10 @@ test('review 2 bound: unresolved checks expire silently after reorg depth blocks
     w.bot.rpc.call=async(method,p)=>method==='starknet_getTransactionStatus'?{finality_status:'RECEIVED'}:call(method,p);
     w.reorg(10);await w.pass();
     const row=()=>w.store.sql("SELECT * FROM deliveries WHERE kind='alert'").get();
-    assert.equal(JSON.parse(row().digest).reorg,11);
-    w.add();await w.pass();assert.equal(JSON.parse(row().digest).reorg,11);
+    assert.equal(w.store.sql('SELECT since_block FROM reorg_checks WHERE original_seq = ?').get(row().seq).since_block,11);
+    w.add();await w.pass();assert.equal(w.store.sql('SELECT since_block FROM reorg_checks WHERE original_seq = ?').get(row().seq).since_block,11);
     w.restart();w.add();await w.pass(); // Expire at the bound before a not-found status can cause a correction.
-    assert.equal(row().digest,null);assert.equal(row().state,'sent');assert.equal(row().message_id,original.message_id);
+    assert.equal(w.store.sql('SELECT * FROM reorg_checks WHERE original_seq = ?').get(row().seq),undefined);assert.equal(row().digest,null);assert.equal(row().state,'sent');assert.equal(row().message_id,original.message_id);
     await w.pass();assert.equal(w.sent.filter(m=>m.reply_parameters?.message_id===original.message_id).length,0);
   }finally{w.close()}
 });
@@ -498,7 +513,7 @@ test('second review 2: systemd ExecStart keeps CAIRN_DATA writable despite Envir
   assert.ok(writable.some(path=>data===path||data.startsWith(`${path}/`)),`${data} must be writable with ProtectSystem=strict`);
 });
 
-test('second review 3: pending re-included facts are rebuilt through scanner and trackStep exactly once',async()=>{
+test('second review 3: pending facts rebuild and completed or reverted tracks resume from L2 through L1',async()=>{
   for(const amount of [777n,0n]){
     const w=await passWorld();try{
       await w.command(w.chat,'/watch 0x20');w.add();const tx=w.tx('0xa',11,100n);
@@ -510,19 +525,26 @@ test('second review 3: pending re-included facts are rebuilt through scanner and
       assert.equal(w.sent.filter(m=>/Correction/.test(m.text)).length,0);
     }finally{w.close()}
   }
-  const w=await passWorld();try{
-    let fee=10n**18n;const call=w.bot.rpc.call;
-    w.bot.rpc.call=async(method,p)=>{
-      const result=await call(method,p);
-      if(method==='starknet_getTransactionStatus')return {...result,execution_status:'SUCCEEDED'};
-      if(method==='starknet_getTransactionReceipt')return {...result,execution_status:'SUCCEEDED',actual_fee:{unit:'FRI',amount:`0x${fee.toString(16)}`}};
-      return result;
-    };
-    await w.command(w.chat,'/track 0xa');w.add();w.tx('0xa');
-    w.bot.newPass();await w.bot.readHead();await w.bot.background();assert.match(w.bot.ledger.pending()[0].body,/Fee: 1 STRK/);
-    w.reorg(10);w.tx('0xa');fee=25n*10n**17n;w.restart();await w.pass();await w.pass();
-    const posts=w.sent.filter(m=>/Accepted on L2/.test(m.text));assert.equal(posts.length,1);assert.match(posts[0].text,/Fee: 2.5 STRK/);
-  }finally{w.close()}
+  for(const previous of ['REVERTED','ACCEPTED_ON_L1']){
+    const w=await passWorld();try{
+      let fee=10n**18n,execution=previous==='REVERTED'?'REVERTED':'SUCCEEDED',finality=previous==='REVERTED'?'ACCEPTED_ON_L2':'ACCEPTED_ON_L1';
+      const call=w.bot.rpc.call;
+      w.bot.rpc.call=async(method,p)=>{
+        const result=await call(method,p);
+        if(method==='starknet_getTransactionStatus')return {...result,finality_status:finality,execution_status:execution};
+        if(method==='starknet_getTransactionReceipt')return {...result,execution_status:execution,actual_fee:{unit:'FRI',amount:`0x${fee.toString(16)}`}};
+        return result;
+      };
+      await w.command(w.chat,'/track 0xa');w.add();w.tx('0xa');
+      w.bot.newPass();await w.bot.readHead();await w.bot.background();assert.match(w.bot.ledger.pending()[0].body,/Fee: 1 STRK/);
+      assert.equal(w.bot.subs.allTracks().length,0);
+      w.reorg(10);w.tx('0xa');fee=25n*10n**17n;execution='SUCCEEDED';finality='ACCEPTED_ON_L2';w.restart();await w.pass();await w.pass();
+      const posts=w.sent.filter(m=>/Accepted on L2/.test(m.text));assert.equal(posts.length,1);assert.match(posts[0].text,/Fee: 2.5 STRK/);
+      assert.equal(w.bot.subs.allTracks()[0].stage,1);
+      w.restart();finality='ACCEPTED_ON_L1';await w.pass();await w.pass();
+      assert.equal(w.sent.filter(m=>/Accepted on L1/.test(m.text)).length,1);assert.equal(w.bot.subs.allTracks().length,0);
+    }finally{w.close()}
+  }
 });
 
 test('second review 4: one planner keeps individual corrections and notices inside the group budget',()=>{
@@ -537,4 +559,63 @@ test('second review 4: one planner keeps individual corrections and notices insi
   assert.deepEqual(plan(rows,'supergroup',2),{full:[individual[0]],rest:[]});
   assert.deepEqual(plan(rows,'supergroup',3),{full:[],rest:[]});
   assert.deepEqual(plan(rows,'private',0),{full:rows,rest:[]});
+});
+
+test('rewrite rule 1: lagging failover waits for matching hashes; only a real conflict corrects',async()=>{
+  const w=await passWorld();try{
+    await w.command(w.chat,'/watch 0x20');w.add(2);w.tx('0xa',12);await w.pass();const original=w.sent.at(-1),cursor=w.store.cursor,call=w.bot.rpc.call;
+    let lagging=true;
+    w.bot.rpc.call=async(method,p)=>{
+      if(lagging&&method==='starknet_getBlockWithTxHashes'&&p.block_id==='latest')return call(method,{block_id:{block_number:11}});
+      if(lagging&&['starknet_getTransactionReceipt','starknet_getTransactionStatus'].includes(method))throw new RpcError(29);
+      return call(method,p);
+    };
+    const before=w.calls.length;await w.pass();await w.pass();
+    assert.equal(w.store.cursor,cursor);assert.equal(w.sent.filter(m=>m.reply_parameters).length,0);
+    assert.equal(w.store.sql('SELECT max(number) n FROM blocks').get().n,12);
+    assert.ok(!w.calls.slice(before).some(([m])=>m==='starknet_getEvents'));
+    assert.equal(w.bot.ledger.reorgRows('check').length,0);
+    // A previous fork may already have rewound stored hashes while its checks are unresolved.
+    w.store.sql('DELETE FROM blocks WHERE number = 12').run();
+    w.bot.ledger.recheck(w.store.sql("SELECT * FROM deliveries WHERE kind='alert'").get(),12);
+    await w.pass();assert.equal(w.sent.filter(m=>m.reply_parameters).length,0);
+    assert.equal(w.bot.ledger.reorgRows('check').length,1);
+    lagging=false;await w.pass();assert.equal(w.sent.at(-1),original);
+    w.reorg(11);await w.pass();await w.pass();
+    assert.equal(w.sent.filter(m=>m.reply_parameters?.message_id===original.message_id).length,1);
+  }finally{w.close()}
+});
+
+test('rewrite rule 2: later-filter or enrichment failover rolls back the whole range and rescans one provider',async()=>{
+  for(const switchAt of ['filter','enrichment']){
+    const w=await passWorld();try{
+      w.add();w.bot.rpc.generation=0;let provider='A',switched=false;
+      const first={address:'first'},later={address:'later'},filterCalls=[];
+      const rpcCall=w.bot.rpc.call;
+      w.bot.rpc.call=async(method,p)=>{
+        if(method==='starknet_getEvents'){
+          filterCalls.push([provider,p.filter.address]);
+          if(switchAt==='filter'&&p.filter.address==='later'&&!switched){switched=true;provider='B';w.bot.rpc.generation++}
+          return {events:[{provider}]};
+        }
+        if(method==='starknet_call'){
+          if(switchAt==='enrichment'&&!switched){switched=true;provider='B';w.bot.rpc.generation++}
+          return [];
+        }
+        return rpcCall(method,p);
+      };
+      w.bot.feeds=[{filters:[first,later],wanted:()=>true,find:async(events,context)=>{
+        const from=events.get(first)[0].provider;
+        // Enrichment writes must roll back with the range as well as its delivery/cursor.
+        w.store.set(`range_cache_${from}`,1);
+        await context.rpc.call('starknet_call',{});
+        const header=await context.header(11);
+        return {deliveries:[{chatId:1,txHash:hex64('0xabc'),eventIndex:0,kind:'alert',block:11,chainTime:header.timestamp,body:`Facts from ${from}`,digest:{k:'alert'}}],seen:[]};
+      }}];
+      await w.pass();await w.pass();
+      assert.equal(w.store.cursor,11);assert.equal(w.sent.length,1);assert.equal(w.sent[0].text,'Facts from B');
+      assert.equal(w.store.get('range_cache_A'),null);assert.equal(w.store.get('range_cache_B'),'1');assert.equal(filterCalls.filter(([p,f])=>p==='B'&&f==='first').length,1);
+      assert.equal(w.store.sql("SELECT count(*) n FROM deliveries WHERE kind='alert'").get().n,1);
+    }finally{w.close()}
+  }
 });

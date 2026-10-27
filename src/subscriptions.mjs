@@ -135,6 +135,12 @@ export class Subscriptions {
     if (track) this.#q('DELETE FROM tracks WHERE id = ?').run(track.id);
     return track ?? null;
   }
+  /** A rebuilt acceptance can reopen a previously completed track until its L1 notice. */
+  resumeTrack(track, head, stage) {
+    this.#q(`INSERT INTO tracks (chat_id, hash, since_block, since_time, stage, thread_id) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT (chat_id, hash) DO UPDATE SET stage = min(tracks.stage, excluded.stage)`)
+      .run(track.chat_id, track.hash, head.block_number, head.timestamp, stage, track.thread_id);
+  }
   trackStage(id, stage) { this.#q('UPDATE tracks SET stage = ? WHERE id = ?').run(stage, id); }
   trackDone(id) { this.#q('DELETE FROM tracks WHERE id = ?').run(id); }
   /** Keeps a pasted address or hash for a day, so that its button can carry a short id instead. */

@@ -152,13 +152,16 @@ produce a warning naming **Delete messages**.
 There is one scanner pass. It reads the head and updates, prepares network checks, scans confirmed ranges,
 steps tracked transactions and delivers the ledger within a shared group budget. A first start sets the
 cursor to the confirmed head. Stored hashes cover blocks observed since startup, up to the configured
-depth. A fork walks back to a retained common ancestor, rewinds the same scanner, and checks receipts for
+depth. Only a conflicting block hash establishes a fork; a lagging endpoint is left to catch up.
+An endpoint change discards the entire scanned range, including enrichment caches, before retrying it.
+A fork walks back to a retained common ancestor, rewinds the same scanner, and checks receipts for
 transactions already alerted. An orphan gets one correction replying to its original message; a transaction
 found elsewhere gets no duplicate or correction.
 A missing receipt is corrected only after the same endpoint also reports transaction status not-found;
-ambiguous or failed checks stay in the delivery ledger for retry on each pass and are silently abandoned
+ambiguous or failed checks stay in a dedicated `reorg_checks` table linked to the delivery ledger for retry on each pass and are silently abandoned
 after `CAIRN_REORG_DEPTH` additional head blocks. If no retained ancestor remains, Cairn rescans the retained
-window. Older history cannot be recovered by that bounded check.
+window. Older history cannot be recovered by that bounded check. Pending alerts are rebuilt from the
+replacement execution; rebuilt tracking resumes persistently through L1 acceptance.
 
 Stall duration uses wall time from the first sight of the unchanged head, surviving restarts. Subscribers
 receive one stall and one recovery notice per incident. When all endpoints are down only the operator

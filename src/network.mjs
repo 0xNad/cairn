@@ -21,8 +21,11 @@ export class Network {
       });
       return;
     }
+    const known = Number(this.store.get('head_number') ?? this.store.sql('SELECT max(number) AS n FROM blocks').get().n ?? 0);
+    if (head.block_number < known) return false;
     this.store.transaction(() => {
       this.store.set('rpc_outage', 0);
+      this.store.set('head_number', head.block_number);
       this.store.set('chain_time', head.timestamp);
       const previous = this.store.get('head_hash');
       if (previous !== hex64(head.block_hash)) {
@@ -35,7 +38,7 @@ export class Network {
         this.store.set('stalled', 1);
       }
     });
-    await this.reorg(head, endpoint);
+    if (!await this.reorg(head, endpoint)) return false;
     const safe = Math.max(0, head.block_number - this.config.confirmations);
     if (safe - this.store.cursor > this.config.maxGap) this.store.transaction(() => {
       this.notice(`gap:${this.store.cursor}:${safe}`, `⏩ Skipped ${safe - this.store.cursor} blocks to catch up.\nNew alerts resume from here.`, head);
@@ -46,11 +49,11 @@ export class Network {
     const rows = this.store.sql('SELECT * FROM blocks ORDER BY number DESC').all();
     let ancestor = null, changed = false;
     for (const row of rows) {
-      if (row.number > head.block_number) { changed = true; continue; }
       const block = row.number === head.block_number ? head : await this.rpc.call('starknet_getBlockWithTxHashes', { block_id: { block_number: row.number } });
       if (hex64(block.block_hash) === row.hash) { ancestor = row.number; break; }
       changed = true;
     }
+    if ((this.rpc.generation ?? 0) !== endpoint) return false;
     if (changed) {
       // Beyond retained history, rescan the retained window; never walk outside the configured depth.
       ancestor ??= Math.max(0, head.block_number - this.config.reorgDepth);
@@ -63,6 +66,7 @@ export class Network {
       });
     }
     await this.reconcile(head, endpoint);
+    return (this.rpc.generation ?? 0) === endpoint;
   }
   /** Only two not-found answers on the replacement head's endpoint prove removal. */
   async disposition(tx) {
@@ -80,8 +84,8 @@ export class Network {
   }
   async reconcile(head, endpoint) {
     const byTx = new Map();
-    for (const row of this.ledger.rechecking()) {
-      if (head.block_number - JSON.parse(row.digest).reorg >= this.config.reorgDepth) {
+    for (const row of this.ledger.reorgRows('check')) {
+      if (head.block_number - row.since_block >= this.config.reorgDepth) {
         this.store.transaction(() => { this.ledger.checked(row); if (row.message_id === null) this.ledger.dropped(row.seq); });
       } else (byTx.get(row.tx_hash) ?? byTx.set(row.tx_hash, []).get(row.tx_hash)).push(row);
     }
@@ -108,7 +112,7 @@ export class Network {
       });
     }
   }
-  async remember(head) {
+  async remember(head, endpoint = this.rpc.generation ?? 0) {
     const start = Number(this.store.get('history_start') ?? head.block_number);
     const low = Math.max(start, head.block_number - this.config.reorgDepth + 1);
     const saved = new Set(this.store.sql('SELECT number FROM blocks').all().map(r => r.number));
@@ -117,6 +121,7 @@ export class Network {
       const b = n === head.block_number ? head : await this.rpc.call('starknet_getBlockWithTxHashes', { block_id: { block_number: n } });
       blocks.push([n, hex64(b.block_hash)]);
     }
+    if ((this.rpc.generation ?? 0) !== endpoint) throw new RpcError(33);
     this.store.transaction(() => {
       this.store.set('history_start', start);
       for (const [n, hash] of blocks) this.store.sql('INSERT OR REPLACE INTO blocks VALUES (?, ?)').run(n, hash);

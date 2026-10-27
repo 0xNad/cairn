@@ -371,14 +371,17 @@ export class Bot {
 
   // ---- alerts --------------------------------------------------------------------------------------------
 
+  async networkPass() {
+    try {
+      if (await this.network.step(this.head, Date.now(), this.headEndpoint) === false || !this.head) return false;
+      await this.network.remember(this.head, this.headEndpoint);
+      return true;
+    } catch (error) { if (this.signal.aborted || !retriable(error)) throw error; return false; }
+  }
   async background() {
-    try { await this.network.step(this.head, Date.now(), this.headEndpoint); }
-    catch (error) { if (this.signal.aborted || !retriable(error)) throw error; return; }
-    if (!this.head) return;
-    // Persist the hashes before scanning: a failed history read cannot leave an accepted alert unguarded.
-    try { await this.network.remember(this.head); }
-    catch (error) { if (this.signal.aborted || !retriable(error)) throw error; return; }
-    await this.scan();
+    this.behind = false;
+    if (!await this.networkPass()) return;
+    if (await this.scan() === false) return;
     await this.trackPass();
     const now = this.head.timestamp;
     this.store.transaction(() => {
@@ -392,46 +395,48 @@ export class Bot {
    * cursor; a failed read leaves the cursor, and the next pass reads the whole range again.
    */
   async scan() {
-    const cursor = this.store.cursor;
-    const range = cursor === null ? null : this.scanner.next(cursor, this.head.block_number - this.config.confirmations);
-    this.behind = false;
-    if (!range) return;
-    const interests = this.subs.interests();
-    const feeds = this.feeds.filter((f) => f.wanted(interests));
-    const context = { interests, tokens: this.tokens, rpc: this.rpc, now: this.head.timestamp, fmt: this.fmt,
-      header: blockHeaders(this.rpc), prices: this.prices, names: this.names, known: this.known };
-    const found = { deliveries: [], seen: [] };
-    try {
-      const events = new Map();
-      for (const filter of new Set(feeds.flatMap((f) => f.filters))) events.set(filter, await this.scanner.events(range, filter));
-      for (const feed of feeds) {
-        const result = await feed.find(events, context);
-        found.deliveries.push(...result.deliveries);
-        found.seen.push(...(result.seen ?? []));
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const range = this.scanner.next(this.store.cursor, this.head.block_number - this.config.confirmations);
+      if (!range) return;
+      const endpoint = this.rpc.generation ?? 0, interests = this.subs.interests();
+      const feeds = this.feeds.filter(f => f.wanted(interests)), found = { deliveries: [], seen: [] };
+      this.prices.reset(); this.names.reset();
+      const context = { interests, tokens: this.tokens, rpc: this.rpc, now: this.head.timestamp, fmt: this.fmt,
+        header: blockHeaders(this.rpc), prices: this.prices, names: this.names, known: this.known };
+      this.store.db.exec('SAVEPOINT scan_range');
+      try {
+        const events = new Map();
+        for (const filter of new Set(feeds.flatMap(f => f.filters))) events.set(filter, await this.scanner.events(range, filter));
+        for (const feed of feeds) {
+          const result = await feed.find(events, context);
+          found.deliveries.push(...result.deliveries); found.seen.push(...(result.seen ?? []));
+        }
+        if ((this.rpc.generation ?? 0) !== endpoint) throw new RpcError(33);
+        for (const delivery of found.deliveries.sort(chainOrder)) this.ledger.add(delivery);
+        this.ledger.finishRebuilds(range.to);
+        for (const [chatId, address, token] of found.seen) this.subs.noteSeen(chatId, address, token);
+        this.store.cursor = range.to;
+        this.store.db.exec('RELEASE scan_range');
+        this.behind = range.to < this.head.block_number - this.config.confirmations;
+        return;
+      } catch (error) {
+        this.store.db.exec('ROLLBACK TO scan_range; RELEASE scan_range');
+        this.prices.reset(); this.names.reset();
+        if (this.signal.aborted || !retriable(error)) throw error;
+        if ((this.rpc.generation ?? 0) !== endpoint && attempt < 2) {
+          await this.readHead();
+          if (!await this.networkPass()) return false;
+        } else { log('warn', `node busy: blocks ${range.from} to ${range.to} will be scanned again.`); return false; }
       }
-    } catch (error) {
-      if (this.signal.aborted || !retriable(error)) throw error;
-      log('warn', `node busy: blocks ${range.from} to ${range.to} will be scanned again.`);
-      return;
     }
-    found.deliveries.sort(chainOrder);
-    this.store.transaction(() => {
-      for (const delivery of found.deliveries) this.ledger.add(delivery);
-      this.ledger.finishRebuilds(range.to);
-      for (const [chatId, address, token] of found.seen) this.subs.noteSeen(chatId, address, token);
-      this.store.cursor = range.to;
-    });
-    this.behind = range.to < this.head.block_number - this.config.confirmations;
   }
   async trackPass() {
-    const live = this.subs.allTracks(), rebuilding = this.ledger.rebuildingTracks();
-    const same = (track, row) => track.chat_id === row.chat_id && track.hash === row.tx_hash;
-    const tracks = rebuilding.map(row => ({
-      id: live.find(track => same(track, row))?.id ?? null, chat_id: row.chat_id, hash: row.tx_hash,
-      stage: row.event_index === STAGE.accepted ? 0 : 1, since_time: this.head.timestamp, thread_id: row.thread_id,
-    }));
-    tracks.push(...live.filter(track => !rebuilding.some(row => same(track, row))));
-    for (const track of tracks) {
+    for (const row of this.ledger.reorgRows('rebuild')) if (row.kind === 'track') {
+      this.subs.resumeTrack({ chat_id: row.chat_id, hash: row.tx_hash, thread_id: row.thread_id },
+        this.head, row.event_index === STAGE.accepted ? 0 : 1);
+    }
+    for (const track of this.subs.allTracks()) {
+      const endpoint = this.rpc.generation ?? 0;
       let step;
       try { step = await trackStep(track, { rpc: this.rpc, head: this.head, fmt: this.fmt }); }
       catch (error) {
@@ -439,13 +444,12 @@ export class Bot {
         log('warn', 'node busy: tracked transactions will be checked again.');
         return;
       }
+      if ((this.rpc.generation ?? 0) !== endpoint) return;
       if (!step) continue;
       this.store.transaction(() => {
         if (step.delivery) this.ledger.add(step.delivery);
-        if (track.id !== null) {
-          if (step.stage === 'done') this.subs.trackDone(track.id);
-          else this.subs.trackStage(track.id, step.stage);
-        }
+        if (step.stage === 'done') this.subs.trackDone(track.id);
+        else this.subs.trackStage(track.id, step.stage);
       });
     }
   }
@@ -464,7 +468,7 @@ export class Bot {
       let target = chatId, sent = 0, open = true;
       for (const row of full) {
         if (this.signal.aborted) return;
-        const r = await this.send(target, row.body, { ...topic(row.thread_id), ...(row.kind === 'correction' ? { reply_parameters: { message_id: JSON.parse(row.digest).reply, allow_sending_without_reply: true } } : {}), ...(sent >= LOUD_ALERTS ? { disable_notification: true } : {}) });
+        const r = await this.send(target, row.body, { ...topic(row.thread_id), ...(row.kind === 'correction' ? { reply_parameters: { message_id: row.reply_to, allow_sending_without_reply: true } } : {}), ...(sent >= LOUD_ALERTS ? { disable_notification: true } : {}) });
         if (r.message) {
           target = r.chatId;
           sent++;
