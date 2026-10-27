@@ -56,7 +56,7 @@ function validBlockId(value) {
 export class Rpc {
   #times = [];
   #id = 0;
-  constructor(config, signal) { this.config = config; this.signal = signal; this.urls = config.rpcUrls ?? [config.rpcUrl]; this.endpoint = 0; this.validated = new Set(); this.errors = 0; }
+  constructor(config, signal) { this.config = config; this.signal = signal; this.urls = config.rpcUrls ?? [config.rpcUrl]; this.endpoint = 0; this.validated = new Set(); this.errors = 0; this.identityRequired = Boolean(config.rpcUrls); }
   async #slot() {
     for (;;) {
       const now = performance.now();
@@ -75,6 +75,7 @@ export class Rpc {
     this.validated.add(index);
   }
   async validateAll() {
+    this.identityRequired = true;
     let healthy = 0;
     for (let i = 0; i < this.urls.length; i++) {
       try { await this.validate(i); healthy++; }
@@ -83,11 +84,13 @@ export class Rpc {
     if (!healthy) throw new NodeBusy();
   }
   async call(method, params = {}) {
+    if (!READ_METHODS.has(method)) throw new CairnError('Unsupported RPC method.');
+    if (params.block_id !== undefined && !validBlockId(params.block_id)) throw new CairnError('Unsupported block identifier.');
     const first = this.endpoint;
     for (let hop = 0; hop < this.urls.length; hop++) {
       const index = (first + hop) % this.urls.length;
       try {
-        await this.validate(index);
+        if (this.identityRequired) await this.validate(index);
         this.endpoint = index;
         // Tokens belong to one endpoint: let Scanner discard all accumulated pages and restart.
         if (hop && method === 'starknet_getEvents' && params.filter?.continuation_token) throw new RpcError(33);
@@ -133,7 +136,7 @@ export class Rpc {
   }
 }
 export class Telegram {
-  constructor(config, signal) { this.config = config; this.signal = signal; this.urls = config.rpcUrls ?? [config.rpcUrl]; this.endpoint = 0; this.validated = new Set(); this.errors = 0; }
+  constructor(config, signal) { this.config = config; this.signal = signal; }
   async call(method, params = {}) {
     for (let attempt = 0; attempt < 3; attempt++) {
       let result;
