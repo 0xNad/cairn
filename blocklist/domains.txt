@@ -1,0 +1,5 @@
+# Phishing domains Cairn deletes links to, one per line (subdomains included); "#" starts a comment.
+# Replace this list with CAIRN_BLOCKLIST=/path/to/your/list.txt
+starknet-bot.com
+app-stark.online
+starknet.portal-drops.icu

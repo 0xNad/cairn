@@ -1,11 +1,13 @@
 // What each chat asked Cairn to follow, in CAIRN_DATA. Every function is synchronous and runs inside the
 // caller's transaction, so that a change and the update that asked for it are saved together. From round 3,
-// a feed, watch, whale or track keeps the forum topic it was set up in (thread_id), and posts there.
+// a feed, watch, whale or track keeps the forum topic it was set up in (thread_id), and posts there. Round 4 adds
+// a chat's network alerts (on or off, and their topic) and its guard switches (on unless turned off).
 
 export const LIMITS = Object.freeze({ whales: 5, tracks: 10, minimums: 20, muted: 100, label: 32 });
 const OFFER_TTL = 24 * 3600; // seconds of chain time a Watch or Track button keeps working
 /** Every table holding a chat's data, children before the chat itself: /forget and migrations walk it. */
-const CHAT_TABLES = ['watches', 'seen', 'whales', 'minimums', 'muted', 'tracks', 'offers', 'feeds', 'deliveries', 'chats'];
+const CHAT_TABLES = ['watches', 'seen', 'whales', 'minimums', 'muted', 'tracks', 'offers', 'feeds', 'network', 'guards', 'deliveries', 'chats'];
+export const GUARDS = Object.freeze(['seed', 'links']);
 const FEED_COLUMNS = 'id, chat_id, token, symbol, min, min_units, min_usd, mode, since_block, thread_id';
 /** A topic for export: only chats with forum topics show one. */
 const topic = (row) => (row.thread_id === null || row.thread_id === undefined ? {} : { thread_id: row.thread_id });
@@ -24,6 +26,8 @@ export class Subscriptions {
     this.#q('INSERT INTO chats (chat_id, type) VALUES (?, ?) ON CONFLICT (chat_id) DO UPDATE SET type = excluded.type')
       .run(chat.id, String(chat.type ?? 'unknown').slice(0, 16));
   }
+  /** A chat Cairn writes to without a subscription (the operator's), so that a 403 can pause it like any other. */
+  known(chatId) { this.#q("INSERT OR IGNORE INTO chats (chat_id, type) VALUES (?, 'unknown')").run(chatId); }
   pause(chatId) { this.#q('UPDATE chats SET paused = 1 WHERE chat_id = ?').run(chatId); }
   /** A chat that writes again, or re-adds the bot, gets its pending alerts. */
   resume(chatId) { this.#q('UPDATE chats SET paused = 0 WHERE chat_id = ? AND paused <> 0').run(chatId); }
@@ -177,16 +181,59 @@ export class Subscriptions {
     return feed;
   }
 
+  // ---- network alerts and guards (round 4) ---------------------------------------------------------------
+
+  /** The chat's network alert subscription, { chat_id, thread_id }, or null. */
+  networkOf(chatId) { return this.#q('SELECT chat_id, thread_id FROM network WHERE chat_id = ?').get(chatId) ?? null; }
+  /** Every chat that follows network alerts. */
+  networkChats() { return this.#q('SELECT chat_id, thread_id FROM network ORDER BY chat_id').all(); }
+  /** Turns the chat's network alerts on (in the asking topic) or off; returns whether they were on before. */
+  network(chat, on, thread = null) {
+    const before = this.networkOf(chat.id) !== null;
+    if (on) {
+      this.chat(chat);
+      this.#q('INSERT INTO network (chat_id, thread_id) VALUES (?, ?) ON CONFLICT (chat_id) DO UPDATE SET thread_id = excluded.thread_id').run(chat.id, thread);
+    } else this.#q('DELETE FROM network WHERE chat_id = ?').run(chat.id);
+    return before;
+  }
+  /** The chat's guards: { seed, links }, each on unless an administrator turned it off. */
+  guardsOf(chatId) {
+    const row = this.#q('SELECT seed, links FROM guards WHERE chat_id = ?').get(chatId);
+    return { seed: row ? row.seed === 1 : true, links: row ? row.links === 1 : true };
+  }
+  /** Switches one guard; a chat back on the defaults keeps no row. Returns whether it was on before. */
+  guard(chat, which, on) {
+    const now = this.guardsOf(chat.id), before = now[which];
+    now[which] = on;
+    if (now.seed && now.links) this.#q('DELETE FROM guards WHERE chat_id = ?').run(chat.id);
+    else {
+      this.chat(chat);
+      this.#q('INSERT INTO guards (chat_id, seed, links) VALUES (?, ?, ?) ON CONFLICT (chat_id) DO UPDATE SET seed = excluded.seed, links = excluded.links')
+        .run(chat.id, Number(now.seed), Number(now.links));
+    }
+    return before;
+  }
+  /**
+   * The chats a skipped range concerns: those that follow network alerts, in their topic, and those with a feed,
+   * watch, whale alert or track, whose alerts in that range will never come.
+   */
+  affectedChats() {
+    return this.#q(`SELECT chat_id, max(thread_id) AS thread_id FROM (
+      SELECT chat_id, thread_id FROM network UNION ALL SELECT chat_id, NULL FROM watches UNION ALL SELECT chat_id, NULL FROM whales
+      UNION ALL SELECT chat_id, NULL FROM feeds UNION ALL SELECT chat_id, NULL FROM tracks) GROUP BY chat_id ORDER BY chat_id`).all();
+  }
+
   // ---- the whole chat ------------------------------------------------------------------------------------
 
   /**
-   * Everything stored for the chat, as /export shows it: the brief's six keys, round 3's feed, then what else
-   * CAIRN_DATA holds for it (its type and pause state, the values behind its buttons, and its delivery records,
-   * counted). A subscription set up in a forum topic shows its thread_id.
+   * Everything stored for the chat, as /export shows it: the brief's six keys, round 3's feed, round 4's network
+   * alerts and guards, then what else CAIRN_DATA holds for it (its type and pause state, the values behind its
+   * buttons, and its delivery records, counted). A subscription set up in a forum topic shows its thread_id.
    */
   export(chatId) {
     const chat = this.#q('SELECT type, paused FROM chats WHERE chat_id = ?').get(chatId);
-    const deliveries = { pending: 0, sent: 0, summarized: 0, dropped: 0 };
+    const deliveries = { pending: 0, sent: 0, summarized: 0, dropped: 0, corrected: 0 };
+    const network = this.networkOf(chatId);
     for (const r of this.#q('SELECT state, count(*) AS n FROM deliveries WHERE chat_id = ? GROUP BY state').all(chatId)) deliveries[r.state] = r.n;
     const feed = this.feedOf(chatId);
     return {
@@ -197,6 +244,8 @@ export class Subscriptions {
       tracks: this.tracks(chatId).map((t) => ({ hash: t.hash, since_block: t.since_block, ...topic(t) })),
       muted: this.muted(chatId),
       feed: feed && { token: feed.token, symbol: feed.symbol, min: feed.min, side: feed.mode, since_block: feed.since_block, ...topic(feed) },
+      network: network ? { on: true, ...topic(network) } : { on: false },
+      guards: this.guardsOf(chatId),
       chat: chat ? { type: chat.type, paused: chat.paused === 1 } : null,
       buttons: this.#q('SELECT kind, value, chain_time FROM offers WHERE chat_id = ? ORDER BY id').all(chatId)
         .map((o) => ({ kind: o.kind, value: o.value, chain_time: o.chain_time })),

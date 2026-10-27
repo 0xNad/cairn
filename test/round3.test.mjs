@@ -296,7 +296,7 @@ test('a chat keeps one feed: another token replaces it, the same token updates i
   } finally { store.close(); }
 });
 
-test("a round 2 state.db gains round 3's columns and tables in place, keeping its data", () => {
+test("a round 2 state.db gains round 3's and round 4's columns and tables in place, keeping its data", () => {
   const directory = mkdtempSync(join(tmpdir(), 'cairn-r2-db-'));
   const old = new DatabaseSync(join(directory, 'state.db'));
   old.exec(`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
@@ -309,11 +309,12 @@ test("a round 2 state.db gains round 3's columns and tables in place, keeping it
   old.close();
   const store = new Store(directory);
   try {
-    assert.equal(store.get('schema'), '3');
+    assert.equal(store.get('schema'), '4');
     assert.equal(store.offset, 41);
     const columns = (table) => store.db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
     for (const table of ['watches', 'whales', 'tracks', 'deliveries']) assert.ok(columns(table).includes('thread_id'), table);
     assert.ok(columns('deliveries').includes('digest') && columns('feeds').includes('min_usd') && columns('names').includes('labels'));
+    assert.ok(columns('deliveries').includes('reply_to') && columns('deliveries').includes('doubt_since') && columns('blocks').includes('hash'));
     assert.deepEqual(new Subscriptions(store, { maxWatches: 20 }).watches(5).map((w) => [w.label, w.thread_id]), [['Kept', null]]);
   } finally { store.close(); }
 });

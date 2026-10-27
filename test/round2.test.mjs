@@ -88,10 +88,10 @@ test('events are decoded by their shape alone', () => {
 test('the scanner reads a range whole: it follows pages, restarts on error 33 and fails on a lost page', async () => {
   const pages = { undefined: { events: [1, 2], continuation_token: 'p2' }, p2: { events: [3] } };
   let invalid = 1;
-  const rpc = { calls: [], async call(method, { filter }) {
+  const rpc = { calls: [], async request(method, { filter }) {
     this.calls.push(filter);
     if (filter.continuation_token && invalid-- > 0) throw new RpcError(33);
-    return pages[filter.continuation_token];
+    return { result: pages[filter.continuation_token], endpoint: 0 };
   } };
   const scanner = new Scanner(rpc, config);
   assert.deepEqual(scanner.next(10, 12), { from: 11, to: 12 });
@@ -99,7 +99,7 @@ test('the scanner reads a range whole: it follows pages, restarts on error 33 an
   assert.deepEqual(await scanner.events({ from: 11, to: 12 }, TOKEN_EVENTS), [1, 2, 3]);
   assert.equal(rpc.calls.filter((f) => f.continuation_token === undefined).length, 2);
   assert.ok(rpc.calls.every((f) => f.chunk_size === 1000 && f.address === undefined && f.keys[0].length === 2));
-  const failing = new Scanner({ async call(_, { filter }) { if (filter.continuation_token) throw new RpcError(24); return pages.undefined; } }, config);
+  const failing = new Scanner({ async request(_, { filter }) { if (filter.continuation_token) throw new RpcError(24); return { result: pages.undefined, endpoint: 0 }; } }, config);
   await assert.rejects(failing.events({ from: 11, to: 12 }, TOKEN_EVENTS));
 });
 
@@ -137,7 +137,7 @@ test('forget leaves no trace of a label in CAIRN_DATA, and migration moves every
     assert.equal(subs.export(-200).watches[0].label, 'SECRET-LABEL-4711');
     store.transaction(() => subs.forget(-200));
     assert.deepEqual(subs.export(-200), { chat_id: -200, watches: [], whales: [], minimums: {}, tracks: [], muted: [], feed: null,
-      chat: null, buttons: [], deliveries: { pending: 0, sent: 0, summarized: 0, dropped: 0 } });
+      network: { on: false }, guards: { seed: true, links: true }, chat: null, buttons: [], deliveries: { pending: 0, sent: 0, summarized: 0, dropped: 0, corrected: 0 } });
   } finally { store.close(); }
   for (const file of readdirSync(directory)) assert.ok(!readFileSync(join(directory, file)).includes('SECRET-LABEL-4711'), file);
 });
@@ -175,11 +175,11 @@ test('export lists what else is stored for a chat, and forget in a private chat 
     const e = subs.export(42);
     assert.deepEqual(e.chat, { type: 'private', paused: false });
     assert.deepEqual(e.buttons, [{ kind: 'track', value: hex64('0x99'), chain_time: 1000 }]);
-    assert.deepEqual(e.deliveries, { pending: 1, sent: 0, summarized: 0, dropped: 0 });
+    assert.deepEqual(e.deliveries, { pending: 1, sent: 0, summarized: 0, dropped: 0, corrected: 0 });
     store.transaction(() => subs.forget(42));
     assert.equal(store.sql('SELECT count(*) AS n FROM rate').get().n, 0);
     assert.deepEqual(subs.export(42), { chat_id: 42, watches: [], whales: [], minimums: {}, tracks: [], muted: [], feed: null,
-      chat: null, buttons: [], deliveries: { pending: 0, sent: 0, summarized: 0, dropped: 0 } });
+      network: { on: false }, guards: { seed: true, links: true }, chat: null, buttons: [], deliveries: { pending: 0, sent: 0, summarized: 0, dropped: 0, corrected: 0 } });
   } finally { store.close(); }
 });
 

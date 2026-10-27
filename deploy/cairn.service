@@ -1,0 +1,44 @@
+# Cairn as a systemd service: install with the steps in README.md ("Run it with systemd"), then
+#   sudo systemctl enable --now cairn      journalctl -u cairn -f      sudo systemctl stop cairn
+[Unit]
+Description=Cairn, a read-only Starknet bot for Telegram
+Documentation=https://github.com/0xNad/cairn#deploy-it
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=cairn
+Group=cairn
+WorkingDirectory=/opt/cairn
+# The bot token and the RPC URLs: KEY=value lines, readable by root only (systemd reads it before dropping to cairn).
+EnvironmentFile=/etc/cairn/cairn.env
+Environment=CAIRN_DATA=/var/lib/cairn
+ExecStart=/usr/bin/node /opt/cairn/cairn.mjs run
+# SIGTERM: Cairn finishes its current request and exits 0 within 3 s.
+KillSignal=SIGTERM
+TimeoutStopSec=10
+# Restart after a crash or a lost connection, but not after exit 2 (a configuration error, or an endpoint on
+# another chain) or exit 3 (Telegram rejected the token): restarting cannot fix those, journalctl says why.
+Restart=on-failure
+RestartSec=10
+RestartPreventExitStatus=2 3
+
+# Cairn writes only to CAIRN_DATA: everything else is read-only to it.
+StateDirectory=cairn
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
