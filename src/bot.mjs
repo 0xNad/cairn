@@ -181,6 +181,8 @@ export class Bot {
       const block = await this.rpc.call('starknet_getBlockWithTxHashes', { block_id: 'latest' });
       if (!Number.isSafeInteger(block?.block_number) || block.block_number < 0 || !Number.isSafeInteger(block.timestamp)) throw new Error('invalid header');
       this.head = block;
+      // Update handling also reads the head without running the periodic step.
+      this.store.set('rpc_outage', 0);
       // The first head ever read becomes the cursor: Cairn never backfills.
       if (this.store.cursor === null) this.store.transaction(() => { this.store.cursor = Math.max(0, block.block_number - this.config.confirmations); });
     } catch (error) {

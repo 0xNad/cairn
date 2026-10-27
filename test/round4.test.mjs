@@ -274,3 +274,43 @@ test('failed history read leaves cursor and new alerts untouched until retry',as
     assert.ok(w.store.sql('SELECT hash FROM blocks WHERE number=11').get());
   }finally{w.close()}
 });
+
+test('run resets outage latch on update-path recovery and sends exactly two operator notices',async()=>{
+  const w=await passWorld({operatorChat:3,tgTimeout:1});
+  const controller=new AbortController(),wallClock=Date.now;
+  let now=wallClock(),down=true,polls=0;
+  try{
+    await w.command(w.chat,'/network on');await w.command(w.group,'/network on');
+    const before=w.sent.length,call=w.bot.rpc.call;
+    w.bot.signal=controller.signal;
+    Date.now=()=>now;
+    w.bot.rpc.call=async(method,params)=>{
+      if(down)throw new NodeBusy();
+      const result=await call(method,params);
+      return method==='starknet_getBlockWithTxHashes'?{...result,
+        l1_gas_price:{price_in_fri:'0x1'},l1_data_gas_price:{price_in_fri:'0x1'},l2_gas_price:{price_in_fri:'0x1'}}:result;
+    };
+    const notices=()=>w.sent.slice(before).filter(m=>/Chain access is down/.test(m.text));
+    w.bot.poll=async()=>{
+      try { switch(++polls){
+        case 1:
+          assert.equal(notices().length,1);
+          down=false;now+=1000;w.add();
+          return [{update_id:1000,message:{message_id:1000,chat:w.chat,from:{id:1},date:200000,text:'/status'}}];
+        case 2:
+          assert.match(w.sent.at(-1).text,/Head: 11/);
+          assert.equal(w.store.get('rpc_outage'),'0','successful update-path head read must clear outage before its reply');
+          down=true;now+=1000;w.bot.wake=true;return [];
+        case 3:
+          assert.equal(notices().length,2);
+          w.bot.wake=true;return []; // Repeated failure must not send a third notice.
+        case 4:
+          assert.equal(notices().length,2);controller.abort();return [];
+        default: throw Error('unexpected extra poll');
+      } } catch(error) { controller.abort();throw error; }
+    };
+    await w.bot.run();
+    assert.equal(polls,4);
+    assert.deepEqual(notices().map(m=>m.chat_id),[3,3]);
+  }finally{Date.now=wallClock;controller.abort();w.close()}
+});
