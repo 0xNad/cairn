@@ -122,6 +122,8 @@ export async function answer(command, context) {
           chosen = resolved.token;
         }
         const block_id = { block_number: head.block_number };
+        // An address typed as 0x… shows its verified .stark name too, when it has one (names never throw).
+        name ??= (await context.names?.display(input, head.timestamp)) ?? null;
         const who = name === null ? link('contract', input) : fmt.contract(input, `${escapeHtml(name)} · ${short(input)}`);
         const lines = [...text(`Balances · ${config.chain} · block ${head.block_number}\n${utc(head.timestamp)}`), who];
         try { await rpc.call('starknet_getClassHashAt', { block_id, contract_address: input }); }

@@ -242,7 +242,7 @@ test('alerts: one message per chat per transaction, fee and noise suppressed, fl
     const view = deliveries.map((d) => [d.chatId, d.txHash.slice(-1), d.events.join(','), plain(d.body)]);
     assert.deepEqual(view.map((v) => v.slice(0, 3)), [[1, '1', '1'], [2, '2', '0'], [2, '3', '0'], [1, '4', '0'], [2, '4', '0'], [2, '5', '0,1']]);
     assert.match(view[5][3], /^🐋 Whale 3 OUT \(unverified, 0x0000…07e4\) from 0x0000…000b to 0x0000…000d \(2 hops\)\n/);
-    assert.match(view[0][3], /^↓ In \+1 STRK to Vault from 0x0000…000c\nBlock 11 · 2026-10-20 00:00:22 UTC · View transaction$/);
+    assert.match(view[0][3], /^↓ In \+1 STRK to Vault from 0x0000…000c\nBlock 11 · 2026-10-20 00:00:22 UTC · View tx$/);
     assert.match(view[1][3], /Whale 2 OUT \(unverified, 0x0000…07e4\) from 0x0000…000b to 0x0000…000c/);
     assert.match(view[2][3], /^↑ Out −1 OUT \(unverified, 0x0000…07e4\) from 0x0000…000a to 0x0000…000b\n/);
     assert.match(view[3][3], /Approval: Vault lets spender 0x0000…000b spend unlimited STRK/);

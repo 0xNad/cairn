@@ -24,20 +24,20 @@ It is built in public by AI coding agents, in four judged rounds on
 
 ## What it looks like
 
-A group's trade feed, `/feed STRK $20 all`, as Cairn posted it on mainnet on 24 October 2026:
+A group's trade feed, `/feed STRK $20 all`, on mainnet trades of 24 October 2026:
 
 ```
-🔴🔴🔴🔴🔴 Sell STRK · ≈$849.93
+🔴🔴🔴 Sell STRK · ≈$849.93
 17,802.368766626936800896 STRK for 850.552141 USDC
 👤 0x0187…7914
-Ekubo · 2026-10-24 12:56:22 UTC · View transaction
+Ekubo · 2026-10-24 12:56:22 UTC · View tx
 ```
 
 ```
 🔴🔴 Sell STRK · ≈$12.83
 268.63691294143686493 STRK for 0.005416127807376098 ETH
 👤 firatnam.stark
-AVNU · 2026-10-24 12:56:57 UTC · View transaction
+AVNU · 2026-10-24 12:56:57 UTC · View tx
 ```
 
 The second one is an AVNU route (STRK to USDC on another pool, USDC to a hop token to ETH on Ekubo): it
@@ -57,7 +57,7 @@ A token outside the registry stays plainly unverified, and never gets a USD valu
 🔴 Sell EKUBO (unverified, 0x075a…7a87)
 0.265354465728705132 EKUBO for 0.000138178661682261 ETH
 👤 hatiss-aras.stark
-Ekubo · 2026-10-24 13:12:20 UTC · View transaction
+Ekubo · 2026-10-24 13:12:20 UTC · View tx
 ```
 
 `/price` reads Pragma at the head block:
@@ -73,7 +73,7 @@ Pragma prices · block 16867743 · 2026-10-24 12:56:18 UTC
 Alerts show USD values only from prices updated within 900 s of chain time.
 ```
 
-Wallet alerts as Cairn sent them on mainnet on 24 October 2026, watching the Ekubo router under the label
+Wallet alerts for mainnet transactions of 24 October 2026, watching the Ekubo router under the label
 "Ekubo router" (shortened): a verified token's amount carries its USD value, and the network file's
 contracts read by name.
 
@@ -83,10 +83,10 @@ contracts read by name.
 🔑 Approval: Ekubo router lets spender Ekubo Core spend 378.183585 USDC
 ↑ Out −378.183585 USDC (≈$378.12) from Ekubo router to Ekubo Core
 ↑ Out −7,847.701691064621264732 STRK (≈$374.54) from Ekubo router to 0x0187…7914
-Block 16868035 · 2026-10-24 13:04:34 UTC · View transaction
+Block 16868035 · 2026-10-24 13:04:34 UTC · View tx
 ```
 
-Round 2's alerts, as Cairn sent them on mainnet on 19 October 2026, watching the AVNU exchange contract
+Round 2's alerts, for mainnet transactions of 19 October 2026, watching the AVNU exchange contract
 under the label "AVNU" (the first one is shortened):
 
 ```
@@ -95,12 +95,12 @@ under the label "AVNU" (the first one is shortened):
 ↓ In +0.00089101 strkBTC (unverified, 0x0787…3135) to AVNU from 0x0199…737e
 🔑 Approval: AVNU lets spender 0x0702…f624 spend 722.997876 USDC
 … and 9 more in this transaction.
-Block 16616677 · 2026-10-19 13:23:35 UTC · View transaction
+Block 16616677 · 2026-10-19 13:23:35 UTC · View tx
 ```
 
 ```
 🐋 Whale 15,737.876609793529295857 STRK from 0x0000…5b4b to 0x0448…a791 (2 hops)
-Block 16616896 · 2026-10-19 13:29:55 UTC · View transaction
+Block 16616896 · 2026-10-19 13:29:55 UTC · View tx
 ```
 
 ```
@@ -114,18 +114,18 @@ are the messages Cairn sends for the checks' fixtures (`npm run transcript` repl
 [Checks](#checks)):
 
 ```
-⚠️ Starknet stalled: no new block for 2 s. The head is still block 4,200,010. Cairn posts here again when blocks resume.
+⚠️ Starknet stalled: no new block for 2 s. The head is still block 4200010. Cairn posts here again when blocks resume.
 ```
 
 ```
-✅ Starknet is producing blocks again: block 4,200,011 arrived after a 3 s stall at block 4,200,010.
+✅ Starknet is producing blocks again: block 4200011 arrived after a 3 s stall at block 4200010.
 ```
 
 After a reorg, an alert whose transaction left the chain gets one correction, as a reply to it; whatever
 replaced it is alerted on its own:
 
 ```
-↩️ Correction: Starknet reorganised the blocks after 4,200,010, and transaction 0x00cc…41d8 is no longer on chain. What this alert reported did not happen; anything that replaced it is posted on its own.
+↩️ Correction: Starknet reorganised the blocks after 4200010, and transaction 0x0065…188d is no longer on chain. What this alert reported did not happen; anything that replaced it is posted on its own.
 ```
 
 The operator alone hears of RPC trouble (`CAIRN_OPERATOR_CHAT`), once per outage:
@@ -147,9 +147,9 @@ of it:
 
 - **A trade post reads at a glance.** The first line is the size, the side and the USD value; the second
   the exact amount and what was paid for it (or got for it); then the trader and the venue, the block time
-  and a link. The row of dots grows by one at every half-decade of USD value ($10, $30, $100, $300, $1,000 …
-  up to $1,000,000, with a 🐋 from $100,000), green for a buy and red for a sell, so a big trade stands out
-  in a scroll.
+  and a link. The row of dots grows by one at every decade of USD value ($10, $100, $1,000 and $10,000: five
+  dots at most, with a 🐋 from $100,000), green for a buy and red for a sell, so a big trade stands out in a
+  scroll, and the first line of the largest one still fits a phone.
 - **One message per chat per transaction**, in chain order: each matching transfer on its own line, with
   the exact amount, the direction (in, out, or between two watched wallets), the counterparty, the label,
   the block, its UTC time and a link to check it. A busy transaction shows ten lines and a count of the rest.
@@ -520,9 +520,11 @@ error (an unknown pair, a past block it no longer serves) leaves that value out,
 starknetid.js) and resolved with `domain_to_address`; 0x0 is an unknown name and is refused, and so are
 subdomains, upper case, other characters and labels too long to exist. An address is shown by its reverse
 name only when `address_to_domain` gives one and `domain_to_address` of the same labels gives that same
-address back; that forward check runs again in every pass that shows the name. Reverse answers, "no name"
-included, are kept a day of chain time; any failure shows the short address. A chat's own label wins over a
-name, and the network file's contracts read by their role ("Ekubo Core", "AVNU exchange").
+address back; that forward check runs again in every pass that shows the name. A reverse name is kept a day
+of chain time, and "no name" (none, or one that does not resolve back) an hour, so an address that sets or
+fixes its name shows it within the hour; any failure shows the short address. `/balance 0x…` shows the
+address's verified name too. A chat's own label wins over a name, and the network file's contracts read by
+their role ("Ekubo Core", "AVNU exchange").
 
 ### Groups, topics and bursts
 
@@ -628,7 +630,7 @@ is still deleted.
 - The new-holder flag is for buys only (see above), and the trader's name is checked once per pass.
 - An AVNU route's intermediate tokens net to zero (see above). The cost, rare: a multicall that both routes a
   token through AVNU and trades it directly on Ekubo shows no trade of that token.
-- The size bar counts half-decades of USD value; without a USD value it counts multiples of the floor.
+- The size bar counts decades of USD value, five dots at most; without a USD value it counts multiples of the floor.
 - A summary posts into the topic most of its alerts came from.
 - In a burst, the two alerts sent in full are the weightiest (above), not the first two.
 - `/list` shows labels and short addresses, not names: it answers at once, with no chain call.

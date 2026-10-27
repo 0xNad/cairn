@@ -113,7 +113,8 @@ export function parseName(text) {
 const forwardCalldata = (labels) => [`0x${labels.length.toString(16)}`, ...labels.map((l) => `0x${l.toString(16)}`), '0x0'];
 /** The contract's own answers: not deployed, no such entrypoint, or the call failed. */
 const NO_ANSWER = new Set([20, 21, 40]);
-const NAME_TTL = 24 * 3600; // seconds of chain time a reverse lookup is kept; the forward check runs every pass
+const NAME_TTL = 24 * 3600; // seconds of chain time a reverse name is kept; the forward check runs every pass
+const NO_NAME_TTL = 3600; // and "no name": an address that sets its name, or fixes one, shows it within the hour
 const MAX_LOOKUPS = 25; // reverse lookups a pass may start, so a busy wallet's many counterparties never stall it
 
 /**
@@ -177,7 +178,8 @@ export class Names {
   async #verified(address, now) {
     const cached = this.store.sql('SELECT labels, checked_at FROM names WHERE address = ?').get(address);
     let labels;
-    if (cached && now - cached.checked_at < NAME_TTL) labels = JSON.parse(cached.labels).map(BigInt);
+    const kept = cached ? JSON.parse(cached.labels).map(BigInt) : null;
+    if (kept && now - cached.checked_at < (kept.length ? NAME_TTL : NO_NAME_TTL)) labels = kept;
     else {
       if (this.lookups >= MAX_LOOKUPS) return null;
       this.lookups++;
@@ -193,7 +195,7 @@ export class Names {
     if (!labels.length) return null;
     const back = await this.#forward(labels);
     if (back !== address) {
-      // The name moved, or never pointed here: remember "no name" so the next passes stay quiet.
+      // The name moved, or never pointed here: "no name" for the next hour, so the next passes stay quiet.
       this.#save(address, [], now);
       return null;
     }

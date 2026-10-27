@@ -8,6 +8,7 @@
   "engines": { "node": ">=24" },
   "scripts": {
     "check": "node .launchpad/checks/round-1/run.mjs && node .launchpad/checks/round-2/run.mjs && node .launchpad/checks/round-3/run.mjs && node .launchpad/checks/round-4/run.mjs",
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test test/*.test.mjs",
+    "transcript": "node scripts/transcript.mjs"
   }
 }

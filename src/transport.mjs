@@ -92,6 +92,11 @@ export class Rpc {
     endpoint.identity ??= await this.check(index);
     return endpoint.identity;
   }
+  /** The endpoint ordinary calls now go to; a switch is logged, by the endpoint's place in the list. */
+  use(index) {
+    if (this.current !== index && this.endpoints.length > 1) log('warn', 'rpc endpoint', { using: this.name(index) });
+    this.current = index;
+  }
   /** Sends an endpoint to the back of the line for `ms`: one whose head stopped moving while another's did not. */
   demote(index, ms = 10 * FAILBACK_MS) { this.endpoints[index].failedAt = performance.now() + ms - FAILBACK_MS; }
   /** "endpoint 2 of 3", or "the node" when there is only one: never its URL, which is a secret. */
@@ -126,8 +131,6 @@ export class Rpc {
       if (!response.ok) return failed({ refused: true }); // no retry fixes it: try another endpoint
       if (json?.jsonrpc === '2.0' && json.id === id && (json.error || Object.hasOwn(json, 'result'))) {
         endpoint.failedAt = -Infinity;
-        if (this.current !== endpoint.index && this.endpoints.length > 1) log('warn', 'rpc endpoint', { using: this.name(endpoint.index) });
-        this.current = endpoint.index;
         return json.error ? { rpcError: json.error.code } : { result: json.result };
       }
     } catch (error) {
@@ -159,7 +162,10 @@ export class Rpc {
           }
         }
         const outcome = await this.#attempt(endpoint, method, params, round);
-        if (Object.hasOwn(outcome, 'result')) return { result: outcome.result, endpoint: endpoint.index };
+        if (Object.hasOwn(outcome, 'result')) {
+          if (pinned === undefined) this.use(endpoint.index);
+          return { result: outcome.result, endpoint: endpoint.index };
+        }
         if (Object.hasOwn(outcome, 'rpcError')) {
           // A JSON-RPC error of the endpoint itself (internal error, method not served, a provider's refusal) moves
           // to the next endpoint when there is one; the spec's own errors (not found, contract error…) are answers.

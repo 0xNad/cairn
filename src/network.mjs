@@ -15,8 +15,9 @@ import { log } from './errors.mjs';
 
 const KIND = 'network';
 const DIGEST = { k: KIND };
-/** A number as Cairn shows blocks: 4,200,010. */
-const block = (n) => n.toLocaleString('en-US');
+/** A block number as every Cairn message shows it: 4200010. A count of blocks is grouped: 50,000. */
+const block = (n) => String(n);
+const count = (n) => n.toLocaleString('en-US');
 
 /** A length of time in words, to the second: 45 s, 3 min 12 s, 2 h 5 min, 3 d 4 h. */
 export function duration(ms) {
@@ -33,8 +34,8 @@ export const texts = {
   resumed: (stall, head, now) => `✅ <b>Starknet is producing blocks again</b>: block ${block(head.block_number)} arrived after a ${duration(now - stall.at)} stall at block ${block(stall.n)}.`,
   outage: (count) => `🚨 <b>RPC outage</b>: ${count > 1 ? `all ${count} endpoints of STARKNET_RPC_URLS fail` : 'the RPC endpoint fails'}, so Cairn cannot read Starknet. Alerts are on hold and none are lost: scanning picks up where it stopped. Cairn says so here once an endpoint answers.`,
   answered: (outage, endpoint, now) => `✅ <b>RPC back online</b>: ${endpoint} answers again after ${duration(now - outage.at)} of outage. Cairn reads Starknet again and catches up on the blocks it missed.`,
-  gap: (from, to, maxGap) => `⏭ <b>Skipped blocks ${block(from)}–${block(to)}</b> (${block(to - from + 1)} blocks): Cairn was further behind than CAIRN_MAX_GAP (${block(maxGap)} blocks) and jumped to the head. Alerts and trades in those blocks were not posted; an explorer shows that range.`,
-  deep: (fork, depth) => `⚠️ <b>Reorg deeper than CAIRN_REORG_DEPTH</b> (${block(depth)} blocks): block ${block(fork.from)} changed and none of the hashes Cairn keeps still matched. Cairn rescanned from block ${block(fork.ancestor + 1)}; alerts on blocks before it could not be checked.`,
+  gap: (from, to, maxGap) => `⏭ <b>Skipped blocks ${block(from)}–${block(to)}</b> (${count(to - from + 1)} blocks): Cairn was further behind than CAIRN_MAX_GAP (${count(maxGap)} blocks) and jumped to the head. Alerts and trades in those blocks were not posted; an explorer shows that range.`,
+  deep: (fork, depth) => `⚠️ <b>Reorg deeper than CAIRN_REORG_DEPTH</b> (${count(depth)} blocks): block ${block(fork.from)} changed and none of the hashes Cairn keeps still matched. Cairn rescanned from block ${block(fork.ancestor + 1)}; alerts on blocks before it could not be checked.`,
 };
 
 export class Network {

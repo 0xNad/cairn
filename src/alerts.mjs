@@ -140,7 +140,7 @@ function render(group, time, labels, { fmt, shown, known }) {
   const items = routes(group.items);
   const lines = items.slice(0, MAX_ITEMS).map((item) => line(item, name, fmt));
   if (items.length > MAX_ITEMS) lines.push(`… and ${items.length - MAX_ITEMS} more in this transaction.`);
-  lines.push(`Block ${group.block} · ${utc(time)} · ${fmt.tx(group.tx, 'View transaction')}`);
+  lines.push(`Block ${group.block} · ${utc(time)} · ${fmt.tx(group.tx, 'View tx')}`);
   return lines.join('\n');
 }
 

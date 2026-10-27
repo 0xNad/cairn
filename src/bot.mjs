@@ -249,12 +249,12 @@ class Bot {
         throw error;
       }
       if (validHeader(other) && other.block_number > block.block_number) {
-        log('warn', 'rpc endpoint behind', { stuck: this.rpc.name(stuck), at: block.block_number, using: this.rpc.name(endpoint.index), head: other.block_number });
+        log('warn', 'rpc endpoint behind', { stuck: this.rpc.name(stuck), at: block.block_number, ahead: this.rpc.name(endpoint.index), head: other.block_number });
         this.rpc.demote(stuck);
+        this.rpc.use(endpoint.index);
         return other;
       }
     }
-    this.rpc.current = stuck;
     return block;
   }
   async poll(timeout) {

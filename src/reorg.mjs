@@ -17,7 +17,6 @@ import { CORRECTION } from './ledger.mjs';
 // pass: back in a block, nothing more; gone, or not back after DOUBT_TTL of chain time, it gets its correction.
 
 export const DOUBT_TTL = 600;
-const block = (n) => n.toLocaleString('en-US');
 
 /** Where a transaction stands after a reorg: 'included' (in a block), 'waiting' (known, in no block) or 'gone'. */
 export async function standing(rpc, hash) {
@@ -63,7 +62,7 @@ export function correction(rows, why, fmt, now) {
     chainTime: now, thread: first.thread_id, replyTo: first.message_id, body, digest: { k: 'correction' } };
 }
 export const because = {
-  fork: (fork) => `Starknet reorganised the blocks after ${block(fork.ancestor)}`,
+  fork: (fork) => `Starknet reorganised the blocks after ${fork.ancestor}`,
   dropped: () => `a reorganisation took this transaction out of its block, and it was not included again within ${DOUBT_TTL / 60} minutes`,
 };
 
