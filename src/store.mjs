@@ -9,6 +9,13 @@ import { CairnError } from './errors.mjs';
 // written outside CAIRN_DATA. Round 3 adds the forum topic (thread_id) of each subscription and delivery, the
 // trade feed, the name cache, and the digest a group's summary counts.
 const SCHEMA = `
+CREATE TABLE IF NOT EXISTS protection (chat_id INTEGER PRIMARY KEY, network INTEGER NOT NULL DEFAULT 0,
+  seed INTEGER NOT NULL DEFAULT 1, links INTEGER NOT NULL DEFAULT 1, thread_id INTEGER) STRICT;
+CREATE TABLE IF NOT EXISTS headers (number INTEGER PRIMARY KEY, hash TEXT NOT NULL) STRICT;
+CREATE TABLE IF NOT EXISTS corrections (seq INTEGER PRIMARY KEY, chat_id INTEGER NOT NULL, tx_hash TEXT NOT NULL,
+  message_id INTEGER NOT NULL, thread_id INTEGER, state TEXT NOT NULL DEFAULT 'pending') STRICT;
+CREATE TABLE IF NOT EXISTS notices (id INTEGER PRIMARY KEY, chat_id INTEGER NOT NULL, body TEXT NOT NULL,
+  thread_id INTEGER, state TEXT NOT NULL DEFAULT 'pending') STRICT;
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
 CREATE TABLE IF NOT EXISTS chats (chat_id INTEGER PRIMARY KEY, type TEXT NOT NULL, paused INTEGER NOT NULL DEFAULT 0) STRICT;
 CREATE TABLE IF NOT EXISTS watches (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, address TEXT NOT NULL,
@@ -46,7 +53,7 @@ ALTER TABLE tracks ADD COLUMN thread_id INTEGER;
 ALTER TABLE deliveries ADD COLUMN thread_id INTEGER;
 ALTER TABLE deliveries ADD COLUMN digest TEXT;
 `;
-const SCHEMA_VERSION = '3';
+const SCHEMA_VERSION = '4';
 
 function safeFile(path, what) {
   if (!existsSync(path)) return;
@@ -74,7 +81,7 @@ export class Store {
       chmodSync(this.file, 0o600);
       this.db.exec('PRAGMA journal_mode = DELETE; PRAGMA synchronous = FULL; PRAGMA secure_delete = ON; PRAGMA temp_store = MEMORY;');
       const version = this.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'meta'").get() ? this.get('schema') : null;
-      if (version !== null && version !== '2' && version !== SCHEMA_VERSION) throw new Error('unknown schema');
+      if (version !== null && version !== '2' && version !== '3' && version !== SCHEMA_VERSION) throw new Error('unknown schema');
       this.transaction(() => {
         if (version === '2') this.db.exec(MIGRATE_2_TO_3);
         this.db.exec(SCHEMA);

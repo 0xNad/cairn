@@ -1,3 +1,5 @@
+import { guarded } from './guards.mjs';
+import { Operations } from './operations.mjs';
 import { performance } from 'node:perf_hooks';
 import { walletAlerts } from './alerts.mjs';
 import { callback, COMMANDS, parseCommand, parsePaste, respond } from './commands.mjs';
@@ -18,7 +20,7 @@ import { tradeFeed } from './trades.mjs';
 import { Rpc, Telegram, sleep } from './transport.mjs';
 import { VENUES, venuesOf } from './venues.mjs';
 
-const ALLOWED_UPDATES = ['message', 'callback_query', 'my_chat_member'];
+const ALLOWED_UPDATES = ['message', 'edited_message', 'callback_query', 'my_chat_member'];
 const ADMINS = new Set(['creator', 'administrator']);
 const LOUD_ALERTS = 3; // alerts per private chat and pass with a notification; later ones in the same pass arrive silently
 /** A 400 that means the bot may not write to the chat for now, rather than that one message was bad. */
@@ -28,12 +30,16 @@ const NO_TOPIC = /thread|topic/i;
 /** The network file's contracts as alerts name them, in place of a short address. */
 const CONTRACT_NAMES = { pragma: 'Pragma oracle', naming: 'Starknet ID naming', ...Object.fromEntries(VENUES.map((v) => [v.contract, v.label])) };
 /** Ledger rows in chain order: block, then transaction, then event. */
-const chainOrder = (a, b) => a.position[0] - b.position[0] || a.position[1] - b.position[1] || a.position[2] - b.position[2];
+export const chainOrder = (a, b) => {
+  const x = a.position ?? [a.block ?? 0, 0, a.eventIndex ?? 0], y = b.position ?? [b.block ?? 0, 0, b.eventIndex ?? 0];
+  return x[0] - y[0] || x[1] - y[1] || x[2] - y[2];
+};
 const SLOW_DOWN = 'Slow down: Cairn answers at most 10 commands a minute from one person, and ignores the rest until that minute has passed.';
 /** Chain failures that leave the work for the next pass. */
 const retriable = (error) => error instanceof NodeBusy || error instanceof RpcError || error instanceof NodeValueError;
 
 async function handshake(rpc, config, clean) {
+  await rpc.validateAll();
   const chain = decodeChain(await rpc.call('starknet_chainId'));
   if (chain !== config.chain) throw new CairnError(`Node reports ${clean(chain)}; expected ${config.chain}.`, 2);
   const spec = await rpc.call('starknet_specVersion');
@@ -68,7 +74,8 @@ export async function serve(config, signal) {
       store.transaction(() => store.set('commands', commandList));
     }
     const bot = new Bot({ config, store, rpc, tg, clean, username, me, signal, identity });
-    return config.mode === 'tick' ? await bot.tick() : await bot.run();
+    try { if (config.mode === 'run') await bot.ops.http(); return config.mode === 'tick' ? await bot.tick() : await bot.run(); }
+    finally { bot.ops.close(); }
   } finally { store.close(); }
 }
 
@@ -98,6 +105,7 @@ class Bot {
     this.wake = false; // a new track wants its first stage without waiting for the next pass
     this.budget = { start: -Infinity, used: new Map() }; // messages per group in the current pass
     this.counts = { updates: 0, sent: 0, alerts: 0 };
+    this.ops = new Operations(this);
   }
 
   /**
@@ -158,15 +166,24 @@ class Bot {
       if (!Number.isSafeInteger(block?.block_number) || block.block_number < 0 || !Number.isSafeInteger(block.timestamp)) throw new Error('invalid header');
       this.head = block;
       // The first head ever read becomes the cursor: Cairn never backfills.
-      if (this.store.cursor === null) this.store.transaction(() => { this.store.cursor = block.block_number; });
+      if (this.store.cursor === null) this.store.transaction(() => { this.store.cursor = Math.max(-1, block.block_number - this.config.confirmations); });
     } catch (error) {
       if (this.signal.aborted || (error instanceof CairnError && error.exitCode === 2)) throw error;
       this.head = null;
       log('warn', 'node busy: latest header unavailable.');
     }
+    this.ops.observe(this.head);
   }
   async poll(timeout) {
-    const batch = await this.tg.call('getUpdates', { offset: this.store.offset, limit: 100, timeout, allowed_updates: ALLOWED_UPDATES });
+    let batch;
+    try { batch = await this.tg.call('getUpdates', { offset: this.store.offset, limit: 100, timeout, allowed_updates: ALLOWED_UPDATES }); this.ops.telegramDown = false; }
+    catch (error) {
+      if (this.signal.aborted || error.exitCode === 3 || /conflict/.test(error.message)) throw error;
+      this.ops.telegramDown = true;
+      if (this.config.mode === 'tick') throw error;
+      await sleep(this.config.pollMs, this.signal);
+      return [];
+    }
     if (!Array.isArray(batch)) throw new CairnError('Telegram returned invalid updates.');
     return batch;
   }
@@ -177,7 +194,7 @@ class Bot {
     if (!Number.isSafeInteger(update?.update_id) || update.update_id < 0) throw new CairnError('Telegram returned an invalid update id.');
     if (update.update_id < this.store.offset) return;
     let commit = () => null;
-    if (update.message) commit = await this.onMessage(update.message);
+    if (update.message || update.edited_message) commit = await this.onMessage(update.message ?? update.edited_message, Boolean(update.edited_message));
     else if (update.callback_query) commit = await this.onCallback(update.callback_query);
     else if (update.my_chat_member) commit = this.onMembership(update.my_chat_member);
     // Claim durably before replying: Telegram has no idempotency key, so a crash can lose a reply but never
@@ -188,11 +205,21 @@ class Bot {
     this.counts.updates++;
     if (out) await this.respond(out);
   }
-  async onMessage(message) {
+  async onMessage(message, edited = false) {
     const chat = message?.chat;
     if (!Number.isSafeInteger(chat?.id)) return () => null;
     if (Number.isSafeInteger(message.migrate_to_chat_id)) return () => { this.subs.migrate(chat.id, message.migrate_to_chat_id); return null; };
     if (Number.isSafeInteger(message.migrate_from_chat_id)) return () => { this.subs.migrate(message.migrate_from_chat_id, chat.id); return null; };
+    const protection = guarded(message, this.subs.protection(chat.id), this.config.blockedHosts);
+    if (protection) {
+      let deleted = false;
+      try { deleted = Boolean(await this.tg.call('deleteMessage', { chat_id: chat.id, message_id: message.message_id })); }
+      catch (error) { if (this.signal.aborted) throw error; }
+      const warning = protection === 'seed' ? 'Potential recovery phrase detected. Never share recovery words; treat a shared phrase as compromised.' : 'A blocked link was detected. Do not open it or connect a wallet.';
+      return () => ({ chat_id: chat.id, ...(Number.isSafeInteger(message.message_thread_id) ? { message_thread_id: message.message_thread_id } : {}),
+        lines: [warning + (deleted ? ' Message deleted.' : ' I could not delete it. An administrator must grant me the Delete messages permission (can_delete_messages).')] });
+    }
+    if (edited) return () => null;
     // A chat that writes again gets its pending alerts.
     const resume = () => this.subs.resume(chat.id);
     const command = parseCommand(message, this.username) ?? parsePaste(message);
@@ -330,6 +357,15 @@ class Bot {
 
   async background() {
     if (!this.head) return;
+    try {
+      await this.ops.reconcile(this.head);
+      this.ops.skipGap(Math.max(-1, this.head.block_number - this.config.confirmations));
+    } catch (error) {
+      if (this.signal.aborted || !retriable(error)) throw error;
+      this.ops.reorgBlocked = true;
+      log('warn', 'node busy: chain history could not be verified; scan deferred.');
+      return;
+    }
     await this.scan();
     await this.trackPass();
     const now = this.head.timestamp;
@@ -345,7 +381,7 @@ class Bot {
    */
   async scan() {
     const cursor = this.store.cursor;
-    const range = cursor === null ? null : this.scanner.next(cursor, this.head.block_number);
+    const range = cursor === null ? null : this.scanner.next(cursor, this.head.block_number - this.config.confirmations);
     this.behind = false;
     if (!range) return;
     const interests = this.subs.interests();
@@ -373,7 +409,7 @@ class Bot {
       for (const [chatId, address, token] of found.seen) this.subs.noteSeen(chatId, address, token);
       this.store.cursor = range.to;
     });
-    this.behind = range.to < this.head.block_number;
+    this.behind = range.to < this.head.block_number - this.config.confirmations;
   }
   async trackPass() {
     for (const track of this.subs.allTracks()) {
@@ -398,6 +434,7 @@ class Bot {
    * which the summary then delivers. Each alert posts into the forum topic its subscription was set up in.
    */
   async deliver() {
+    await this.ops.deliver();
     const byChat = new Map();
     for (const row of this.ledger.pending()) (byChat.get(row.chat_id) ?? byChat.set(row.chat_id, []).get(row.chat_id)).push(row);
     for (const [chatId, rows] of byChat) {

@@ -177,7 +177,7 @@ export class Names {
   async #verified(address, now) {
     const cached = this.store.sql('SELECT labels, checked_at FROM names WHERE address = ?').get(address);
     let labels;
-    if (cached && now - cached.checked_at < NAME_TTL) labels = JSON.parse(cached.labels).map(BigInt);
+    if (cached && cached.labels !== '[]' && now - cached.checked_at < NAME_TTL) labels = JSON.parse(cached.labels).map(BigInt);
     else {
       if (this.lookups >= MAX_LOOKUPS) return null;
       this.lookups++;

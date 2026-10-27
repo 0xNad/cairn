@@ -13,6 +13,8 @@ export class Ledger {
   #q(text) { return this.store.sql(text); }
   /** Saves an alert before it is sent; false when its key is already in the ledger. */
   add({ chatId, txHash, eventIndex, kind, events = [eventIndex], block = null, chainTime, body, thread = null, digest = null }) {
+    // A re-included transaction may have different event indexes. A delivered transaction stays delivered.
+    if (block !== null && this.#q("SELECT 1 FROM deliveries WHERE chat_id = ? AND tx_hash = ? AND state IN ('sent','summarized','orphaned') AND event_index >= 0").get(chatId, txHash)) return false;
     return this.#q(`INSERT OR IGNORE INTO deliveries (chat_id, tx_hash, event_index, kind, events, block, chain_time, state, body, thread_id, digest)
       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`).run(chatId, txHash, eventIndex, kind, JSON.stringify(events), block, chainTime, body,
       thread, digest === null ? null : JSON.stringify(digest)).changes === 1;

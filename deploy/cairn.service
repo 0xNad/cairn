@@ -1,0 +1,32 @@
+[Unit]
+Description=Cairn Starknet community bot
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=cairn
+Group=cairn
+WorkingDirectory=/opt/cairn
+EnvironmentFile=/etc/cairn.env
+Environment=CAIRN_DATA=/var/lib/cairn
+ExecStart=/usr/bin/node /opt/cairn/cairn.mjs run
+Restart=on-failure
+RestartSec=10
+RestartPreventExitStatus=2 3
+TimeoutStopSec=20
+StateDirectory=cairn
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

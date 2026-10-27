@@ -1,7 +1,7 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { performance } from 'node:perf_hooks';
 import { CairnError, NodeBusy, RpcError, TelegramRefused } from './errors.mjs';
-import { normalize } from './felt.mjs';
+import { decodeChain, normalize } from './felt.mjs';
 
 const TIMER_MAX = 2147483647;
 export async function sleep(ms, signal) {
@@ -56,7 +56,7 @@ function validBlockId(value) {
 export class Rpc {
   #times = [];
   #id = 0;
-  constructor(config, signal) { this.config = config; this.signal = signal; }
+  constructor(config, signal) { this.config = config; this.signal = signal; this.urls = config.rpcUrls ?? [config.rpcUrl]; this.endpoint = 0; this.validated = new Set(); this.errors = 0; }
   async #slot() {
     for (;;) {
       const now = performance.now();
@@ -65,7 +65,40 @@ export class Rpc {
       await sleep(Math.max(1, 1010 - (now - this.#times[0])), this.signal);
     }
   }
+  async validate(index) {
+    if (this.validated.has(index)) return;
+    const chain = decodeChain(await this.single('starknet_chainId', {}, this.urls[index]));
+    if (chain !== this.config.chain) throw new CairnError('RPC endpoint chain differs from CAIRN_CHAIN.', 2);
+    const spec = await this.single('starknet_specVersion', {}, this.urls[index]);
+    const v = typeof spec === 'string' ? /^(\d+)\.(\d+)\.(\d+)$/.exec(spec) : null;
+    if (!v || !(Number(v[1]) > 0 || Number(v[2]) >= 10)) throw new CairnError('Node spec is below 0.10.0 or malformed.', 2);
+    this.validated.add(index);
+  }
+  async validateAll() {
+    let healthy = 0;
+    for (let i = 0; i < this.urls.length; i++) {
+      try { await this.validate(i); healthy++; }
+      catch (e) { if (this.signal.aborted || e.exitCode === 2) throw e; }
+    }
+    if (!healthy) throw new NodeBusy();
+  }
   async call(method, params = {}) {
+    const first = this.endpoint;
+    for (let hop = 0; hop < this.urls.length; hop++) {
+      const index = (first + hop) % this.urls.length;
+      try {
+        await this.validate(index);
+        this.endpoint = index;
+        // Tokens belong to one endpoint: let Scanner discard all accumulated pages and restart.
+        if (hop && method === 'starknet_getEvents' && params.filter?.continuation_token) throw new RpcError(33);
+        return await this.single(method, params, this.urls[index]);
+      } catch (e) {
+        if (this.signal.aborted || e.exitCode === 2 || e instanceof RpcError) throw e;
+      }
+    }
+    throw new NodeBusy();
+  }
+  async single(method, params = {}, endpoint) {
     if (!READ_METHODS.has(method)) throw new CairnError('Unsupported RPC method.');
     if (params.block_id !== undefined && !validBlockId(params.block_id)) {
       throw new CairnError('Unsupported block identifier.');
@@ -75,7 +108,7 @@ export class Rpc {
       let wait = 200 * 2 ** attempt;
       try {
         const id = ++this.#id;
-        const { response, json } = await post(this.config.rpcUrl, { jsonrpc: '2.0', id, method, params }, this.config.rpcTimeout, this.signal);
+        const { response, json } = await post(endpoint, { jsonrpc: '2.0', id, method, params }, this.config.rpcTimeout, this.signal);
         if (response.status === 429 || response.status >= 500) {
           const retry = response.headers.get('retry-after');
           if (retry !== null) {
@@ -93,13 +126,14 @@ export class Rpc {
         if (this.signal.aborted || error instanceof RpcError || error instanceof NodeBusy) throw error;
         // Interrupted connections, timeouts and malformed bodies are retried, never logged verbatim.
       }
-      if (attempt < 2) await sleep(wait, this.signal);
+      this.errors++;
+      if (attempt < 2) await sleep(Math.min(wait, 5000), this.signal);
     }
     throw new NodeBusy();
   }
 }
 export class Telegram {
-  constructor(config, signal) { this.config = config; this.signal = signal; }
+  constructor(config, signal) { this.config = config; this.signal = signal; this.urls = config.rpcUrls ?? [config.rpcUrl]; this.endpoint = 0; this.validated = new Set(); this.errors = 0; }
   async call(method, params = {}) {
     for (let attempt = 0; attempt < 3; attempt++) {
       let result;
