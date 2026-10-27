@@ -55,7 +55,7 @@ test('complete vocabulary, all phrase lengths, mixed case and interrupted prose'
 test('links parse authority, hidden entities and DNS boundaries without opening URLs', () => {
   const hosts = ['blocked.example'];
   for (const s of ['https://sub.BLOCKED.example/a', 'https://blocked.example./', 'www.blocked.example/a', 'blocked.example/a']) assert.equal(blockedLink(s, [], hosts), true, s);
-  for (const s of ['https://blocked.example@safe.example/', 'https://blocked.example.safe.example/', 'https://notblocked.example/', 'https://safe.example/?q=blocked.example']) assert.equal(blockedLink(s, [], hosts), false, s);
+  for (const s of ['https://blocked.example@safe.example/', 'blocked.example@safe.example/', 'https://blocked.example.safe.example/', 'https://notblocked.example/', 'https://safe.example/?q=blocked.example']) assert.equal(blockedLink(s, [], hosts), false, s);
   assert.equal(blockedLink('click', [{ type: 'text_link', url: 'https://blocked.example' }], hosts), true);
   assert.equal(guarded({ caption: 'click', caption_entities: [{ type: 'text_link', url: 'https://blocked.example' }] }, { links: true }, hosts), 'links');
 });
@@ -166,4 +166,13 @@ test('endpoint-list-only config and secondary URL secret redaction', () => {
   assert.equal(c.rpcUrls.length, 2); assert.equal(c.httpPort, null);
   const clean = redactor(c); assert.equal(clean('keyone keytwo othersecret'), '[redacted] [redacted] [redacted]');
   assert.throws(() => loadConfig(['tick'], { TELEGRAM_BOT_TOKEN: c.token, STARKNET_RPC_URLS: ',https://a.example', CAIRN_DATA: tmpdir() }));
+});
+
+
+test('correction records follow the ledger retention limit', t => {
+  const { store, ledger } = fixture(t);
+  ledger.add(delivery()); ledger.sent(1, 88);
+  store.sql('INSERT INTO corrections (seq,chat_id,tx_hash,message_id) VALUES (1,1,?,88)').run(hex64('0x123'));
+  ledger.prune(100 + 7 * 24 * 3600); assert.equal(store.sql('SELECT count(*) AS n FROM corrections').get().n, 1);
+  ledger.prune(101 + 7 * 24 * 3600); assert.equal(store.sql('SELECT count(*) AS n FROM corrections').get().n, 0);
 });

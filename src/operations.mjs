@@ -80,7 +80,9 @@ export class Operations {
     let fork = false, ancestor = null;
     for (const saved of previous) {
       if (saved.number > head.block_number || await read(saved.number) !== saved.hash) { fork = true; continue; }
-      if (fork) { ancestor = saved.number; break; }
+      // A matching hash commits its ancestry; walking farther on a healthy chain adds no evidence.
+      if (fork) ancestor = saved.number;
+      break;
     }
     // Also detect a rollback beyond the retained tip.
     const oldTop = this.q('SELECT max(number) AS n FROM headers').get().n;

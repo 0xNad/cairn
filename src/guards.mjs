@@ -17,7 +17,7 @@ export function blockedLink(text, entities, hosts) {
     if (e.type === 'url' && Number.isInteger(e.offset) && Number.isInteger(e.length)) urls.push(text.slice(e.offset, e.offset + e.length));
   }
   // Telegram also recognizes bare domains. Require a DNS-label boundary, then parse the full authority.
-  for (const m of String(text).matchAll(/(?:^|\s)((?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:\/[^\s<>]*)?)/gi)) urls.push(m[1]);
+  for (const m of String(text).matchAll(/(?:^|\s)((?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:[^\s<>]*)?)/gi)) urls.push(m[1]);
   return urls.some(value => {
     try {
       const u = new URL(/^https?:\/\//i.test(value) ? value : `https://${value}`);

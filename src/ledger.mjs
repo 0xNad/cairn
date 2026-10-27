@@ -33,5 +33,8 @@ export class Ledger {
   messageId(chatId, txHash, eventIndex) {
     return this.#q('SELECT message_id FROM deliveries WHERE chat_id = ? AND tx_hash = ? AND event_index = ?').get(chatId, txHash, eventIndex)?.message_id ?? null;
   }
-  prune(now) { this.#q('DELETE FROM deliveries WHERE chain_time < ?').run(now - LEDGER_TTL); }
+  prune(now) {
+    this.#q('DELETE FROM deliveries WHERE chain_time < ?').run(now - LEDGER_TTL);
+    this.#q('DELETE FROM corrections WHERE seq NOT IN (SELECT seq FROM deliveries)').run();
+  }
 }

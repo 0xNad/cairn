@@ -2,6 +2,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { performance } from 'node:perf_hooks';
 import { CairnError, NodeBusy, RpcError, TelegramRefused } from './errors.mjs';
 import { decodeChain, normalize } from './felt.mjs';
+import { redactor } from './format.mjs';
 
 const TIMER_MAX = 2147483647;
 export async function sleep(ms, signal) {
@@ -68,10 +69,10 @@ export class Rpc {
   async validate(index) {
     if (this.validated.has(index)) return;
     const chain = decodeChain(await this.single('starknet_chainId', {}, this.urls[index]));
-    if (chain !== this.config.chain) throw new CairnError('RPC endpoint chain differs from CAIRN_CHAIN.', 2);
+    if (chain !== this.config.chain) throw new CairnError(`RPC endpoint reports chain ${redactor(this.config)(chain)}; expected ${this.config.chain}.`, 2);
     const spec = await this.single('starknet_specVersion', {}, this.urls[index]);
     const v = typeof spec === 'string' ? /^(\d+)\.(\d+)\.(\d+)$/.exec(spec) : null;
-    if (!v || !(Number(v[1]) > 0 || Number(v[2]) >= 10)) throw new CairnError('Node spec is below 0.10.0 or malformed.', 2);
+    if (!v || !(Number(v[1]) > 0 || Number(v[2]) >= 10)) throw new CairnError(`Node spec ${redactor(this.config)(String(spec).slice(0, 100))} is below 0.10.0 or malformed.`, 2);
     this.validated.add(index);
   }
   async validateAll() {
@@ -126,7 +127,8 @@ export class Rpc {
           if (Object.hasOwn(json, 'result')) return json.result;
         }
       } catch (error) {
-        if (this.signal.aborted || error instanceof RpcError || error instanceof NodeBusy) throw error;
+        if (this.signal.aborted) throw error;
+        if (error instanceof RpcError || error instanceof NodeBusy) { this.errors++; throw error; }
         // Interrupted connections, timeouts and malformed bodies are retried, never logged verbatim.
       }
       this.errors++;

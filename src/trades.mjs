@@ -44,6 +44,7 @@ export function tradeOf(token, swaps, transfers, venues) {
     const named = own.some((s) => s.legs.some((leg) => leg.token === token));
     const routed = venue.aggregator && transfers.some((t) => t.kind === 'Transfer' && t.token === token && (t.a === venue.address || t.b === venue.address));
     if (!named && !routed) continue;
+    // Only swaps naming this token determine its quote; another swap may be unrelated.
     const relevant = own.filter(s => s.legs.some(leg => leg.token === token));
     const nets = netsOf(relevant), net = nets.get(token) ?? 0n;
     return net === 0n ? null : { venue, swaps: relevant, nets, net };
@@ -203,7 +204,7 @@ export function sizeBar(side, cents, amount, floor) {
 }
 
 /**
- * A chat's post, four short lines that read at a glance on a phone: the size bar, the side and the USD value;
+ * A chat's post, five short lines that read at a glance on a phone: the size bar, the side and the USD value;
  * the exact amount and what was paid (or got) for it; the trader; the venue, the block time and the link.
  */
 function render(post, feed, fmt) {

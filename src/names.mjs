@@ -120,7 +120,7 @@ const MAX_LOOKUPS = 25; // reverse lookups a pass may start, so a busy wallet's 
  * Starknet ID through the naming contract, when the network file names one. `resolve` turns a typed name into
  * an address; `display` gives the verified reverse name of an address, or null: an address's reverse name is
  * shown only when `domain_to_address` on the same labels returns that same address, checked once per pass.
- * Reverse answers are cached in CAIRN_DATA for a day of chain time, "no name" included.
+ * Positive reverse answers are cached for a day of chain time; negative answers retry next pass.
  */
 export class Names {
   constructor(config, store, rpc) {
@@ -193,7 +193,7 @@ export class Names {
     if (!labels.length) return null;
     const back = await this.#forward(labels);
     if (back !== address) {
-      // The name moved, or never pointed here: remember "no name" so the next passes stay quiet.
+      // The name moved, or never pointed here: discard the stale mapping and retry next pass.
       this.#save(address, [], now);
       return null;
     }
