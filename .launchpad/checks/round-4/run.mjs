@@ -86,7 +86,7 @@ function safety(w){
  for(const marker of [TOKEN,TOKEN.split(':')[1],SECRET,...w.protected])check(!saved.includes(marker)&&!logs.includes(marker),'secret/protected input persisted or logged');
  for(const person of w.people)for(const marker of [person.first_name,person.username])check(!saved.includes(marker),'fixture identity persisted');
  const allowed=new Set([`127.0.0.1:${w.tg.port}`,...w.nodes.map(n=>`127.0.0.1:${n.port}`)]);
- if(existsSync(w.env.CAIRN_TRAP_LOG))for(const line of readFileSync(w.env.CAIRN_TRAP_LOG,'utf8').split('\n').filter(Boolean)){const x=JSON.parse(line);if(x.kind!=='loaded')check(allowed.has(x.dest),'unconfigured outbound host')}
+ if(existsSync(w.env.CAIRN_TRAP_LOG))for(const line of readFileSync(w.env.CAIRN_TRAP_LOG,'utf8').split('\n').filter(Boolean)){const x=JSON.parse(line);if(x.kind!=='loaded'){const bindLookup=x.kind.startsWith('dns.')&&w.env.CAIRN_HTTP_PORT!==undefined&&x.dest===w.env.CAIRN_HTTP_HOST;check(bindLookup||allowed.has(x.dest),'unconfigured outbound host')}}
 }
 
 spec('01','network subscription persists and group controls require administrators',async w=>{
@@ -137,6 +137,8 @@ spec('09','replacement transactions are delivered exactly once in chain order',a
 spec('10','corrections and replacement alerts remain deduplicated after restart',async w=>{
  const p=w.person();const {t,message}=await w.sentTransfer(p);w.node.reorgAfter(t.block-1);const fresh=w.tx([transfer(ADDR.other,ADDR.trader,25n)]);await w.tick();check(w.tg.to(p.chat.id).some(m=>correctionTo(m,message.message_id))&&w.alerts(p,fresh).length===1,'reorg results absent');
  const start=w.tg.to(p.chat.id).length;await w.tick();await w.tick();check(w.tg.to(p.chat.id).length===start,'restart replayed correction or replacement');
+ // A later fork must not replay an already-sent correction, even after fresh processes.
+ w.node.reorgAfter(t.block-1,'second fork');await w.tick();check(w.tg.to(p.chat.id).filter(m=>correctionTo(m,message.message_id)).length===1,'persisted orphan correction replayed on a later fork');
 });
 spec('11','configured reorg depth bounds historical validation',async w=>{
  w.env.CAIRN_REORG_DEPTH='2';const p=w.person();const {t}=await w.sentTransfer(p);w.node.reorgAfter(t.block-1);const fresh=w.tx([transfer(ADDR.other,ADDR.trader,20n)]);await w.tick();check(w.alerts(p,fresh).length===1,'within-depth recovery positive control absent');const ancestor=w.node.head.number;
