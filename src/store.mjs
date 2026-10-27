@@ -4,23 +4,26 @@ import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
 import { CairnError } from './errors.mjs';
 
-// Round 2's state, in one SQLite file. Rollback journal (not WAL) with secure_delete, so that a deleted
-// label or alert leaves no copy in CAIRN_DATA once its transaction commits; temp_store in memory, so that
-// nothing is written outside CAIRN_DATA.
+// The state, in one SQLite file. Rollback journal (not WAL) with secure_delete, so that a deleted label or
+// alert leaves no copy in CAIRN_DATA once its transaction commits; temp_store in memory, so that nothing is
+// written outside CAIRN_DATA. Round 3 adds the forum topic (thread_id) of each subscription and delivery, the
+// trade feed, the name cache, and the digest a group's summary counts.
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
 CREATE TABLE IF NOT EXISTS chats (chat_id INTEGER PRIMARY KEY, type TEXT NOT NULL, paused INTEGER NOT NULL DEFAULT 0) STRICT;
 CREATE TABLE IF NOT EXISTS watches (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, address TEXT NOT NULL,
-  label TEXT, since_block INTEGER NOT NULL, UNIQUE (chat_id, address)) STRICT;
+  label TEXT, since_block INTEGER NOT NULL, thread_id INTEGER, UNIQUE (chat_id, address)) STRICT;
 CREATE TABLE IF NOT EXISTS seen (chat_id INTEGER NOT NULL, address TEXT NOT NULL, token TEXT NOT NULL,
   PRIMARY KEY (chat_id, address, token)) STRICT;
 CREATE TABLE IF NOT EXISTS whales (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, token TEXT NOT NULL,
-  symbol TEXT NOT NULL, min TEXT NOT NULL, units TEXT NOT NULL, since_block INTEGER NOT NULL, UNIQUE (chat_id, token)) STRICT;
+  symbol TEXT NOT NULL, min TEXT NOT NULL, units TEXT NOT NULL, since_block INTEGER NOT NULL, thread_id INTEGER,
+  UNIQUE (chat_id, token)) STRICT;
 CREATE TABLE IF NOT EXISTS minimums (chat_id INTEGER NOT NULL, token TEXT NOT NULL, amount TEXT NOT NULL, units TEXT NOT NULL,
   PRIMARY KEY (chat_id, token)) STRICT;
 CREATE TABLE IF NOT EXISTS muted (chat_id INTEGER NOT NULL, token TEXT NOT NULL, PRIMARY KEY (chat_id, token)) STRICT;
 CREATE TABLE IF NOT EXISTS tracks (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, hash TEXT NOT NULL,
-  since_block INTEGER NOT NULL, since_time INTEGER NOT NULL, stage INTEGER NOT NULL DEFAULT 0, UNIQUE (chat_id, hash)) STRICT;
+  since_block INTEGER NOT NULL, since_time INTEGER NOT NULL, stage INTEGER NOT NULL DEFAULT 0, thread_id INTEGER,
+  UNIQUE (chat_id, hash)) STRICT;
 CREATE TABLE IF NOT EXISTS offers (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, kind TEXT NOT NULL,
   value TEXT NOT NULL, chain_time INTEGER NOT NULL) STRICT;
 CREATE TABLE IF NOT EXISTS tokens (address TEXT PRIMARY KEY, symbol TEXT, decimals INTEGER, checked_at INTEGER NOT NULL) STRICT;
@@ -28,10 +31,22 @@ CREATE TABLE IF NOT EXISTS rate (sender INTEGER PRIMARY KEY, dates TEXT NOT NULL
   last INTEGER NOT NULL) STRICT;
 CREATE TABLE IF NOT EXISTS deliveries (seq INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, tx_hash TEXT NOT NULL,
   event_index INTEGER NOT NULL, kind TEXT NOT NULL, events TEXT NOT NULL, block INTEGER, chain_time INTEGER NOT NULL,
-  state TEXT NOT NULL, message_id INTEGER, body TEXT, UNIQUE (chat_id, tx_hash, event_index)) STRICT;
+  state TEXT NOT NULL, message_id INTEGER, body TEXT, thread_id INTEGER, digest TEXT, UNIQUE (chat_id, tx_hash, event_index)) STRICT;
 CREATE INDEX IF NOT EXISTS deliveries_state ON deliveries (state, seq);
+CREATE TABLE IF NOT EXISTS feeds (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL UNIQUE, token TEXT NOT NULL,
+  symbol TEXT NOT NULL, min TEXT, min_units TEXT, min_usd TEXT, mode TEXT NOT NULL, since_block INTEGER NOT NULL,
+  thread_id INTEGER) STRICT;
+CREATE TABLE IF NOT EXISTS names (address TEXT PRIMARY KEY, labels TEXT NOT NULL, checked_at INTEGER NOT NULL) STRICT;
 `;
-const SCHEMA_VERSION = '2';
+/** A round 2 file gains round 3's columns; its new tables come from SCHEMA. One transaction: all or nothing. */
+const MIGRATE_2_TO_3 = `
+ALTER TABLE watches ADD COLUMN thread_id INTEGER;
+ALTER TABLE whales ADD COLUMN thread_id INTEGER;
+ALTER TABLE tracks ADD COLUMN thread_id INTEGER;
+ALTER TABLE deliveries ADD COLUMN thread_id INTEGER;
+ALTER TABLE deliveries ADD COLUMN digest TEXT;
+`;
+const SCHEMA_VERSION = '3';
 
 function safeFile(path, what) {
   if (!existsSync(path)) return;
@@ -58,10 +73,13 @@ export class Store {
       try { this.db = new DatabaseSync(this.file); } finally { process.umask(oldMask); }
       chmodSync(this.file, 0o600);
       this.db.exec('PRAGMA journal_mode = DELETE; PRAGMA synchronous = FULL; PRAGMA secure_delete = ON; PRAGMA temp_store = MEMORY;');
-      this.db.exec(SCHEMA);
-      const version = this.get('schema');
-      if (version !== null && version !== SCHEMA_VERSION) throw new Error('unknown schema');
-      this.transaction(() => this.set('schema', SCHEMA_VERSION));
+      const version = this.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'meta'").get() ? this.get('schema') : null;
+      if (version !== null && version !== '2' && version !== SCHEMA_VERSION) throw new Error('unknown schema');
+      this.transaction(() => {
+        if (version === '2') this.db.exec(MIGRATE_2_TO_3);
+        this.db.exec(SCHEMA);
+        this.set('schema', SCHEMA_VERSION);
+      });
       this.importRoundOne();
     } catch (error) {
       this.close();

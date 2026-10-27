@@ -28,6 +28,15 @@ export function u256(words) {
   if (!Array.isArray(words) || words.length !== 2) throw new NodeValueError();
   return unsigned(words[0], U128) + (unsigned(words[1], U128) << 128n);
 }
+/** A Cairo i129 (Ekubo's signed amount): a u128 magnitude felt and a sign felt, 1 meaning negative. */
+export function i129(magnitude, sign) {
+  const value = unsigned(magnitude, U128), negative = unsigned(sign, 2n);
+  return negative === 1n ? -value : value;
+}
+/** A Cairo short string (at most 31 ASCII characters) as a felt, such as a Pragma pair: STRK/USD is 0x5354524b2f555344. */
+export function shortString(text) {
+  return `0x${Buffer.from(text, 'latin1').toString('hex') || '0'}`;
+}
 export function decodeChain(value) {
   const hex = unsigned(value, FIELD).toString(16);
   const text = Buffer.from(hex.padStart(hex.length + hex.length % 2, '0'), 'hex').toString('utf8');
@@ -67,6 +76,11 @@ export const SELECTORS = Object.freeze({
   balanceOf: '0x02e4263afad30923c891518314c3c95dbe830a16874e8abc5777a9a20b54c76e',
   decimals: '0x004c4fb1ab068f6039d5780c68dd0fa2f8742cceb3426d19667778ca7f3518a9',
   symbol: '0x0216b05c387bab9ac31918a3e61672f4618601f3c598a2f3f2710f37053e1ea4',
+  Swapped: '0x0157717768aca88da4ac4279765f09f4d0151823d573537fbbeb950cdbd9a870',
+  Swap: '0x00e316f0d9d2a3affa97de1d99bb2aac0538e2666d0d8545545ead241ef0ccab',
+  get_data_median: '0x0024b869ce68dd257b370701ca16e4aaf9c6483ff6805d04ba7661f3a0b6ce59',
+  domain_to_address: '0x02e269d930f6d7ab92b15ce8ff9f5e63709391617e3465fff79ba6baf278ce60',
+  address_to_domain: '0x038b679fb029cc3f953635ed16ae4123da8214e726943920ba7706a0473e326a',
 });
 /** STRK pays every fee; the registry's STRK wins when it lists one. */
 export const STRK_ADDRESS = '0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d';

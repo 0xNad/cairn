@@ -3,6 +3,11 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CairnError } from './errors.mjs';
 import { normalize } from './felt.mjs';
+import { VENUES } from './venues.mjs';
+
+/** Round 3's optional contracts, each venue's included: each one switches its feature on, a missing one off. */
+export const CONTRACTS = Object.freeze(['pragma', 'naming', ...VENUES.map((v) => v.contract)]);
+const PAIR = /^[A-Z0-9]{1,10}\/[A-Z0-9]{1,10}$/;
 
 function bad(reason) { throw new CairnError(reason, 2); }
 function url(value, name, originOnly = false) {
@@ -59,6 +64,7 @@ export function loadConfig(args, env = process.env) {
     rpcTimeout: integer(env, 'CAIRN_RPC_TIMEOUT_MS', 10000, 100),
     maxBlocks: integer(env, 'CAIRN_MAX_BLOCKS', 500, 1, 10000),
     maxWatches: integer(env, 'CAIRN_MAX_WATCHES', 20, 1, 200),
+    priceMaxAge: integer(env, 'CAIRN_PRICE_MAX_AGE', 900, 1, 31_536_000),
     logLevel: env.CAIRN_LOG ?? 'info',
   };
   if (!['error', 'warn', 'info', 'debug'].includes(config.logLevel)) bad('CAIRN_LOG: must be error, warn, info or debug.');
@@ -79,7 +85,16 @@ export function loadConfig(args, env = process.env) {
     if (addresses.has(address)) entryBad(`${at}.address`, 'duplicate normalized address.');
     addresses.add(address);
     if (!Number.isInteger(t.decimals) || t.decimals < 0 || t.decimals > 36) entryBad(`${at}.decimals`, 'must be an integer from 0 to 36.');
-    return { symbol: t.symbol, address, decimals: t.decimals };
+    const pair = t.pragma_pair ?? null;
+    if (pair !== null && (typeof pair !== 'string' || !PAIR.test(pair))) entryBad(`${at}.pragma_pair`, 'use BASE/QUOTE in capitals and digits, such as STRK/USD.');
+    return { symbol: t.symbol, address, decimals: t.decimals, pragma_pair: pair };
   });
+  const contracts = network.contracts ?? {};
+  if (typeof contracts !== 'object' || Array.isArray(contracts)) entryBad('contracts', 'must be an object of contract addresses.');
+  config.contracts = {};
+  for (const key of CONTRACTS) {
+    if (contracts[key] === undefined || contracts[key] === null) continue;
+    try { config.contracts[key] = normalize(contracts[key]); } catch { entryBad(`contracts.${key}`, 'invalid Starknet address.'); }
+  }
   return config;
 }

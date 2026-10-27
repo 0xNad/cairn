@@ -1,6 +1,7 @@
 import { NodeBusy, RpcError } from './errors.mjs';
-import { cairoString, normalize, SELECTORS, STRK_ADDRESS, u256, unsigned } from './felt.mjs';
+import { cairoString, SELECTORS, STRK_ADDRESS, u256, unsigned } from './felt.mjs';
 import { plainText } from './format.mjs';
+import { addressInput, looksLikeName } from './names.mjs';
 
 export const METADATA_TTL = 7 * 24 * 3600; // seconds of chain time
 const SYMBOL_MAX = 11;
@@ -47,16 +48,16 @@ export class Tokens {
   /** Forgets cache entries older than the TTL. */
   prune(now) { this.store.sql('DELETE FROM tokens WHERE checked_at < ?').run(now - METADATA_TTL); }
   /**
-   * A token a person named: a registry symbol or any token address. Returns { token } or { error }.
-   * Throws NodeBusy when the node fails.
+   * A token a person named: a registry symbol or any token address, or a name.stark when `names` is given.
+   * Returns { token } or { error }. Throws NodeBusy when the node fails.
    */
-  async resolve(argument, now) {
+  async resolve(argument, now, names = null) {
     const value = String(argument ?? '').trim();
     if (!value) return { error: 'Name a token: a registry symbol such as STRK, or a token contract address.' };
-    if (/^0x/i.test(value)) {
-      let address;
-      try { address = normalize(value); } catch (error) { return { error: error.message.replace('address', 'token address') }; }
-      const token = await this.get(address, now);
+    if (/^0x/i.test(value) || (names && looksLikeName(value))) {
+      const input = await addressInput(value, names);
+      if (input.error) return { error: input.error.replace('Invalid address', 'Invalid token address') };
+      const token = await this.get(input.address, now);
       return token ? { token } : { error: 'That contract is not an ERC-20 token: it does not answer decimals from 0 to 36.' };
     }
     const token = this.bySymbol(value);

@@ -1,7 +1,10 @@
 import { RpcError } from './errors.mjs';
 import { FIELD, hex64, NodeValueError, normalize, SELECTORS, u256, unsigned } from './felt.mjs';
 
-/** Round 2's chain-wide filter: every Transfer and Approval, from any contract. Round 3 adds venue filters. */
+/**
+ * Round 2's chain-wide filter: every Transfer and Approval, from any contract. Round 3's venue filters
+ * (src/venues.mjs) are read on the same ranges, and the trade feed reads its traders from this one.
+ */
 export const TOKEN_EVENTS = Object.freeze({ keys: [[SELECTORS.Transfer, SELECTORS.Approval]] });
 const PAGE = 1000; // some providers refuse more than 1024
 const MAX_PAGES = 10_000;
@@ -50,13 +53,29 @@ export class Scanner {
   }
 }
 
+/**
+ * The headers of the blocks a pass needs (time and sequencer_address), each read once: { number, timestamp,
+ * sequencer }. A failed read fails the range, which the next pass reads again.
+ */
+export function blockHeaders(rpc) {
+  const memo = new Map();
+  return async (number) => {
+    if (!memo.has(number)) {
+      const block = await rpc.call('starknet_getBlockWithTxHashes', { block_id: { block_number: number } });
+      if (!Number.isSafeInteger(block?.timestamp)) throw new NodeValueError();
+      memo.set(number, { number, timestamp: block.timestamp, sequencer: hex64(block.sequencer_address ?? '0x0') });
+    }
+    return memo.get(number);
+  };
+}
+
 const TRANSFER = BigInt(SELECTORS.Transfer), APPROVAL = BigInt(SELECTORS.Approval);
 /**
  * Token events decoded by their shape alone: keys [sel, a, b] with data [low, high] is a modern ERC-20 event;
  * keys [sel] with data [a, b, low, high] is legacy (an ERC-20 only if its contract answers decimals, which
  * the caller checks); anything else, such as an NFT with its token id in the keys, is dropped. Returns
- * { kind, token, a, b, amount, legacy, block, tx, index } in chain order; a is the sender or owner, b the
- * recipient or spender.
+ * { kind, token, a, b, amount, legacy, block, tx, txIndex, index } in chain order; a is the sender or owner,
+ * b the recipient or spender.
  */
 export function decodeTokenEvents(raw) {
   const out = [], ordinal = new Map();
@@ -78,7 +97,7 @@ export function decodeTokenEvents(raw) {
       ordinal.set(tx, seen + 1);
       const index = Number.isSafeInteger(e.event_index) && e.event_index >= 0 ? e.event_index : seen;
       out.push({ kind, token: hex64(e.from_address), a: hex64(parties[0]), b: hex64(parties[1]), amount: u256(words), legacy,
-        block: e.block_number, tx, index });
+        block: e.block_number, tx, txIndex: Number.isSafeInteger(e.transaction_index) ? e.transaction_index : null, index });
     } catch { /* not a token event Cairn can read: ignored */ }
   }
   return out;

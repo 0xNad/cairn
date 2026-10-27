@@ -8,6 +8,11 @@ export function decimal(value, decimals) {
   return `${whole}${fraction ? `.${fraction}` : ''}`;
 }
 export const amount = (value, decimals, symbol) => `${decimal(value, decimals)} ${symbol}`;
+/** US dollars from cents (round 3): $1,234.57, or <$0.01 for a value above zero that rounds to no cent. */
+export function dollars(cents, aboveZero = cents > 0n) {
+  if (cents === 0n && aboveZero) return '<$0.01';
+  return `$${decimal(cents / 100n, 0)}.${(cents % 100n).toString().padStart(2, '0')}`;
+}
 /**
  * Base units from a decimal a person typed ("1000000", "2.000001", "1,000.5"), or a reason. No sign, no
  * exponent, no more fraction digits than the token has, and below 2^256.
@@ -61,10 +66,15 @@ export function textLines(text, clean) {
 export function messages(lines) {
   const result = [];
   let current = '';
-  for (const line of lines) {
-    if (line.length > 4096) throw new Error('HTML line exceeds message size');
+  const add = (line) => {
     if (current.length + line.length + 1 > 4096) { result.push(current); current = ''; }
     current += `${current ? '\n' : ''}${line}`;
+  };
+  for (const line of lines) {
+    // A line too long for one message (an outside string left unbounded) goes as plain text in pieces,
+    // never cut inside a tag or an entity, rather than stopping the bot.
+    if (line.length > 4096) for (const piece of textLines(unescapeHtml(line.replace(/<[^>]*>/g, '')), String)) add(piece);
+    else add(line);
   }
   if (current) result.push(current);
   return result;
