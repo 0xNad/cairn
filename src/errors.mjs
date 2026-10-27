@@ -5,7 +5,11 @@ export class CairnError extends Error {
   }
 }
 export class NodeBusy extends CairnError {
-  constructor() { super('node busy: check the RPC origin or retry later.'); }
+  /** `why`: what the last try got (an HTTP status, no answer…), for an operator; never a URL. */
+  constructor(why = null) {
+    super('node busy: check the RPC origin or retry later.');
+    this.why = why;
+  }
 }
 /**
  * A request pinned to one endpoint failed there (round 4): a continuation token is only valid on the endpoint that

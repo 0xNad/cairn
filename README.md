@@ -282,7 +282,8 @@ everything it keeps is one SQLite file in its data directory.
   by default). Providers often serve several spec versions at different paths: use the 0.10 one.
 - Each pass reads one chain-wide `starknet_getEvents` filter with no contract address, plus block headers and
   a few calls: a few requests every `CAIRN_POLL_MS` (10 s), capped by `CAIRN_RPC_RPS` (5 per second). Some free
-  plans refuse event filters without an address or throttle them; `doctor` and the first passes show it.
+  plans refuse event filters without an address: `doctor` tries that filter on each endpoint and says
+  `"events":"ok"` or why not.
 - **Use two endpoints from different providers** in `STARKNET_RPC_URLS`, your best first:
   `STARKNET_RPC_URLS=https://<provider>/<path>/<your-key>,https://starknet-rpc.publicnode.com`. Cairn uses the
   first one that answers and moves to the next on a 429, a 5xx, a timeout or a broken answer, then comes back
@@ -297,7 +298,8 @@ everything it keeps is one SQLite file in its data directory.
 ### 3. Run it with Docker
 
 The image is Node.js 24 on Alpine with Cairn's files; it runs as the unprivileged `node` user and keeps its
-state in the volume `/data`.
+state in the volume `/data` (with a host directory instead, `-v /srv/cairn:/data`, make it owned by uid 1000
+first: `sudo chown 1000:1000 /srv/cairn`).
 
 ```sh
 git clone https://github.com/0xNad/cairn && cd cairn
@@ -312,8 +314,8 @@ docker run -d --name cairn --restart unless-stopped --env-file .env \
 docker logs -f cairn
 ```
 
-`doctor` prints one line with the bot's username and each endpoint's chain, head block and spec, or says
-what is wrong. The image serves `/healthz` and `/metrics` on port 8080 (`CAIRN_HTTP_PORT`), and Docker's own
+`doctor` prints one line with the bot's username and each endpoint's chain, head block, spec and `events`
+(whether it serves the event filter), or says what is wrong. The image serves `/healthz` and `/metrics` on port 8080 (`CAIRN_HTTP_PORT`), and Docker's own
 health check reads `/healthz`: `docker ps` shows `healthy` once blocks arrive. `-p 127.0.0.1:8080:8080`
 publishes it on the host's loopback only, and the log options keep at most 30 MB of logs. Write `.env` values
 without quotes: `--env-file` keeps them. With Compose, `docker compose up -d --build` does the same from
@@ -361,10 +363,12 @@ exit 2 (a configuration error) or 3 (a rejected token), which restarting cannot 
   Nothing else is served: other paths are 404, other methods 405.
 - **In Telegram:** send `/start` and `/status` to the bot (`/status` names the endpoint in use when there are
   several), then `/network on` in your group. `/export` in a private chat shows your chat id: set it as
-  `CAIRN_OPERATOR_CHAT` and restart, and Cairn tells you, and only you, when every endpoint fails and when
-  one answers again.
-- **Failover:** break the first endpoint (a wrong key in its URL, say) and restart: `/healthz` stays 200, the
-  logs say `{"level":"warn","event":"rpc endpoint","using":"endpoint 2 of 2"}`, and `cairn_rpc_endpoint` is 2.
+  `CAIRN_OPERATOR_CHAT` and apply it (`docker rm -f cairn`, then the `docker run` above: `docker restart`
+  keeps the old settings; or `sudo systemctl restart cairn`), and Cairn tells you, and only you, when every
+  endpoint fails and when one answers again.
+- **Failover:** break the first endpoint (a wrong key in its URL, say) and apply it the same way: `/healthz`
+  stays 200, the logs say `{"level":"warn","event":"rpc endpoint","using":"endpoint 2 of 2"}`, and
+  `cairn_rpc_endpoint` is 2.
 
 ### 5. Stop, upgrade, back up
 
@@ -387,17 +391,19 @@ exit 2 (a configuration error) or 3 (a rejected token), which restarting cannot 
 
 ## Run it
 
-Node.js 24 or later, nothing else: Cairn has no dependencies. Create a bot with
-[@BotFather](https://t.me/BotFather), then:
+To try it on your own machine: Node.js 24 or later, nothing else (Cairn has no dependencies). Create a bot
+with [@BotFather](https://t.me/BotFather), then:
 
 ```sh
 git clone https://github.com/0xNad/cairn && cd cairn
-cp .env.example .env    # put your bot token and an RPC URL in it, then load it into your shell
-node cairn.mjs doctor   # checks the token, the node's chain and its RPC version
-node cairn.mjs run
+cp .env.example .env                    # put your bot token and an RPC URL in it
+node --env-file=.env cairn.mjs doctor   # checks the token, each endpoint's chain, spec and event filter
+node --env-file=.env cairn.mjs run
 ```
 
-`doctor` prints one JSON line with the bot username, decoded chain, block number and RPC version.
+To keep it running, [deploy it](#deploy-it). `doctor` prints one JSON line with the bot username, decoded
+chain, block number, RPC version and `events` (whether the endpoint serves the event filter), and with
+`STARKNET_RPC_URLS` the same for each endpoint.
 `tick` does one pass and prints `{"updates":n,"sent":n,"head":n,"alerts":n,"cursor":n}`: `alerts` counts the
 alerts Telegram accepted, `cursor` is the last block scanned (a busy node gives `head: null`). `run` makes a
 pass every `CAIRN_POLL_MS` and long-polls Telegram in between; SIGINT and SIGTERM cancel polling, RPC calls
@@ -717,6 +723,9 @@ npm run check       # rounds 1 to 4: node .launchpad/checks/round-<n>/run.mjs
 npm test            # node --test test/*.test.mjs
 npm run transcript  # round 4's network, reorg and guard scenarios, on the checks' fakes, printed as a chat
 ```
+
+Without Node.js 24 on the machine, the same through Docker:
+`docker run --rm -v "$PWD":/app -w /app node:24-alpine node scripts/transcript.mjs`.
 
 The published checks use local fake Telegram and Starknet services and exercise the CLI as child
 processes, including kills, retries, strict host limits and credential scans. The unit tests cover

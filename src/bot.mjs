@@ -12,7 +12,7 @@ import { Network } from './network.mjs';
 import { Prices } from './prices.mjs';
 import { RateLimit } from './rate.mjs';
 import { because, correction, Forks, standing, verdicts } from './reorg.mjs';
-import { blockHeaders, Scanner } from './scanner.mjs';
+import { blockHeaders, Scanner, TOKEN_EVENTS } from './scanner.mjs';
 import { Store } from './store.mjs';
 import { Subscriptions } from './subscriptions.mjs';
 import { plan, summarise } from './summary.mjs';
@@ -59,21 +59,33 @@ async function handshake(rpc, index, config, clean) {
   }
   return { chain, spec: clean(spec) };
 }
-/** doctor's line: the bot, then the chain, head and spec of the first endpoint, and of each one when there are several. */
+/**
+ * doctor's line: the bot, then the chain, head and spec of the first endpoint, and of each one when there are
+ * several, with whether it serves the chain-wide event filter every alert comes from (`events`: "ok", or why not).
+ */
 async function doctor(rpc, username) {
   const rows = [];
   for (const endpoint of rpc.endpoints) {
-    let block;
-    try { block = await rpc.call('starknet_blockNumber', {}, { endpoint: endpoint.index }); }
-    catch (error) {
+    const at = { endpoint: endpoint.index };
+    let block, events = 'ok';
+    try {
+      block = await rpc.call('starknet_blockNumber', {}, at);
+      if (!Number.isSafeInteger(block) || block < 0) throw new CairnError(`${rpc.name(endpoint.index)} returned an invalid block number.`);
+      const range = { from_block: { block_number: Math.max(0, block - 1) }, to_block: { block_number: Math.max(0, block - 1) } };
+      try { await rpc.call('starknet_getEvents', { filter: { ...range, ...TOKEN_EVENTS, chunk_size: 1000 } }, at); }
+      catch (error) {
+        if (!(error instanceof RpcError)) throw error;
+        events = `refused (RPC error ${error.code})`;
+        log('warn', `${rpc.name(endpoint.index)} refuses the chain-wide event filter (RPC error ${error.code}): alerts and feeds need it, so pick another endpoint.`);
+      }
+    } catch (error) {
       if (error instanceof NodeBusy) throw new CairnError(`node busy: ${rpc.name(endpoint.index)} did not answer; check the RPC origin or retry later.`);
       throw error;
     }
-    if (!Number.isSafeInteger(block) || block < 0) throw new CairnError(`${rpc.name(endpoint.index)} returned an invalid block number.`);
-    rows.push({ endpoint: endpoint.index + 1, ...endpoint.identity, block });
+    rows.push({ endpoint: endpoint.index + 1, ...endpoint.identity, block, events });
   }
   const [first] = rows;
-  return { bot: username, chain: first.chain, block: first.block, spec: first.spec, ...(rows.length > 1 ? { endpoints: rows } : {}) };
+  return { bot: username, chain: first.chain, block: first.block, spec: first.spec, events: first.events, ...(rows.length > 1 ? { endpoints: rows } : {}) };
 }
 
 export async function serve(config, signal) {
@@ -88,8 +100,10 @@ export async function serve(config, signal) {
     try { await rpc.identify(endpoint.index); }
     catch (error) {
       if (signal.aborted || (error instanceof CairnError && error.exitCode === 2)) throw error;
-      if (config.mode === 'doctor') throw new CairnError(`node busy: ${rpc.name(endpoint.index)} did not answer; check the RPC origin or retry later.`);
-      log('warn', `node busy: ${rpc.name(endpoint.index)} will be checked again before its first chain read.`);
+      const got = error instanceof RpcError ? `RPC error ${error.code}` : error.why ?? 'no usable answer';
+      const why = `node busy: ${rpc.name(endpoint.index)} fails the handshake (${got}); check its URL (its path for spec 0.10), its key and its limits`;
+      if (config.mode === 'doctor') throw new CairnError(`${why}.`);
+      log('warn', `${why}. It is checked again before its first chain read.`);
     }
   }
   if (config.mode === 'doctor') return doctor(rpc, username);
@@ -223,7 +237,8 @@ class Bot {
       if (!validHeader(block)) throw new NodeValueError();
       if (this.rpc.endpoints.length > 1 && this.network.stalling(block, now)) block = await this.freshest(block);
       this.head = block;
-      this.rpcOk ||= this.store.cursor === null || this.scanner.next(this.store.cursor, block.block_number - this.config.confirmations) === null;
+      // /healthz is "rpc" again once nothing waits to be scanned, or once a scan reads its range (scan() says so).
+      if (this.store.cursor === null || !this.scanner.next(this.store.cursor, block.block_number - this.config.confirmations)) this.rpcOk = true;
       // The first head ever read sets the cursor (with confirmations, the first safe block): Cairn never backfills.
       if (this.store.cursor === null) this.store.transaction(() => { this.store.cursor = Math.max(0, block.block_number - this.config.confirmations); });
       this.network.observe(block, { now, endpoint: this.rpc.name(this.rpc.current) });

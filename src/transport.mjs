@@ -114,7 +114,7 @@ export class Rpc {
     const now = performance.now(), fresh = (e) => now - e.failedAt >= FAILBACK_MS;
     return this.endpoints.filter((e) => !skip.has(e.index)).sort((a, b) => Number(fresh(b)) - Number(fresh(a)) || a.index - b.index);
   }
-  /** One HTTP request to one endpoint: { result }, { rpcError }, { retry, wait } or { refused }. */
+  /** One HTTP request to one endpoint: { result }, { rpcError }, { retry, retryAfter, why } or { refused, why }. */
   async #attempt(endpoint, method, params, round) {
     await this.#slot();
     endpoint.requests++;
@@ -127,24 +127,26 @@ export class Rpc {
     try {
       const id = ++this.#id;
       const { response, json } = await post(endpoint.url, { jsonrpc: '2.0', id, method, params }, this.config.rpcTimeout, this.signal);
-      if (response.status === 429 || response.status >= 500) return failed({ retry: true, retryAfter: retryAfterOf(response) });
-      if (!response.ok) return failed({ refused: true }); // no retry fixes it: try another endpoint
+      const why = `HTTP ${response.status}`;
+      if (response.status === 429 || response.status >= 500) return failed({ retry: true, retryAfter: retryAfterOf(response), why });
+      if (!response.ok) return failed({ refused: true, why }); // no retry fixes it: try another endpoint
       if (json?.jsonrpc === '2.0' && json.id === id && (json.error || Object.hasOwn(json, 'result'))) {
         endpoint.failedAt = -Infinity;
         return json.error ? { rpcError: json.error.code } : { result: json.result };
       }
+      return failed({ retry: true, why: 'an answer that is not JSON-RPC' });
     } catch (error) {
       if (this.signal.aborted) throw error;
-      // Interrupted connections, timeouts and malformed bodies are retried, never logged verbatim.
+      // Interrupted connections and timeouts are retried, never logged verbatim.
+      return failed({ retry: true, why: 'no answer: timeout or connection error' });
     }
-    return failed({ retry: true });
   }
   /** The result of `method`, and which endpoint gave it: { result, endpoint }. */
   async request(method, params = {}, { endpoint: pinned } = {}) {
     if (!READ_METHODS.has(method)) throw new CairnError('Unsupported RPC method.');
     if (params.block_id !== undefined && !validBlockId(params.block_id)) throw new CairnError('Unsupported block identifier.');
     const skip = new Set();
-    let last = null;
+    let last = null, why = null;
     for (let round = 0; round < 3; round++) {
       const ready = pinned === undefined ? this.#order(skip) : skip.has(pinned) ? [] : [this.endpoints[pinned]];
       if (!ready.length) break;
@@ -175,11 +177,12 @@ export class Rpc {
           endpoint.failedAt = performance.now();
           skip.add(endpoint.index);
         }
+        why = outcome.why ?? why;
         if (outcome.refused) skip.add(endpoint.index);
       }
     }
     if (last && skip.size === this.endpoints.length) throw last;
-    throw pinned === undefined ? new NodeBusy() : new EndpointLost();
+    throw pinned === undefined ? new NodeBusy(why) : new EndpointLost(why);
   }
   async call(method, params = {}, options = {}) { return (await this.request(method, params, options)).result; }
 }
