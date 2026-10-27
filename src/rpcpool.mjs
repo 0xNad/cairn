@@ -7,6 +7,7 @@ export class RpcPool {
     const rate = { times: [] };
     this.clients = (config.rpcUrls ?? [config.rpcUrl]).map(rpcUrl => new Rpc({ ...config, rpcUrl }, signal, rate));
     this.active = 0;
+    this.generation = 0; // Detect switches even if failover eventually returns to the same endpoint.
     this.errors = 0;
     this.verified = new Set();
     this.verify = null;
@@ -31,6 +32,7 @@ export class RpcPool {
       } catch (error) {
         if (!(error instanceof NodeBusy)) throw error;
         this.errors++;
+        this.generation++;
         this.active = (i + 1) % this.clients.length;
         if (n + 1 < this.clients.length && params.filter?.continuation_token) throw new RpcError(33);
       }

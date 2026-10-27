@@ -132,6 +132,7 @@ async function passWorld(extra={}) {
     calls.push([method,p]);
     if(method==='starknet_getBlockWithTxHashes')return blocks.get(p.block_id==='latest'?head:p.block_id.block_number);
     if(method==='starknet_getTransactionReceipt'){const tx=txs.get(p.transaction_hash);if(!tx)throw new RpcError(29);return {block_number:tx.block};}
+    if(method==='starknet_getTransactionStatus'){if(!txs.has(p.transaction_hash))throw new RpcError(29);return {finality_status:'ACCEPTED_ON_L2'};}
     if(method==='starknet_getEvents'){
       const f=p.filter,events=[...txs.values()].filter(t=>t.block>=f.from_block.block_number&&t.block<=f.to_block.block_number).flatMap((t,index)=>t.events.map((e,i)=>({...e,block_number:t.block,transaction_hash:t.hash,event_index:i,transaction_index:index})));
       const offset=Number(f.continuation_token??0),end=offset+5;return {events:events.slice(offset,end),...(end<events.length?{continuation_token:String(end)}:{})};
@@ -313,4 +314,150 @@ test('run resets outage latch on update-path recovery and sends exactly two oper
     assert.equal(polls,4);
     assert.deepEqual(notices().map(m=>m.chat_id),[3,3]);
   }finally{Date.now=wallClock;controller.abort();w.close()}
+});
+
+test('review 1: orphaned Accepted on L2 track notice receives one correction',async()=>{
+  const w=await passWorld();try{
+    const call=w.bot.rpc.call;
+    w.bot.rpc.call=async(method,p)=>method==='starknet_getTransactionStatus'
+      ? (w.txs.has(p.transaction_hash)?{finality_status:'ACCEPTED_ON_L2',execution_status:'SUCCEEDED'}:Promise.reject(new RpcError(29))) : call(method,p);
+    await w.command(w.chat,'/track 0xa');w.add(2);w.tx('0xa',11);await w.pass();
+    const notice=w.sent.find(m=>/Accepted on L2/.test(m.text));assert.ok(notice);
+    const row=w.store.sql("SELECT block FROM deliveries WHERE kind='track'").get();assert.equal(row.block,11);
+    w.reorg(10);await w.pass();await w.pass();
+    assert.equal(w.sent.filter(m=>m.reply_parameters?.message_id===notice.message_id).length,1);
+  }finally{w.close()}
+});
+
+test('review 3: each original message gets a correction in its topic, deduplicated after restart',async()=>{
+  const w=await passWorld();try{
+    w.add();const tx=w.tx('0xa');await w.pass();
+    for(const [eventIndex,thread]of [[0,17],[1,21]])w.bot.ledger.add({chatId:1,txHash:tx.hash,eventIndex,kind:eventIndex?'trade':'alert',block:11,chainTime:1022,body:'Original notice',thread});
+    await w.bot.deliver();const originals=w.sent.slice();assert.equal(originals.length,2);
+    w.reorg(10);await w.pass();await w.pass();
+    for(const original of originals){
+      const corrections=w.sent.filter(m=>m.reply_parameters?.message_id===original.message_id);
+      assert.equal(corrections.length,1);assert.equal(corrections[0].message_thread_id,original.message_thread_id);
+    }
+    const count=w.sent.length;w.restart();await w.pass();w.reorg(10);await w.pass();await w.pass();assert.equal(w.sent.length,count);
+  }finally{w.close()}
+});
+
+test('review 4: deleted original does not discard its correction',async()=>{
+  const {TelegramRefused}=await import('../src/errors.mjs');
+  const w=await passWorld();try{
+    w.bot.ledger.add({chatId:1,txHash:hex64('0xa'),eventIndex:0,kind:'alert',block:10,chainTime:1020,body:'Original notice'});
+    await w.bot.deliver();const original=w.store.sql("SELECT * FROM deliveries WHERE kind='alert'").get();
+    const call=w.bot.tg.call;
+    w.bot.tg.call=async(method,p)=>{
+      if(method==='sendMessage'&&p.reply_parameters?.message_id===original.message_id&&!p.reply_parameters.allow_sending_without_reply)
+        throw new TelegramRefused(method,400,{description:'Bad Request: message to be replied not found'});
+      return call(method,p);
+    };
+    w.bot.ledger.correct(original,{block:10,chainTime:1020,body:'↩️ Correction: transaction removed.'});await w.bot.deliver();
+    assert.equal(w.store.sql("SELECT state FROM deliveries WHERE kind='correction'").get().state,'sent');
+    assert.equal(w.sent.at(-1).reply_parameters.allow_sending_without_reply,true);
+  }finally{w.close()}
+});
+
+test('review 5: network and guard use shared settings dispatch, persist, and reject members',async()=>{
+  const {SETTINGS}=await import('../src/settings.mjs');const {respond}=await import('../src/commands.mjs');
+  const w=await passWorld();try{
+    assert.ok(SETTINGS.has('network')&&SETTINGS.has('guard'));
+    const ctx=w.bot.context(w.group,{from:{id:2}});
+    for(const command of [{name:'network',argument:'on'},{name:'guard',argument:'links off'}]){
+      const commit=await respond(command,ctx);w.store.transaction(commit);
+    }
+    w.restart();assert.equal(w.bot.guards.settings(-2).network,1);assert.equal(w.bot.guards.settings(-2).links,0);
+    await w.command(w.group,'/guard links on');w.setAdmin(false);
+    for(const command of ['/network off','/guard seed off','/guard links off']){
+      await w.command(w.group,command);assert.match(w.sent.at(-1).text,/administrator/);
+    }
+    assert.equal(w.bot.guards.settings(-2).network,1);assert.equal(w.bot.guards.settings(-2).seed,1);assert.equal(w.bot.guards.settings(-2).links,1);
+    await w.command(w.chat,'/guard seed off');w.restart();assert.equal(w.bot.guards.settings(1).seed,0);
+  }finally{w.close()}
+});
+
+test('review 2a: missing receipt with RECEIVED status is deferred and re-inclusion is never corrected',async()=>{
+  const w=await passWorld();try{
+    await w.command(w.chat,'/watch 0x20');w.add();const tx=w.tx('0xa');await w.pass();
+    const original=w.sent.at(-1),call=w.bot.rpc.call;
+    w.reorg(10);
+    w.bot.rpc.call=async(method,p)=>method==='starknet_getTransactionStatus'?{finality_status:'RECEIVED'}:call(method,p);
+    await w.pass();assert.equal(w.sent.filter(m=>m.reply_parameters?.message_id===original.message_id).length,0);
+    w.restart();w.add();w.txs.set(tx.hash,{...tx,block:w.head});
+    await w.pass();await w.pass();
+    assert.equal(w.sent.filter(m=>m.reply_parameters?.message_id===original.message_id).length,0);
+    assert.equal(w.sent.filter(m=>m.text.includes(tx.hash)).length,1);
+  }finally{w.close()}
+});
+
+test('review 2b: receipt and status not-found correct immediately once across restart',async()=>{
+  const w=await passWorld();try{
+    await w.command(w.chat,'/watch 0x20');w.add();w.tx('0xa');await w.pass();const original=w.sent.at(-1);
+    const before=w.calls.length;w.reorg(10);await w.pass();
+    assert.equal(w.sent.filter(m=>m.reply_parameters?.message_id===original.message_id).length,1);
+    assert.ok(w.calls.slice(before).some(([m])=>m==='starknet_getTransactionStatus'));
+    w.restart();await w.pass();w.reorg(10);await w.pass();
+    assert.equal(w.sent.filter(m=>m.reply_parameters?.message_id===original.message_id).length,1);
+  }finally{w.close()}
+});
+
+test('review 2c: failed status read survives restart and a later pass confirms removal once',async()=>{
+  const w=await passWorld();try{
+    await w.command(w.chat,'/watch 0x20');w.add();w.tx('0xa');await w.pass();const original=w.sent.at(-1),call=w.bot.rpc.call;
+    w.reorg(10);
+    w.bot.rpc.call=async(method,p)=>{if(method==='starknet_getTransactionStatus')throw new NodeBusy();return call(method,p)};
+    await w.pass();assert.equal(w.sent.filter(m=>m.reply_parameters?.message_id===original.message_id).length,0);
+    w.bot.rpc.call=call;w.restart();await w.pass();await w.pass();
+    assert.equal(w.sent.filter(m=>m.reply_parameters?.message_id===original.message_id).length,1);
+  }finally{w.close()}
+});
+
+test('review 2 endpoint: failover away and back cannot confirm absence against another provider history',async()=>{
+  const w=await passWorld();try{
+    await w.command(w.chat,'/watch 0x20');w.add(2);w.tx('0xa',11);await w.pass();const original=w.sent.at(-1);
+    const call=w.bot.rpc.call,pool=new RpcPool({rpcUrls:['http://a','http://b']},w.bot.signal);
+    let switched=false;
+    pool.clients=[{call:async(method,p)=>{
+      if(method==='starknet_getBlockWithTxHashes'&&p.block_id?.block_number===11&&!switched){switched=true;throw new NodeBusy()}
+      return call(method,p);
+    }},{call:async(method,p)=>{
+      if(method==='starknet_getBlockWithTxHashes'&&p.block_id?.block_number===10)throw new NodeBusy();
+      return call(method,p);
+    }}];
+    w.bot.rpc=w.bot.network.rpc=w.bot.scanner.rpc=pool;
+    w.reorg(10);await w.pass();
+    assert.equal(pool.active,0);assert.equal(pool.generation,2);
+    assert.equal(w.sent.filter(m=>m.reply_parameters?.message_id===original.message_id).length,0);
+    await w.pass();await w.pass();
+    assert.equal(w.sent.filter(m=>m.reply_parameters?.message_id===original.message_id).length,1);
+  }finally{w.close()}
+});
+
+test('review 2 bound: unresolved checks expire silently after reorg depth blocks and retain original history',async()=>{
+  const w=await passWorld({reorgDepth:2});try{
+    await w.command(w.chat,'/watch 0x20');w.add();w.tx('0xa');await w.pass();const original=w.sent.at(-1),call=w.bot.rpc.call;
+    w.bot.rpc.call=async(method,p)=>method==='starknet_getTransactionStatus'?{finality_status:'RECEIVED'}:call(method,p);
+    w.reorg(10);await w.pass();
+    const row=()=>w.store.sql("SELECT * FROM deliveries WHERE kind='alert'").get();
+    assert.equal(JSON.parse(row().digest).reorg,11);
+    w.add();await w.pass();assert.equal(JSON.parse(row().digest).reorg,11);
+    w.restart();w.add();await w.pass(); // Expire at the bound before a not-found status can cause a correction.
+    assert.equal(row().digest,null);assert.equal(row().state,'sent');assert.equal(row().message_id,original.message_id);
+    await w.pass();assert.equal(w.sent.filter(m=>m.reply_parameters?.message_id===original.message_id).length,0);
+  }finally{w.close()}
+});
+
+test('review 2 status failover: not-found from a new provider is deferred until its own head is read',async()=>{
+  const w=await passWorld();try{
+    await w.command(w.chat,'/watch 0x20');w.add();w.tx('0xa');await w.pass();const original=w.sent.at(-1);
+    const call=w.bot.rpc.call,pool=new RpcPool({rpcUrls:['http://a','http://b']},w.bot.signal);
+    pool.clients=[{call:async(method,p)=>{if(method==='starknet_getTransactionStatus')throw new NodeBusy();return call(method,p)}},{call}];
+    w.bot.rpc=w.bot.network.rpc=w.bot.scanner.rpc=pool;
+    w.reorg(10);await w.pass();assert.equal(pool.active,1);
+    assert.equal(w.sent.filter(m=>m.reply_parameters?.message_id===original.message_id).length,0);
+    await w.pass();await w.pass();
+    assert.equal(w.sent.filter(m=>m.reply_parameters?.message_id===original.message_id).length,1);
+  }finally{w.close()}
 });

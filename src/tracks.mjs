@@ -40,18 +40,19 @@ export async function trackStep(track, { rpc, head, fmt }) {
       const reason = String(receipt?.revert_reason ?? status?.failure_reason ?? 'not given');
       const cut = reason.length > REASON_MAX ? `${reason.slice(0, REASON_MAX)}… (full reason: /tx ${track.hash})` : reason;
       return { stage: 'done', delivery: delivery(track, STAGE.accepted, head,
-        `⚠️ <b>Reverted on L2</b> · ${run}\n${where}\nRevert reason:\n${escapeHtml(cut)}`) };
+        `⚠️ <b>Reverted on L2</b> · ${run}\n${where}\nRevert reason:\n${escapeHtml(cut)}`, receipt.block_number) };
     }
     if (finality === 'ACCEPTED_ON_L1') {
-      return { stage: 'done', delivery: delivery(track, STAGE.accepted, head, `🏁 <b>Accepted on L2 and L1</b> · ${run}: final on Ethereum.\n${where}`) };
+      return { stage: 'done', delivery: delivery(track, STAGE.accepted, head, `🏁 <b>Accepted on L2 and L1</b> · ${run}: final on Ethereum.\n${where}`, receipt.block_number) };
     }
-    return { stage: 1, delivery: delivery(track, STAGE.accepted, head, `✅ <b>Accepted on L2</b> · ${run}\n${where}`) };
+    return { stage: 1, delivery: delivery(track, STAGE.accepted, head, `✅ <b>Accepted on L2</b> · ${run}\n${where}`, receipt.block_number) };
   }
   if (track.stage === 1 && finality === 'ACCEPTED_ON_L1') {
-    return { stage: 'done', delivery: delivery(track, STAGE.final, head, `🏁 <b>Accepted on L1</b>: final on Ethereum.\n${fmt.tx(track.hash, 'View transaction')}`) };
+    const receipt = await rpc.call('starknet_getTransactionReceipt', { transaction_hash: track.hash });
+    return { stage: 'done', delivery: delivery(track, STAGE.final, head, `🏁 <b>Accepted on L1</b>: final on Ethereum.\n${fmt.tx(track.hash, 'View transaction')}`, receipt.block_number) };
   }
   return null;
 }
 
-const delivery = (track, eventIndex, head, body) => ({ chatId: track.chat_id, txHash: track.hash, eventIndex, kind: 'track',
-  chainTime: head.timestamp, body, thread: track.thread_id ?? null });
+const delivery = (track, eventIndex, head, body, block = null) => ({ chatId: track.chat_id, txHash: track.hash, eventIndex, kind: 'track',
+  block: Number.isSafeInteger(block) ? block : null, chainTime: head.timestamp, body, thread: track.thread_id ?? null });

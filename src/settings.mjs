@@ -12,7 +12,7 @@ import { VENUES } from './venues.mjs';
 // update, before any reply is sent. In groups every one of them but /list needs an administrator. A feed,
 // watch, whale or track set up in a forum topic posts into that topic.
 
-export const SETTINGS = new Set(['watch', 'unwatch', 'list', 'whale', 'unwhale', 'min', 'mute', 'unmute', 'track', 'export', 'forget', 'feed', 'unfeed']);
+export const SETTINGS = new Set(['watch', 'unwatch', 'list', 'whale', 'unwhale', 'min', 'mute', 'unmute', 'track', 'export', 'forget', 'feed', 'unfeed', 'network', 'guard']);
 const OPEN_IN_GROUPS = new Set(['list']);
 const BUSY = 'node busy: Cairn cannot read the chain right now, so nothing was changed. Please try again shortly.';
 const ADMIN_ONLY = 'Only an administrator of this group can change Cairn’s settings. Anyone here can read them with /list.';
@@ -37,6 +37,17 @@ export async function setting(command, ctx) {
 const watchName = (ctx, w, name = null) => ctx.fmt.contract(w.address, w.label ? escapeHtml(w.label) : name ? escapeHtml(name) : short(w.address));
 
 const HANDLERS = {
+  async network(arg, ctx) {
+    if (!/^(on|off)$/.test(arg)) return say('Usage: /network on|off');
+    return () => { ctx.guards.set(ctx.chat, 'network', arg === 'on'); return say(`Network alerts: ${arg}.`)(); };
+  },
+
+  async guard(arg, ctx) {
+    const match = /^(seed|links) (on|off)$/.exec(arg);
+    if (!match) return say('Usage: /guard seed|links on|off');
+    return () => { ctx.guards.set(ctx.chat, match[1], match[2] === 'on'); return say(`${match[1]} guard: ${match[2]}.`)(); };
+  },
+
   async watch(arg, ctx) {
     const m = /^(\S+)(?:\s+([\s\S]+))?$/.exec(arg);
     if (!m) return say('Usage: /watch &lt;address|name.stark&gt; [label], for example /watch 0x0471…938d Treasury or /watch ben.stark.');

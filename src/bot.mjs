@@ -181,6 +181,7 @@ export class Bot {
       const block = await this.rpc.call('starknet_getBlockWithTxHashes', { block_id: 'latest' });
       if (!Number.isSafeInteger(block?.block_number) || block.block_number < 0 || !Number.isSafeInteger(block.timestamp)) throw new Error('invalid header');
       this.head = block;
+      this.headEndpoint = this.rpc.generation ?? 0;
       // Update handling also reads the head without running the periodic step.
       this.store.set('rpc_outage', 0);
       // The first head ever read becomes the cursor: Cairn never backfills.
@@ -240,15 +241,6 @@ export class Bot {
         return verdict === 'notice' ? { ...target, lines: textLines(SLOW_DOWN, this.clean) } : null;
       };
     }
-    if (['network', 'guard'].includes(command.name)) {
-      const ctx = this.context(chat, message);
-      const reply = lines => () => { resume(); this.rate.note(sender, message.date, 'ok'); return { ...target, lines }; };
-      if (!(await ctx.admin())) return reply(['Only an administrator can change these settings.']);
-      const match = command.name === 'network' ? /^(on|off)$/.exec(command.argument) : /^(seed|links) (on|off)$/.exec(command.argument);
-      if (!match) return reply([command.name === 'network' ? 'Usage: /network on|off' : 'Usage: /guard seed|links on|off']);
-      const key = command.name === 'network' ? 'network' : match[1], on = match.at(-1) === 'on';
-      return () => { this.guards.set(chat, key, on); return reply([`${key === 'network' ? 'Network alerts' : `${key} guard`}: ${on ? 'on' : 'off'}.`])(); };
-    }
     if (command.name === 'track') this.wake = true;
     const reply = await respond(command, this.context(chat, message));
     return () => {
@@ -282,7 +274,7 @@ export class Bot {
     return {
       config: this.config, rpc: this.rpc, username: this.username, clean: this.clean, head: this.head, spec: this.identity?.spec,
       signal: this.signal, subs: this.subs, tokens: this.tokens, fmt: this.fmt, chat,
-      prices: this.prices, names: this.names, venues: this.venues,
+      prices: this.prices, names: this.names, venues: this.venues, guards: this.guards,
       // The forum topic a command came from: a feed, watch, whale or track set up there posts there. A reply in
       // an ordinary group (or a comment thread) also carries a message_thread_id, which subscriptions ignore.
       thread: Number.isSafeInteger(message?.message_thread_id) && (message.is_topic_message === true || !message.reply_to_message)
@@ -371,7 +363,7 @@ export class Bot {
   // ---- alerts --------------------------------------------------------------------------------------------
 
   async background() {
-    try { await this.network.step(this.head); }
+    try { await this.network.step(this.head, Date.now(), this.headEndpoint); }
     catch (error) { if (this.signal.aborted || !retriable(error)) throw error; return; }
     if (!this.head) return;
     // Persist the hashes before scanning: a failed history read cannot leave an accepted alert unguarded.
@@ -458,7 +450,7 @@ export class Bot {
       let target = chatId, sent = 0, open = true;
       for (const row of full) {
         if (this.signal.aborted) return;
-        const r = await this.send(target, row.body, { ...topic(row.thread_id), ...(row.kind === 'correction' ? { reply_parameters: { message_id: JSON.parse(row.digest).reply } } : {}), ...(sent >= LOUD_ALERTS ? { disable_notification: true } : {}) });
+        const r = await this.send(target, row.body, { ...topic(row.thread_id), ...(row.kind === 'correction' ? { reply_parameters: { message_id: JSON.parse(row.digest).reply, allow_sending_without_reply: true } } : {}), ...(sent >= LOUD_ALERTS ? { disable_notification: true } : {}) });
         if (r.message) {
           target = r.chatId;
           sent++;

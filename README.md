@@ -153,7 +153,10 @@ steps tracked transactions and delivers the ledger within a shared group budget.
 cursor to the confirmed head. Stored hashes cover blocks observed since startup, up to the configured
 depth. A fork walks back to a retained common ancestor, rewinds the same scanner, and checks receipts for
 transactions already alerted. An orphan gets one correction replying to its original message; a transaction
-found elsewhere gets no duplicate or correction. If no retained ancestor remains, Cairn rescans the retained
+found elsewhere gets no duplicate or correction.
+A missing receipt is corrected only after the same endpoint also reports transaction status not-found;
+ambiguous or failed checks stay in the delivery ledger for retry on each pass and are silently abandoned
+after `CAIRN_REORG_DEPTH` additional head blocks. If no retained ancestor remains, Cairn rescans the retained
 window. Older history cannot be recovered by that bounded check.
 
 Stall duration uses wall time from the first sight of the unchanged head, surviving restarts. Subscribers

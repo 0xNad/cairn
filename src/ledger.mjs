@@ -20,7 +20,7 @@ export class Ledger {
   /** Pending alerts of chats that are not paused, in the order they were found (chain order), with the chat's type. */
   pending(limit = 1000) {
     return this.#q(`SELECT d.seq, d.chat_id, d.body, d.thread_id, d.digest, d.kind, d.tx_hash, d.block, c.type FROM deliveries d
-      LEFT JOIN chats c ON c.chat_id = d.chat_id WHERE d.state = 'pending' AND coalesce(c.paused, 0) = 0 ORDER BY d.seq LIMIT ?`).all(limit);
+      LEFT JOIN chats c ON c.chat_id = d.chat_id WHERE d.state = 'pending' AND json_extract(d.digest, '$.reorg') IS NULL AND coalesce(c.paused, 0) = 0 ORDER BY d.seq LIMIT ?`).all(limit);
   }
   sent(seq, messageId) { this.#q("UPDATE deliveries SET state = 'sent', message_id = ?, body = NULL, digest = NULL WHERE seq = ?").run(messageId, seq); }
   /** Delivered inside a group's summary: the key stays, the text goes, and the summary's message_id is kept. */
@@ -31,9 +31,22 @@ export class Ledger {
   messageId(chatId, txHash, eventIndex) {
     return this.#q('SELECT message_id FROM deliveries WHERE chat_id = ? AND tx_hash = ? AND event_index = ?').get(chatId, txHash, eventIndex)?.message_id ?? null;
   }
+  /** Keep unresolved fork history on its original delivery; pending originals cannot be sent yet. */
+  recheck(row, block) {
+    const digest = JSON.parse(row.digest ?? '{}');
+    digest.reorg ??= block;
+    this.#q('UPDATE deliveries SET digest = ? WHERE seq = ?').run(JSON.stringify(digest), row.seq);
+  }
+  rechecking() { return this.#q("SELECT * FROM deliveries WHERE json_extract(digest, '$.reorg') IS NOT NULL ORDER BY seq").all(); }
+  checked(row, block = row.block) {
+    const digest = JSON.parse(row.digest);
+    delete digest.reorg;
+    this.#q('UPDATE deliveries SET digest = ?, block = ? WHERE seq = ?')
+      .run(Object.keys(digest).length ? JSON.stringify(digest) : null, block, row.seq);
+  }
   /** Corrections share the original transaction's ledger key space and reply to its saved message. */
   correct(original, { block, chainTime, body }) {
-    return this.add({ chatId: original.chat_id, txHash: original.tx_hash, eventIndex: STAGE.correction,
+    return this.add({ chatId: original.chat_id, txHash: original.tx_hash, eventIndex: STAGE.correction - original.message_id,
       kind: 'correction', block, chainTime, body, thread: original.thread_id, digest: { reply: original.message_id } });
   }
   prune(now) { this.#q('DELETE FROM deliveries WHERE chain_time < ?').run(now - LEDGER_TTL); }

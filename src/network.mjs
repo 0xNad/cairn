@@ -13,7 +13,7 @@ export class Network {
   notice(key, body, head, chats = this.subscribers()) {
     for (const { chat_id } of chats) this.ledger.add({ chatId: chat_id, txHash: key, eventIndex: -10, kind: 'network', chainTime: head?.timestamp ?? Number(this.store.get('chain_time') ?? 0), body });
   }
-  async step(head, now = Date.now()) {
+  async step(head, now = Date.now(), endpoint = this.rpc.generation ?? 0) {
     if (!head) {
       if (this.store.get('rpc_outage') !== '1') this.store.transaction(() => {
         this.store.set('rpc_outage', 1);
@@ -35,14 +35,14 @@ export class Network {
         this.store.set('stalled', 1);
       }
     });
-    await this.reorg(head);
+    await this.reorg(head, endpoint);
     const safe = Math.max(0, head.block_number - this.config.confirmations);
     if (safe - this.store.cursor > this.config.maxGap) this.store.transaction(() => {
       this.notice(`gap:${this.store.cursor}:${safe}`, `⏩ Skipped ${safe - this.store.cursor} blocks to catch up.\nNew alerts resume from here.`, head);
       this.store.cursor = safe;
     });
   }
-  async reorg(head) {
+  async reorg(head, endpoint) {
     const rows = this.store.sql('SELECT * FROM blocks ORDER BY number DESC').all();
     let ancestor = null, changed = false;
     for (const row of rows) {
@@ -51,24 +51,57 @@ export class Network {
       if (hex64(block.block_hash) === row.hash) { ancestor = row.number; break; }
       changed = true;
     }
-    if (!changed) return;
-    // Beyond retained history, rescan the retained window; never walk outside the configured depth.
-    ancestor ??= Math.max(0, head.block_number - this.config.reorgDepth);
-    const affected = this.store.sql("SELECT * FROM deliveries WHERE block > ? AND kind != 'correction'").all(ancestor);
-    const missing = new Set();
-    for (const tx of new Set(affected.map(r => r.tx_hash))) {
-      try { await this.rpc.call('starknet_getTransactionReceipt', { transaction_hash: tx }); }
-      catch (error) { if (error instanceof RpcError && [25, 29].includes(error.code)) missing.add(tx); else throw error; }
+    if (changed) {
+      // Beyond retained history, rescan the retained window; never walk outside the configured depth.
+      ancestor ??= Math.max(0, head.block_number - this.config.reorgDepth);
+      this.store.transaction(() => {
+        for (const row of this.store.sql("SELECT * FROM deliveries WHERE block > ? AND kind != 'correction'").all(ancestor)) {
+          this.ledger.recheck(row, head.block_number);
+        }
+        this.store.cursor = Math.min(this.store.cursor, ancestor);
+        this.store.sql('DELETE FROM blocks WHERE number > ?').run(ancestor);
+      });
     }
-    this.store.transaction(() => {
-      for (const row of affected) if (missing.has(row.tx_hash)) {
-        if (row.message_id !== null) this.ledger.correct(row, { block: head.block_number, chainTime: head.timestamp,
-          body: '↩️ Correction: this transaction\nwas dropped by a reorg.' });
-        else this.ledger.dropped(row.seq);
-      }
-      this.store.cursor = Math.min(this.store.cursor, ancestor);
-      this.store.sql('DELETE FROM blocks WHERE number > ?').run(ancestor);
-    });
+    await this.reconcile(head, endpoint);
+  }
+  /** Only two not-found answers on the replacement head's endpoint prove removal. */
+  async disposition(tx) {
+    try { return { receipt: await this.rpc.call('starknet_getTransactionReceipt', { transaction_hash: tx }) }; }
+    catch (error) {
+      if (error.exitCode === 2 || error.name === 'AbortError') throw error;
+      if (!(error instanceof RpcError && error.code === 29)) return null;
+    }
+    try { await this.rpc.call('starknet_getTransactionStatus', { transaction_hash: tx }); }
+    catch (error) {
+      if (error.exitCode === 2 || error.name === 'AbortError') throw error;
+      if (error instanceof RpcError && error.code === 29) return { missing: true };
+    }
+    return null;
+  }
+  async reconcile(head, endpoint) {
+    const byTx = new Map();
+    for (const row of this.ledger.rechecking()) {
+      if (head.block_number - JSON.parse(row.digest).reorg >= this.config.reorgDepth) {
+        this.store.transaction(() => { this.ledger.checked(row); if (row.message_id === null) this.ledger.dropped(row.seq); });
+      } else (byTx.get(row.tx_hash) ?? byTx.set(row.tx_hash, []).get(row.tx_hash)).push(row);
+    }
+    for (const [tx, rows] of byTx) {
+      if ((this.rpc.generation ?? 0) !== endpoint) return;
+      const result = await this.disposition(tx);
+      // A failover must not combine one provider's replacement blocks with another provider's absence.
+      if ((this.rpc.generation ?? 0) !== endpoint) return;
+      if (!result?.missing && !Number.isSafeInteger(result?.receipt?.block_number)) continue;
+      this.store.transaction(() => {
+        for (const row of rows) {
+          this.ledger.checked(row, result.receipt?.block_number ?? row.block);
+          if (result.missing) {
+            if (row.message_id !== null) this.ledger.correct(row, { block: head.block_number, chainTime: head.timestamp,
+              body: '↩️ Correction: this transaction\nwas dropped by a reorg.' });
+            else this.ledger.dropped(row.seq);
+          }
+        }
+      });
+    }
   }
   async remember(head) {
     const start = Number(this.store.get('history_start') ?? head.block_number);
