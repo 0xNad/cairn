@@ -35,9 +35,9 @@ export class Network {
       });
       return;
     }
-    this.recovered(head, now);
     const known = Number(this.store.get('head_number') ?? this.store.sql('SELECT max(number) AS n FROM blocks').get().n ?? 0);
-    if (head.block_number < known) return false;
+    if (!await this.reorg(head, endpoint, head.block_number < known)) return false;
+    this.recovered(head, now);
     this.store.transaction(() => {
       this.store.set('head_number', head.block_number);
       this.store.set('chain_time', head.timestamp);
@@ -52,22 +52,21 @@ export class Network {
         this.store.set('stalled', 1);
       }
     });
-    if (!await this.reorg(head, endpoint)) return false;
     const safe = Math.max(0, head.block_number - this.config.confirmations);
     if (safe - this.store.cursor > this.config.maxGap) this.store.transaction(() => {
       this.notice(`gap:${this.store.cursor}:${safe}`, `⏩ Skipped ${safe - this.store.cursor} blocks to catch up.\nNew alerts resume from here.`, head);
       this.store.cursor = safe;
     });
   }
-  async reorg(head, endpoint) {
-    const rows = this.store.sql('SELECT * FROM blocks ORDER BY number DESC').all();
+  async reorg(head, endpoint, lower = false) {
+    const rows = this.store.sql('SELECT * FROM blocks WHERE number <= ? ORDER BY number DESC').all(head.block_number);
     let ancestor = null, changed = false;
     for (const row of rows) {
       const block = row.number === head.block_number ? head : await this.rpc.call('starknet_getBlockWithTxHashes', { block_id: { block_number: row.number } });
       if (hex64(block.block_hash) === row.hash) { ancestor = row.number; break; }
       changed = true;
     }
-    if ((this.rpc.generation ?? 0) !== endpoint) return false;
+    if ((this.rpc.generation ?? 0) !== endpoint || (lower && !changed)) return false;
     if (changed) {
       // Beyond retained history, rescan the retained window; never walk outside the configured depth.
       ancestor ??= Math.max(0, head.block_number - this.config.reorgDepth);
@@ -75,6 +74,7 @@ export class Network {
         for (const row of this.store.sql("SELECT * FROM deliveries WHERE block > ? AND kind != 'correction'").all(ancestor)) {
           this.ledger.recheck(row, head.block_number);
         }
+        this.store.set('head_number', head.block_number);
         this.store.cursor = Math.min(this.store.cursor, ancestor);
         this.store.sql('DELETE FROM blocks WHERE number > ?').run(ancestor);
       });

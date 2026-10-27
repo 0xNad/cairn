@@ -896,3 +896,25 @@ test('judge v2 1',async()=>{
 test('judge v2 2',()=>{
   for(const [ms,expected]of [[45000,'45 s'],[120000,'2 min'],[252000,'4 min 12 s'],[5713000,'1 h 35 min'],[3600000,'1 h'],[2000,'2 s'],[0,'0 s']])assert.equal(duration(ms),expected);
 });
+
+test('cubic v6 1',async()=>{
+  const w=await passWorld();try{
+    await w.command(w.chat,'/watch 0x20');w.add(2);w.tx('0xa',12);await w.pass();const original=w.sent.at(-1),call=w.bot.rpc.call;
+    w.bot.rpc.call=async(method,p)=>{
+      if(method==='starknet_getBlockWithTxHashes'){
+        if(p.block_id==='latest')return call(method,{block_id:{block_number:11}});
+        assert.ok(p.block_id.block_number<=11,'shorter head must never read unavailable blocks');
+      }
+      return call(method,p);
+    };
+    const before={head:w.store.get('head_number'),hash:w.store.get('head_hash'),cursor:w.store.cursor,blocks:w.store.sql('SELECT * FROM blocks ORDER BY number').all(),messages:w.sent.length};
+    await w.pass();assert.deepEqual({head:w.store.get('head_number'),hash:w.store.get('head_hash'),cursor:w.store.cursor,blocks:w.store.sql('SELECT * FROM blocks ORDER BY number').all(),messages:w.sent.length},before);
+    w.reorg(10);const replacement=w.tx('0xb',11,777n);w.restart();await w.pass();
+    assert.equal(w.store.get('head_number'),'11');assert.equal(w.store.cursor,11);
+    assert.ok(w.store.sql('SELECT number FROM blocks').all().every(b=>b.number<=11));
+    assert.equal(w.sent.filter(m=>m.reply_parameters?.message_id===original.message_id).length,1);
+    assert.equal(w.sent.filter(m=>m.text.includes(replacement.hash)).length,1);
+    w.restart();await w.pass();assert.equal(w.sent.filter(m=>m.reply_parameters?.message_id===original.message_id).length,1);
+    assert.equal(w.sent.filter(m=>m.text.includes(replacement.hash)).length,1);
+  }finally{w.close()}
+});
