@@ -70,7 +70,7 @@ export class Rpc {
     for (let hop = 0; hop < urls.length; hop++) {
       try {
         const endpoint = urls[this.endpoint];
-        if (this.config.chain && !this.verified.has(endpoint) && !['starknet_chainId','starknet_specVersion'].includes(method)) {
+        if (urls.length > 1 && this.config.chain && !this.verified.has(endpoint) && !['starknet_chainId','starknet_specVersion'].includes(method)) {
           const chain = decodeChain(await this.request('starknet_chainId', {}, endpoint));
           if (chain !== this.config.chain) throw new CairnError('RPC endpoint chain differs from CAIRN_CHAIN.', 2);
           this.verified.add(endpoint);
