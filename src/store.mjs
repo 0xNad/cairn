@@ -7,7 +7,9 @@ import { CairnError } from './errors.mjs';
 // The state, in one SQLite file. Rollback journal (not WAL) with secure_delete, so that a deleted label or
 // alert leaves no copy in CAIRN_DATA once its transaction commits; temp_store in memory, so that nothing is
 // written outside CAIRN_DATA. Round 3 adds the forum topic (thread_id) of each subscription and delivery, the
-// trade feed, the name cache, and the digest a group's summary counts.
+// trade feed, the name cache, and the digest a group's summary counts. Round 4 adds the chats that get network
+// alerts, each chat's guard switches (a row only once one is switched off), the hashes of the last
+// CAIRN_REORG_DEPTH scanned blocks, and the message a correction replies to (reply_to).
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
 CREATE TABLE IF NOT EXISTS chats (chat_id INTEGER PRIMARY KEY, type TEXT NOT NULL, paused INTEGER NOT NULL DEFAULT 0) STRICT;
@@ -31,12 +33,16 @@ CREATE TABLE IF NOT EXISTS rate (sender INTEGER PRIMARY KEY, dates TEXT NOT NULL
   last INTEGER NOT NULL) STRICT;
 CREATE TABLE IF NOT EXISTS deliveries (seq INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, tx_hash TEXT NOT NULL,
   event_index INTEGER NOT NULL, kind TEXT NOT NULL, events TEXT NOT NULL, block INTEGER, chain_time INTEGER NOT NULL,
-  state TEXT NOT NULL, message_id INTEGER, body TEXT, thread_id INTEGER, digest TEXT, UNIQUE (chat_id, tx_hash, event_index)) STRICT;
+  state TEXT NOT NULL, message_id INTEGER, body TEXT, thread_id INTEGER, digest TEXT, reply_to INTEGER,
+  UNIQUE (chat_id, tx_hash, event_index)) STRICT;
 CREATE INDEX IF NOT EXISTS deliveries_state ON deliveries (state, seq);
 CREATE TABLE IF NOT EXISTS feeds (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL UNIQUE, token TEXT NOT NULL,
   symbol TEXT NOT NULL, min TEXT, min_units TEXT, min_usd TEXT, mode TEXT NOT NULL, since_block INTEGER NOT NULL,
   thread_id INTEGER) STRICT;
 CREATE TABLE IF NOT EXISTS names (address TEXT PRIMARY KEY, labels TEXT NOT NULL, checked_at INTEGER NOT NULL) STRICT;
+CREATE TABLE IF NOT EXISTS network (chat_id INTEGER PRIMARY KEY, thread_id INTEGER, since_block INTEGER) STRICT;
+CREATE TABLE IF NOT EXISTS guards (chat_id INTEGER PRIMARY KEY, seed INTEGER NOT NULL DEFAULT 1, links INTEGER NOT NULL DEFAULT 1) STRICT;
+CREATE TABLE IF NOT EXISTS blocks (number INTEGER PRIMARY KEY, hash TEXT NOT NULL) STRICT;
 `;
 /** A round 2 file gains round 3's columns; its new tables come from SCHEMA. One transaction: all or nothing. */
 const MIGRATE_2_TO_3 = `
@@ -46,7 +52,9 @@ ALTER TABLE tracks ADD COLUMN thread_id INTEGER;
 ALTER TABLE deliveries ADD COLUMN thread_id INTEGER;
 ALTER TABLE deliveries ADD COLUMN digest TEXT;
 `;
-const SCHEMA_VERSION = '3';
+/** A round 3 file gains the correction's reply_to; round 4's tables come from SCHEMA. */
+const MIGRATE_3_TO_4 = 'ALTER TABLE deliveries ADD COLUMN reply_to INTEGER;';
+const SCHEMA_VERSION = '4';
 
 function safeFile(path, what) {
   if (!existsSync(path)) return;
@@ -74,9 +82,10 @@ export class Store {
       chmodSync(this.file, 0o600);
       this.db.exec('PRAGMA journal_mode = DELETE; PRAGMA synchronous = FULL; PRAGMA secure_delete = ON; PRAGMA temp_store = MEMORY;');
       const version = this.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'meta'").get() ? this.get('schema') : null;
-      if (version !== null && version !== '2' && version !== SCHEMA_VERSION) throw new Error('unknown schema');
+      if (version !== null && !['2', '3', SCHEMA_VERSION].includes(version)) throw new Error('unknown schema');
       this.transaction(() => {
         if (version === '2') this.db.exec(MIGRATE_2_TO_3);
+        if (version === '2' || version === '3') this.db.exec(MIGRATE_3_TO_4);
         this.db.exec(SCHEMA);
         this.set('schema', SCHEMA_VERSION);
       });

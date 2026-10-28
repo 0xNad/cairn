@@ -1,0 +1,7 @@
+# Cairn's starter link blocklist: one domain per line; a link to it, or to any host under it, is deleted.
+# Replace it with your own list through CAIRN_BLOCKLIST=/path/to/domains.txt (that file replaces this one, so
+# copy the lines you want to keep). Blank lines and text after # are ignored. Matching ignores case and scheme:
+# example.com also covers www.example.com and claim.example.com, never example.com.other.net or myexample.com.
+starknet-bot.com
+app-stark.online
+starknet.portal-drops.icu

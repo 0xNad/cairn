@@ -1,11 +1,13 @@
 // What each chat asked Cairn to follow, in CAIRN_DATA. Every function is synchronous and runs inside the
 // caller's transaction, so that a change and the update that asked for it are saved together. From round 3,
-// a feed, watch, whale or track keeps the forum topic it was set up in (thread_id), and posts there.
+// a feed, watch, whale or track keeps the forum topic it was set up in (thread_id), and posts there. Round 4 adds
+// network alerts (one row per chat that turned them on) and the guard switches (a row only while one is off).
 
 export const LIMITS = Object.freeze({ whales: 5, tracks: 10, minimums: 20, muted: 100, label: 32 });
 const OFFER_TTL = 24 * 3600; // seconds of chain time a Watch or Track button keeps working
 /** Every table holding a chat's data, children before the chat itself: /forget and migrations walk it. */
-const CHAT_TABLES = ['watches', 'seen', 'whales', 'minimums', 'muted', 'tracks', 'offers', 'feeds', 'deliveries', 'chats'];
+const CHAT_TABLES = ['watches', 'seen', 'whales', 'minimums', 'muted', 'tracks', 'offers', 'feeds', 'network', 'guards', 'deliveries', 'chats'];
+export const GUARDS = Object.freeze(['seed', 'links']);
 const FEED_COLUMNS = 'id, chat_id, token, symbol, min, min_units, min_usd, mode, since_block, thread_id';
 /** A topic for export: only chats with forum topics show one. */
 const topic = (row) => (row.thread_id === null || row.thread_id === undefined ? {} : { thread_id: row.thread_id });
@@ -177,10 +179,49 @@ export class Subscriptions {
     return feed;
   }
 
+  // ---- network alerts and guards (round 4) ---------------------------------------------------------------
+
+  networkOf(chatId) { return this.#q('SELECT chat_id, thread_id, since_block FROM network WHERE chat_id = ?').get(chatId) ?? null; }
+  /** Turns network alerts on in the chat (posting into the asking topic): added|updated. */
+  networkOn(chat, thread, sinceBlock) {
+    const before = this.networkOf(chat.id);
+    this.chat(chat);
+    this.#q(`INSERT INTO network (chat_id, thread_id, since_block) VALUES (?, ?, ?)
+      ON CONFLICT (chat_id) DO UPDATE SET thread_id = excluded.thread_id`).run(chat.id, thread, sinceBlock);
+    return before ? 'updated' : 'added';
+  }
+  networkOff(chatId) { return this.#q('DELETE FROM network WHERE chat_id = ?').run(chatId).changes > 0; }
+  /** Every chat with network alerts on, with its topic. */
+  networkChats() { return this.#q('SELECT chat_id, thread_id FROM network ORDER BY chat_id').all(); }
+  /** Chats a skipped gap costs alerts: network subscribers, and every chat with a feed, watch or whale alert. */
+  affectedChats() {
+    return this.#q(`SELECT chat_id, max(thread_id) AS thread_id FROM (SELECT chat_id, thread_id FROM network
+      UNION ALL SELECT chat_id, NULL FROM watches UNION ALL SELECT chat_id, NULL FROM whales UNION ALL SELECT chat_id, NULL FROM feeds)
+      GROUP BY chat_id ORDER BY chat_id`).all();
+  }
+  /** The chat's guards, { seed, links }: both on unless an administrator switched one off. */
+  guards(chatId) {
+    const row = this.#q('SELECT seed, links FROM guards WHERE chat_id = ?').get(chatId);
+    return { seed: row ? row.seed === 1 : true, links: row ? row.links === 1 : true };
+  }
+  /** Switches one guard; a chat whose guards are both on again keeps no row. */
+  guard(chat, kind, on) {
+    if (!GUARDS.includes(kind)) throw new Error('unknown guard');
+    const next = { ...this.guards(chat.id), [kind]: on };
+    if (next.seed && next.links) this.#q('DELETE FROM guards WHERE chat_id = ?').run(chat.id);
+    else {
+      this.chat(chat);
+      this.#q(`INSERT INTO guards (chat_id, seed, links) VALUES (?, ?, ?)
+        ON CONFLICT (chat_id) DO UPDATE SET seed = excluded.seed, links = excluded.links`).run(chat.id, next.seed ? 1 : 0, next.links ? 1 : 0);
+    }
+    return next;
+  }
+
   // ---- the whole chat ------------------------------------------------------------------------------------
 
   /**
-   * Everything stored for the chat, as /export shows it: the brief's six keys, round 3's feed, then what else
+   * Everything stored for the chat, as /export shows it: the brief's six keys, round 3's feed, round 4's network
+   * alerts and guards, then what else
    * CAIRN_DATA holds for it (its type and pause state, the values behind its buttons, and its delivery records,
    * counted). A subscription set up in a forum topic shows its thread_id.
    */
@@ -197,6 +238,8 @@ export class Subscriptions {
       tracks: this.tracks(chatId).map((t) => ({ hash: t.hash, since_block: t.since_block, ...topic(t) })),
       muted: this.muted(chatId),
       feed: feed && { token: feed.token, symbol: feed.symbol, min: feed.min, side: feed.mode, since_block: feed.since_block, ...topic(feed) },
+      network: this.networkOf(chatId) ? { on: true, ...topic(this.networkOf(chatId)) } : { on: false },
+      guards: this.guards(chatId),
       chat: chat ? { type: chat.type, paused: chat.paused === 1 } : null,
       buttons: this.#q('SELECT kind, value, chain_time FROM offers WHERE chat_id = ? ORDER BY id').all(chatId)
         .map((o) => ({ kind: o.kind, value: o.value, chain_time: o.chain_time })),
