@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { seedRun, blockedLink } from '../src/protection.mjs';
@@ -11,9 +11,9 @@ import { Ledger } from '../src/ledger.mjs';
 import { RpcError } from '../src/errors.mjs';
 
 test('dictionary protection checks consecutive words, not checksum, with no substring matches', () => {
-  const phrase = 'zoo zone zero zebra youth young you yellow year write wrong wrist';
+  const phrase = readFileSync(new URL('../src/bip39-english.txt', import.meta.url), 'utf8').trim().split('\n').slice(-12).reverse().join(' ');
   assert.equal(seedRun(phrase.toUpperCase()), true);
-  assert.equal(seedRun(phrase.replace('yellow','notaword')), false);
+  assert.equal(seedRun(phrase.split(' ').map((w,i) => i === 6 ? 'notaword' : w).join(' ')), false);
   assert.equal(seedRun('please check our latest status report for this community bot'), false);
 });
 test('blocked hosts include hidden text links and exclude userinfo, paths and suffix lookalikes', () => {

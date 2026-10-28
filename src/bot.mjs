@@ -56,15 +56,16 @@ export async function serve(config, signal) {
     if (signal.aborted || config.mode === 'doctor' || (error instanceof CairnError && error.exitCode === 2)) throw error;
     log('warn', 'node busy: chain identity will be checked again before chain reads.');
   }
+  // Verify every reachable failover endpoint before trusting any of them.
+  for (const endpoint of config.rpcUrls ?? [config.rpcUrl]) {
+    if (identity && endpoint === config.rpcUrls?.[rpc.endpoint]) continue;
+    try { await handshake({call: (method, params) => rpc.request(method, params, endpoint)}, config, clean); }
+    catch (error) { if (signal.aborted || error.exitCode === 2) throw error; }
+  }
   if (config.mode === 'doctor') {
     const block = await rpc.call('starknet_blockNumber');
     if (!Number.isSafeInteger(block) || block < 0) throw new CairnError('Node returned an invalid block number.');
     return { bot: username, ...identity, block };
-  }
-  // Verify every reachable failover endpoint before trusting any of them.
-  for (const endpoint of config.rpcUrls ?? [config.rpcUrl]) {
-    try { await handshake(new Rpc({...config, rpcUrl:endpoint, rpcUrls:[endpoint]}, signal), config, clean); }
-    catch (error) { if (signal.aborted || error.exitCode === 2) throw error; }
   }
   const store = new Store(config.data);
   try {
