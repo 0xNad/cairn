@@ -37,6 +37,7 @@ export function plainText(value, max) {
 export function redactor(config) {
   const rpc = new URL(config.rpcUrl);
   const secrets = [config.token, config.token.split(':')[1], config.rpcUrl,
+    ...(config.rpcUrls ?? []).flatMap(v => { const u = new URL(v); return [v,...u.pathname.split('/').filter(Boolean),...u.searchParams.values()]; }),
     ...rpc.pathname.split('/').filter(Boolean), ...rpc.searchParams.values()].filter((x) => x.length >= 4);
   return (value) => {
     let text = String(value);

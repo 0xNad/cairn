@@ -1,7 +1,7 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { performance } from 'node:perf_hooks';
 import { CairnError, NodeBusy, RpcError, TelegramRefused } from './errors.mjs';
-import { normalize } from './felt.mjs';
+import { decodeChain, normalize } from './felt.mjs';
 
 const TIMER_MAX = 2147483647;
 export async function sleep(ms, signal) {
@@ -56,7 +56,7 @@ function validBlockId(value) {
 export class Rpc {
   #times = [];
   #id = 0;
-  constructor(config, signal) { this.config = config; this.signal = signal; }
+  constructor(config, signal) { this.config = config; this.signal = signal; this.endpoint = 0; this.errors = 0; this.verified = new Set(); }
   async #slot() {
     for (;;) {
       const now = performance.now();
@@ -66,6 +66,27 @@ export class Rpc {
     }
   }
   async call(method, params = {}) {
+    const urls = this.config.rpcUrls ?? [this.config.rpcUrl];
+    for (let hop = 0; hop < urls.length; hop++) {
+      try {
+        const endpoint = urls[this.endpoint];
+        if (this.config.chain && !this.verified.has(endpoint) && !['starknet_chainId','starknet_specVersion'].includes(method)) {
+          const chain = decodeChain(await this.request('starknet_chainId', {}, endpoint));
+          if (chain !== this.config.chain) throw new CairnError('RPC endpoint chain differs from CAIRN_CHAIN.', 2);
+          this.verified.add(endpoint);
+        }
+        return await this.request(method, params, endpoint);
+      }
+      catch (error) {
+        if (this.signal.aborted || error instanceof RpcError || error.exitCode === 2) throw error;
+        this.errors++;
+        if (hop + 1 === urls.length) throw error;
+        this.endpoint = (this.endpoint + 1) % urls.length;
+        if (params.filter?.continuation_token) throw new RpcError(33);
+      }
+    }
+  }
+  async request(method, params = {}, endpoint = this.config.rpcUrl) {
     if (!READ_METHODS.has(method)) throw new CairnError('Unsupported RPC method.');
     if (params.block_id !== undefined && !validBlockId(params.block_id)) {
       throw new CairnError('Unsupported block identifier.');
@@ -75,8 +96,9 @@ export class Rpc {
       let wait = 200 * 2 ** attempt;
       try {
         const id = ++this.#id;
-        const { response, json } = await post(this.config.rpcUrl, { jsonrpc: '2.0', id, method, params }, this.config.rpcTimeout, this.signal);
+        const { response, json } = await post(endpoint, { jsonrpc: '2.0', id, method, params }, this.config.rpcTimeout, this.signal);
         if (response.status === 429 || response.status >= 500) {
+          this.errors++;
           const retry = response.headers.get('retry-after');
           if (retry !== null) {
             const seconds = Number(retry);
@@ -91,6 +113,7 @@ export class Rpc {
         }
       } catch (error) {
         if (this.signal.aborted || error instanceof RpcError || error instanceof NodeBusy) throw error;
+        this.errors++;
         // Interrupted connections, timeouts and malformed bodies are retried, never logged verbatim.
       }
       if (attempt < 2) await sleep(wait, this.signal);

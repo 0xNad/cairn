@@ -9,6 +9,9 @@ import { CairnError } from './errors.mjs';
 // written outside CAIRN_DATA. Round 3 adds the forum topic (thread_id) of each subscription and delivery, the
 // trade feed, the name cache, and the digest a group's summary counts.
 const SCHEMA = `
+CREATE TABLE IF NOT EXISTS protection (chat_id INTEGER PRIMARY KEY, network INTEGER NOT NULL DEFAULT 0, seed INTEGER NOT NULL DEFAULT 1, links INTEGER NOT NULL DEFAULT 1, thread_id INTEGER) STRICT;
+CREATE TABLE IF NOT EXISTS headers (number INTEGER PRIMARY KEY, hash TEXT NOT NULL) STRICT;
+CREATE TABLE IF NOT EXISTS corrections (seq INTEGER PRIMARY KEY, state TEXT NOT NULL DEFAULT 'pending') STRICT;
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
 CREATE TABLE IF NOT EXISTS chats (chat_id INTEGER PRIMARY KEY, type TEXT NOT NULL, paused INTEGER NOT NULL DEFAULT 0) STRICT;
 CREATE TABLE IF NOT EXISTS watches (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, address TEXT NOT NULL,

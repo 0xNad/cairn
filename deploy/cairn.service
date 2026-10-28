@@ -1,0 +1,26 @@
+[Unit]
+Description=Cairn Starknet Telegram monitor
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=cairn
+Group=cairn
+WorkingDirectory=/opt/cairn
+EnvironmentFile=/etc/cairn.env
+Environment=CAIRN_DATA=/var/lib/cairn
+ExecStart=/usr/local/bin/node /opt/cairn/cairn.mjs run
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+StateDirectory=cairn
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

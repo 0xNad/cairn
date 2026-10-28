@@ -259,25 +259,25 @@ test('the trade feed posts what a chat asked for: dollar floors at equality, fre
     const [post, ...others] = await run([ekubo(-1000n, 78n), transfer(EKUBO, TRADER, 1000n)]);
     assert.equal(others.length, 0);
     assert.equal(post.chatId, 1);
-    assert.equal(plain(post.body), '🟢🟢🟢 Buy STRK · ≈$78.20\n1,000 STRK for 78 USDC\n👤 ben.stark · 🆕 new holder\nEkubo · 1970-01-01 00:18:20 UTC · View transaction');
+    assert.equal(plain(post.body), '🟢🟢🟢\nBuy STRK · ≈$78.20\n1,000 STRK for 78 USDC\n👤 ben.stark · 🆕 new holder\nEkubo · 00:18 UTC · Tx');
     assert.ok(calls.some(([m, p]) => m === 'starknet_call' && p.request.entry_point_selector === SELECTORS.balance_of && p.block_id.block_number === 10)); // block − 1
     // The outside-registry token's sell goes to the chat that follows it, with no dollar sign anywhere.
     const [odd] = await run([ekubo(5n, -9n, STRANGE, QUOTE), transfer(PEER, EKUBO, 5n, STRANGE)]);
     assert.equal(odd.chatId, 2);
-    assert.match(plain(odd.body), /^🔴 Sell ODD \(unverified, 0x0000…0073\)\n5 ODD for 9 USDC\n👤 0x0000…0021\n/);
+    assert.match(plain(odd.body), /^🔴\nSell ODD \(unverified, 0x0000…0073\)\n5 ODD for 9 USDC\n👤 0x0000…0021\n/);
     assert.ok(!odd.body.includes('$'));
     // A trade below a cent shows <$0.01, escaped: Telegram would refuse a bare "<". ($0.001 a token here.)
     store.transaction(() => subs.feed(chat(1), { token: TOKEN, symbol: 'STRK', mode: 'buys' }, 10));
     quote = '0x186a0';
     const [dust] = await run([ekubo(-1n, 0n), transfer(EKUBO, TRADER, 1n)]);
-    assert.ok(dust.body.includes('≈&lt;$0.01') && plain(dust.body).startsWith('🟢 Buy STRK · ≈<$0.01'));
+    assert.ok(dust.body.includes('≈&lt;$0.01') && plain(dust.body).startsWith('🟢\nBuy STRK · ≈<$0.01'));
     // A stale price proves nothing: a trade far above the dollar floor stays unposted, yet posts without a floor.
     store.transaction(() => subs.feed(chat(1), { token: TOKEN, symbol: 'STRK', min: '$78.20', minUsd: 7_820n, mode: 'buys' }, 10));
     [quote, updated] = ['0x7752e0', 1_100 - 901];
     assert.deepEqual(await run([ekubo(-100000n, 7800n), transfer(EKUBO, TRADER, 100000n)]), []);
     store.transaction(() => subs.feed(chat(1), { token: TOKEN, symbol: 'STRK', mode: 'buys' }, 10));
     const [unpriced] = await run([ekubo(-100000n, 7800n), transfer(EKUBO, TRADER, 100000n)]);
-    assert.ok(!unpriced.body.includes('$') && plain(unpriced.body).startsWith('🟢 Buy STRK\n100,000 STRK for 7,800 USDC'));
+    assert.ok(!unpriced.body.includes('$') && plain(unpriced.body).startsWith('🟢\nBuy STRK\n100,000 STRK for 7,800 USDC'));
   } finally { store.close(); }
 });
 

@@ -1,0 +1,6 @@
+.git
+.launchpad
+data
+.env
+*.log
+test
