@@ -11,7 +11,10 @@ export class Blocks {
   hash(number) { return this.#q('SELECT hash FROM blocks WHERE number = ?').get(number)?.hash ?? null; }
   /** Saves scanned blocks, { number, hash }, and forgets those more than CAIRN_REORG_DEPTH below `cursor`. */
   record(headers, cursor) {
-    for (const h of headers.filter((x) => x.hash !== null)) this.#q('INSERT INTO blocks (number, hash) VALUES (?, ?) ON CONFLICT (number) DO UPDATE SET hash = excluded.hash').run(h.number, h.hash);
+    const known = headers.filter((x) => x.hash !== null);
+    // The stored window stays contiguous: blocks not joined to the new ones (a catch-up range) are dropped.
+    if (known.length && this.hash(known[0].number - 1) === null) this.#q('DELETE FROM blocks WHERE number < ?').run(known[0].number);
+    for (const h of known) this.#q('INSERT INTO blocks (number, hash) VALUES (?, ?) ON CONFLICT (number) DO UPDATE SET hash = excluded.hash').run(h.number, h.hash);
     this.#q('DELETE FROM blocks WHERE number <= ? OR number > ?').run(cursor - this.depth, cursor);
   }
   /** After a fork, or a skipped gap: only blocks up to `number` are still known. */
@@ -22,7 +25,8 @@ export class Blocks {
 /**
  * Where the node's chain left Cairn's: null when the cursor block's hash still matches (or is unknown), else
  * { ancestor, deep }: the highest stored block whose hash the node still has, or, when even the oldest stored
- * block changed, the block just below the stored window (deep: its hash was never checked).
+ * block changed, CAIRN_REORG_DEPTH below the cursor (deep: the whole depth is rescanned and re-checked, since
+ * the fork may be anywhere below the stored hashes).
  */
 export async function findFork(blocks, cursor, head, header) {
   const stored = blocks.hash(cursor);
@@ -31,7 +35,7 @@ export async function findFork(blocks, cursor, head, header) {
   if (now === null || now === stored) return null; // a node that gives no hash cannot be checked
   for (let n = cursor - 1; ; n--) {
     const known = blocks.hash(n);
-    if (known === null) return { ancestor: n, deep: true };
+    if (known === null) return { ancestor: Math.max(0, Math.min(n, cursor - blocks.depth)), deep: true };
     const hash = (await header(n)).hash;
     if (hash === null || hash === known) return { ancestor: n, deep: false };
   }

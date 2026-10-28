@@ -32,11 +32,12 @@ export function prometheus(metrics) {
  */
 export function serveHttp(config, { health, metrics }) {
   const server = createServer((req, res) => {
-    const path = new URL(req.url ?? '/', 'http://cairn').pathname;
     const send = (status, type, body, headers = {}) => {
       res.writeHead(status, { 'content-type': type, 'cache-control': 'no-store', ...headers });
       res.end(body);
     };
+    let path;
+    try { path = new URL(req.url ?? '/', 'http://cairn').pathname; } catch { return send(400, JSON_TYPE, '{"ok":false,"reason":"bad request"}'); }
     if (path !== '/healthz' && path !== '/metrics') return send(404, JSON_TYPE, '{"ok":false,"reason":"not found"}');
     if (req.method !== 'GET') return send(405, JSON_TYPE, '{"ok":false,"reason":"method not allowed"}', { allow: 'GET' });
     try {

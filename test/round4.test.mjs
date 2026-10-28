@@ -19,7 +19,7 @@ import { Rpc } from '../src/transport.mjs';
 
 const WORDS = readFileSync(new URL('../wordlists/bip39-english.txt', import.meta.url), 'utf8').trim().split('\n');
 const phrase = (n, from = 100) => WORDS.slice(from, from + n).join(' ');
-const env = { TELEGRAM_BOT_TOKEN: '123456:abcdefghijklmnopqrstuvwxyz0123456789', STARKNET_RPC_URL: 'https://rpc.example/key', CAIRN_DATA: tmpdir() };
+const env = { TELEGRAM_BOT_TOKEN: `123456:${'x'.repeat(36)}`, STARKNET_RPC_URL: 'https://rpc.example/key', CAIRN_DATA: tmpdir() };
 function fresh() {
   const directory = mkdtempSync(join(tmpdir(), 'cairn-r4-'));
   const store = new Store(directory);
@@ -60,7 +60,7 @@ test('the link guard matches a listed host and its subdomains, never lookalikes,
   assert.ok(!holdsListedLink('https://starknet-bot.com', [], []));
 });
 
-test('the warnings repeat nothing and name the delete right when deleting failed', () => {
+test('warnings repeat nothing, and name the delete right when deleting failed', () => {
   for (const kind of ['seed', 'links']) {
     for (const group of [true, false]) {
       const text = warning(kind, false, group);
@@ -97,6 +97,10 @@ test('a stall is one alert on wall time, its recovery one more, and an outage on
   assert.equal(stall.kind, 'stall');
   assert.deepEqual(watch.observe(head(10), 9000), [], 'once per stall');
   assert.deepEqual(watch.observe(head(9), 9500), [], 'a lagging fallback is not a recovery');
+  const lag = new NetworkWatch(fresh().store, { stallSeconds: 2 });
+  lag.observe(head(50), 0);
+  assert.deepEqual([lag.observe(head(48), 1500), lag.observe(head(49), 3000)], [[], []], 'nor a stall');
+  assert.equal(lag.observe(head(50), 5000)[0].kind, 'stall', 'the clock restarts from the lagging read');
   const [resumed] = watch.observe(head(11), 10_000);
   assert.deepEqual([resumed.kind, resumed.key, resumed.ms], ['resumed', stall.key, 10_000]);
   assert.match(noticeText(resumed, {}), /resumed.*after 10 s/);
@@ -118,6 +122,9 @@ test('the fork walk stops at the common ancestor, never reads below the stored w
   const blocks = new Blocks(store, 3);
   store.transaction(() => blocks.record([10, 11, 12, 13].map((n) => ({ number: n, hash: h(n) })), 13));
   assert.deepEqual(readKept(store), [11, 12, 13], 'CAIRN_REORG_DEPTH blocks are kept');
+  store.transaction(() => blocks.record([{ number: 20, hash: h(20) }], 20));
+  assert.deepEqual(readKept(store), [20], 'a catch-up range leaves no hole in the window');
+  store.transaction(() => { blocks.dropAfter(-1); blocks.record([10, 11, 12, 13].map((n) => ({ number: n, hash: h(n) })), 13); });
   const chain = new Map([[11, h(11)], [12, h(0x120)], [13, h(0x130)], [14, h(0x140)]]);
   const read = [];
   const header = async (n) => { read.push(n); return { number: n, hash: chain.get(n), parent: chain.get(n - 1) ?? null }; };

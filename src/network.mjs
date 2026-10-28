@@ -31,13 +31,14 @@ export class NetworkWatch {
   /** The block Cairn last saw change and when, { block, hash, at (ms), time (chain s) }, or null. */
   get mark() { return this.#read(MARK); }
   /** The chain time network notices are filed under (the ledger prunes by chain time). */
-  get chainTime() { return this.mark?.time ?? 0; }
+  get chainTime() { return this.mark?.time ?? Math.floor(Date.now() / 1000); }
 
   /**
    * A head was read at wall time `now`. Returns the notices it causes: { kind: 'stall', key, ms, block } when the
    * head has not changed for CAIRN_STALL_SECONDS (once per stall), { kind: 'resumed', key, ms, block } when it moves
    * after a stall, and { kind: 'rpc-back', key, ms } when it ends an outage of every endpoint. A lower block (a
-   * lagging fallback) is not a change; a new hash at the same height (a reorg at the tip) is.
+   * lagging fallback) says nothing about the chain: it is neither a change nor a stall, and the stall clock
+   * restarts once the endpoint catches up. A new hash at the same height (a reorg at the tip) is a change.
    */
   observe(head, now) {
     const notices = [], mark = this.mark, hash = hex64(head.block_hash ?? '0x0');
@@ -47,7 +48,9 @@ export class NetworkWatch {
       this.#write(OUTAGE, null);
     }
     const changed = !mark || head.block_number > mark.block || (head.block_number === mark.block && hash !== mark.hash);
-    if (changed) {
+    if (!changed && head.block_number < mark.block) {
+      if (!this.#read(STALL)) this.#write(MARK, { ...mark, at: now });
+    } else if (changed) {
       const stall = this.#read(STALL);
       if (stall && mark) notices.push({ kind: 'resumed', key: stall.key, ms: now - mark.at, block: head.block_number, time: head.timestamp });
       this.#write(STALL, null);
@@ -86,8 +89,8 @@ export function noticeText(n, { endpoints = 1, stallSeconds } = {}) {
       return `⏭ <b>Blocks skipped</b>: Cairn fell ${n.behind} blocks behind (more than CAIRN_MAX_GAP, ${n.max}), so blocks ${n.from} to ${n.to} ` +
         `were skipped without alerts. It resumed at block ${n.to + 1}.`;
     case 'deep-reorg':
-      return `⚠️ <b>Deep reorg</b>: the chain changed below the ${n.depth} blocks Cairn keeps (CAIRN_REORG_DEPTH). Cairn rescanned from block ${n.from}; ` +
-        `alerts from before it were not re-checked.`;
+      return `⚠️ <b>Deep reorg</b>: Cairn found no common ancestor among the block hashes it keeps, so it rescanned the last ${n.depth} ` +
+        `blocks (CAIRN_REORG_DEPTH), from block ${n.from}; alerts from before it were not re-checked.`;
     default:
       throw new Error('unknown notice');
   }

@@ -533,7 +533,9 @@ class Bot {
     for (const tx of new Set(rows.map((r) => r.tx_hash))) {
       try {
         const receipt = await this.rpc.call('starknet_getTransactionReceipt', { transaction_hash: tx });
-        where.set(tx, Number.isSafeInteger(receipt?.block_number) ? receipt.block_number : null);
+        // Re-included but reverted: its transfers did not happen, so the alert is corrected like an orphan.
+        where.set(tx, receipt?.execution_status === 'REVERTED' ? 'gone'
+          : Number.isSafeInteger(receipt?.block_number) ? receipt.block_number : null);
       } catch (error) {
         if (!(error instanceof RpcError && error.code === 29)) throw error;
         where.set(tx, 'gone');
@@ -543,7 +545,7 @@ class Bot {
       for (const row of rows) {
         const block = where.get(row.tx_hash);
         if (block === 'gone') {
-          const body = `↩️ <b>Correction</b>: a chain reorganisation replaced block ${row.block}, and the node no longer has transaction <code>${short(row.tx_hash)}</code>. ` +
+          const body = `↩️ <b>Correction</b>: a chain reorganisation replaced block ${row.block}, and transaction <code>${short(row.tx_hash)}</code> is no longer on the chain (or now reverts). ` +
             'Disregard the alert this replies to. If the transaction is included again, Cairn posts it again.';
           if (this.ledger.orphan(row, { chainTime: this.head.timestamp, body })) this.counts.corrections++;
         } else if (Number.isSafeInteger(block) && block !== row.block) this.ledger.moved(row.seq, block);

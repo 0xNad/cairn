@@ -430,7 +430,8 @@ holds for the replaced blocks:
 - the cursor goes back to the ancestor and the same pass rescans from there: events new in the replacement
   blocks are alerted once, in chain order. An orphaned transaction that is included again later is posted again.
 
-A fork below the stored window is rescanned from the oldest stored block, the operator is told, and older alerts
+A transaction found again but reverted is corrected like an orphan. When no stored hash matches, the fork is
+below the stored window: the last `CAIRN_REORG_DEPTH` blocks are re-checked and rescanned, the operator is told, and older alerts
 are not re-checked. Corrections and network notices are sent before alerts and outside a group's budget.
 
 **Confirmations and gaps.** With `CAIRN_CONFIRMATIONS=n`, the scan ends `n` blocks below the head (the first
