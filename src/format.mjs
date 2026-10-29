@@ -35,9 +35,11 @@ export function plainText(value, max) {
   return Array.from(text).slice(0, max).join('').trim();
 }
 export function redactor(config) {
-  const rpc = new URL(config.rpcUrl);
-  const secrets = [config.token, config.token.split(':')[1], config.rpcUrl,
-    ...rpc.pathname.split('/').filter(Boolean), ...rpc.searchParams.values()].filter((x) => x.length >= 4);
+  const urls = config.rpcUrls ?? [config.rpcUrl];
+  const secrets = [config.token, config.token.split(':')[1], ...urls.flatMap((value) => {
+    const rpc = new URL(value);
+    return [value, ...rpc.pathname.split('/').filter(Boolean), ...rpc.searchParams.values()];
+  })].filter((x) => x.length >= 4);
   return (value) => {
     let text = String(value);
     for (const secret of secrets) {

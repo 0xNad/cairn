@@ -1,0 +1,13 @@
+# Only what the image needs: no history, no local state, no secrets, no checks or tests.
+.git
+.github
+.launchpad
+.env
+.env.*
+!.env.example
+data
+node_modules
+test
+deploy
+*.md
+!README.md

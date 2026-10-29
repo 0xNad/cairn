@@ -1,0 +1,52 @@
+# Cairn as a systemd service, without Docker. Install (see "Deploy it" in README.md):
+#   sudo useradd --system --home-dir /var/lib/cairn --shell /usr/sbin/nologin cairn
+#   sudo git clone https://github.com/0xNad/cairn /opt/cairn
+#   sudo install -d -m 700 /etc/cairn && sudo install -m 600 /opt/cairn/.env.example /etc/cairn/cairn.env
+#   sudo sed -i 's|^CAIRN_DATA=.*|CAIRN_DATA=/var/lib/cairn|' /etc/cairn/cairn.env   # then set the token and RPC in it
+#   sudo cp /opt/cairn/deploy/cairn.service /etc/systemd/system/ && sudo systemctl daemon-reload
+#   sudo systemctl enable --now cairn && journalctl -u cairn -f
+[Unit]
+Description=Cairn, a read-only Starknet bot for Telegram
+Documentation=https://github.com/0xNad/cairn
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cairn
+Group=cairn
+WorkingDirectory=/opt/cairn
+EnvironmentFile=/etc/cairn/cairn.env
+# State in /var/lib/cairn (mode 700): the env file must say CAIRN_DATA=/var/lib/cairn, the only writable path.
+StateDirectory=cairn
+StateDirectoryMode=0700
+ExecStart=/usr/bin/node /opt/cairn/cairn.mjs run
+# SIGTERM ends long polls, RPC calls and waits; Cairn exits 0 within seconds.
+KillSignal=SIGTERM
+TimeoutStopSec=20
+# Restart after a crash or a lost connection (exit 1), never in a loop on bad configuration (2) or a
+# rejected Telegram token (3): those need you.
+Restart=on-failure
+RestartSec=10
+RestartPreventExitStatus=2 3
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

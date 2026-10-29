@@ -1,4 +1,4 @@
-import { RpcError } from './errors.mjs';
+import { EndpointLost, RpcError } from './errors.mjs';
 import { FIELD, hex64, NodeValueError, normalize, SELECTORS, u256, unsigned } from './felt.mjs';
 
 /**
@@ -24,11 +24,17 @@ export class Scanner {
     const from = cursor + 1, to = Math.min(head, cursor + this.maxBlocks);
     return from <= to ? { from, to } : null;
   }
-  /** Every event `filter` matches in `range`, in chain order. */
+  /**
+   * Every event `filter` matches in `range`, in chain order. Round 4: the pages after the first stay on the
+   * endpoint that answered it, since a continuation token means nothing to another node; when that endpoint
+   * fails mid-range, the range starts again from its first page on the next endpoint.
+   */
   async events(range, filter, restarts = 2) {
+    let lost = 0;
     for (let attempt = 0; ; attempt++) {
       try { return await this.#pages(range, filter); }
       catch (error) {
+        if (error instanceof EndpointLost && lost++ < this.rpc.endpoints.length) continue;
         if (error instanceof RpcError && error.code === 33 && attempt < restarts) continue;
         throw error;
       }
@@ -36,12 +42,13 @@ export class Scanner {
   }
   async #pages(range, filter) {
     const events = [], tokens = new Set();
-    let token;
+    let token, endpoint;
     for (let page = 0; page < MAX_PAGES; page++) {
       const answer = await this.rpc.call('starknet_getEvents', { filter: {
         from_block: { block_number: range.from }, to_block: { block_number: range.to }, ...filter, chunk_size: PAGE,
         ...(token === undefined ? {} : { continuation_token: token }),
-      } });
+      } }, { endpoint });
+      endpoint = this.rpc.answered;
       if (!answer || !Array.isArray(answer.events)) throw new NodeValueError();
       events.push(...answer.events);
       token = typeof answer.continuation_token === 'string' && answer.continuation_token !== '' ? answer.continuation_token : undefined;
@@ -54,8 +61,9 @@ export class Scanner {
 }
 
 /**
- * The headers of the blocks a pass needs (time and sequencer_address), each read once: { number, timestamp,
- * sequencer }. A failed read fails the range, which the next pass reads again.
+ * The headers of the blocks a pass needs (time and sequencer_address; from round 4 the hashes the reorg check
+ * keeps), each read once: { number, timestamp, sequencer, hash, parent }. A failed read fails the range, which
+ * the next pass reads again.
  */
 export function blockHeaders(rpc) {
   const memo = new Map();
@@ -63,7 +71,8 @@ export function blockHeaders(rpc) {
     if (!memo.has(number)) {
       const block = await rpc.call('starknet_getBlockWithTxHashes', { block_id: { block_number: number } });
       if (!Number.isSafeInteger(block?.timestamp)) throw new NodeValueError();
-      memo.set(number, { number, timestamp: block.timestamp, sequencer: hex64(block.sequencer_address ?? '0x0') });
+      memo.set(number, { number, timestamp: block.timestamp, sequencer: hex64(block.sequencer_address ?? '0x0'),
+        hash: block.block_hash === undefined ? null : hex64(block.block_hash), parent: block.parent_hash === undefined ? null : hex64(block.parent_hash) });
     }
     return memo.get(number);
   };

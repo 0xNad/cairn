@@ -309,7 +309,7 @@ test("a round 2 state.db gains round 3's columns and tables in place, keeping it
   old.close();
   const store = new Store(directory);
   try {
-    assert.equal(store.get('schema'), '3');
+    assert.equal(store.get('schema'), '4');
     assert.equal(store.offset, 41);
     const columns = (table) => store.db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
     for (const table of ['watches', 'whales', 'tracks', 'deliveries']) assert.ok(columns(table).includes('thread_id'), table);

@@ -24,6 +24,8 @@ export const COMMANDS = Object.freeze([
   { command: 'mute', description: 'Silence one token in this chat' },
   { command: 'unmute', description: 'Undo /mute' },
   { command: 'track', description: 'Follow one transaction until it is final' },
+  { command: 'network', description: 'Alerts when Starknet stalls and when blocks resume' },
+  { command: 'guard', description: 'Seed-phrase and scam-link protection' },
   { command: 'export', description: 'Everything Cairn stores for this chat, as JSON' },
   { command: 'forget', description: 'Delete everything Cairn stores for this chat' },
 ]);
@@ -57,6 +59,9 @@ Feeds and alerts, set by group administrators (anyone in a private chat):
 /mute <token address> — Silence one token in this chat, such as a spam airdrop
 /unmute <token address> — Undo /mute
 /track <hash> — One message on L2 acceptance, one on L1 acceptance or a revert
+/network on|off — One alert when Starknet stops producing blocks, one when they resume
+Member safety, on by default:
+/guard — Messages holding a wallet recovery phrase, or linking to a blocklisted scam domain, are deleted with a warning that repeats none of it. Administrators switch each with /guard seed|links on|off.
 This chat:
 /list — Its feed, watches, alerts, floors and mutes, with Remove buttons
 /export — Everything Cairn stores for it, as JSON
@@ -69,12 +74,14 @@ A name.stark works wherever an address does, and an address shows as its .stark 
 On-chain facts, not financial advice.
 Public balances and transfers only.
 Tokens outside Cairn's registry are marked unverified: anyone can deploy a token with any symbol, and none gets a USD value.
-The operator stores this chat's id and type, its settings (trade feed, watched addresses and labels, whale alerts, floors, mutes, tracked transactions, and the forum topic of each), the tokens seen moving for a watched address, alert delivery records for 7 days, a pasted address or hash for a day (for its button), and the update offset. Shared by every chat: token metadata and .stark names read from the chain. /export shows all of it; /forget deletes it. For the rate limit, each person's id and command times are kept for one minute. Never message text, Telegram names or usernames.`;
+The operator stores this chat's id and type, its settings (trade feed, watched addresses and labels, whale alerts, floors, mutes, tracked transactions, network alerts, guard switches, and the forum topic of each), the tokens seen moving for a watched address, alert delivery records for 7 days, a pasted address or hash for a day (for its button), and the update offset. Shared by every chat: token metadata and .stark names read from the chain. /export shows all of it; /forget deletes it. For the rate limit, each person's id and command times are kept for one minute. Never message text, Telegram names or usernames.`;
 const GROUP_SETUP = `Cairn is in this group. To set it up, as an administrator:
 1. /feed <token> [min|$usd] [buys|all] to post the group token's trades.
 2. /watch <address> <label> for each wallet the group follows.
 3. /whale <token> <amount> for large transfers of a token.
 4. /min and /mute to cut noise.
+5. /network on for an alert when Starknet stalls.
+The guards are on: make Cairn an administrator with the “Delete messages” right so that it can remove seed phrases and scam links.
 Run each in a forum topic to post there. Members can use /status, /balance, /tx, /price and /list. Cairn reads only the commands addressed to it.`;
 
 export async function answer(command, context) {
@@ -102,7 +109,7 @@ export async function answer(command, context) {
   try {
     switch (command.name) {
       case 'status':
-        return text(`Starknet · ${config.chain}\nHead: ${head.block_number}\n${utc(head.timestamp)}\nL1 gas: ${unsigned(head.l1_gas_price.price_in_fri)} FRI\nL1-data gas: ${unsigned(head.l1_data_gas_price.price_in_fri)} FRI\nL2 gas: ${unsigned(head.l2_gas_price.price_in_fri)} FRI\nRPC spec: ${spec}`);
+        return text(`Starknet · ${config.chain}\nHead: ${head.block_number}\n${utc(head.timestamp)}\nL1 gas: ${unsigned(head.l1_gas_price.price_in_fri)} FRI\nL1-data gas: ${unsigned(head.l1_data_gas_price.price_in_fri)} FRI\nL2 gas: ${unsigned(head.l2_gas_price.price_in_fri)} FRI\nRPC spec: ${spec}${rpc.endpoints?.length > 1 ? `\nRPC endpoint: ${rpc.answered + 1} of ${rpc.endpoints.length}` : ''}`);
       case 'balance': {
         if (name !== null) {
           const resolved = context.names ? await context.names.resolve(name) : { error: 'Names are off here: use the 0x address.' };
