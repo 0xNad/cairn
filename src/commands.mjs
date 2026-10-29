@@ -7,6 +7,8 @@ import { callback, setting, SETTINGS } from './settings.mjs';
 import { balanceOf } from './tokens.mjs';
 
 export const COMMANDS = Object.freeze([
+  { command: 'network', description: 'Network stall and recovery alerts on|off' },
+  { command: 'guard', description: 'Safety guards seed|links on|off' },
   { command: 'start', description: 'Welcome and privacy' },
   { command: 'help', description: 'Commands and privacy' },
   { command: 'status', description: 'Chain head and gas prices' },
@@ -57,6 +59,9 @@ Feeds and alerts, set by group administrators (anyone in a private chat):
 /mute <token address> — Silence one token in this chat, such as a spam airdrop
 /unmute <token address> — Undo /mute
 /track <hash> — One message on L2 acceptance, one on L1 acceptance or a revert
+Safety and network (group administrators):
+/network on|off — Stall and recovery notifications
+/guard seed|links on|off — Recovery phrase and blocked host protection, on by default
 This chat:
 /list — Its feed, watches, alerts, floors and mutes, with Remove buttons
 /export — Everything Cairn stores for it, as JSON
@@ -116,6 +121,7 @@ export async function answer(command, context) {
           chosen = resolved.token;
         }
         const block_id = { block_number: head.block_number };
+        if (name === null && context.names) { try { name = await context.names.display(input, head.timestamp); } catch { /* Address remains usable when naming is unavailable. */ } }
         const who = name === null ? link('contract', input) : fmt.contract(input, `${escapeHtml(name)} · ${short(input)}`);
         const lines = [...text(`Balances · ${config.chain} · block ${head.block_number}\n${utc(head.timestamp)}`), who];
         try { await rpc.call('starknet_getClassHashAt', { block_id, contract_address: input }); }

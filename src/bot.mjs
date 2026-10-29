@@ -1,3 +1,5 @@
+import { Operations } from './operations.mjs';
+import { blockedLink, seedRun } from './protection.mjs';
 import { performance } from 'node:perf_hooks';
 import { walletAlerts } from './alerts.mjs';
 import { callback, COMMANDS, parseCommand, parsePaste, respond } from './commands.mjs';
@@ -28,14 +30,14 @@ const NO_TOPIC = /thread|topic/i;
 /** The network file's contracts as alerts name them, in place of a short address. */
 const CONTRACT_NAMES = { pragma: 'Pragma oracle', naming: 'Starknet ID naming', ...Object.fromEntries(VENUES.map((v) => [v.contract, v.label])) };
 /** Ledger rows in chain order: block, then transaction, then event. */
-const chainOrder = (a, b) => a.position[0] - b.position[0] || a.position[1] - b.position[1] || a.position[2] - b.position[2];
+const chainOrder = (a, b) => (a.position?.[0] ?? a.block ?? 0) - (b.position?.[0] ?? b.block ?? 0) || (a.position?.[1] ?? 0) - (b.position?.[1] ?? 0) || (a.position?.[2] ?? a.eventIndex ?? 0) - (b.position?.[2] ?? b.eventIndex ?? 0);
 const SLOW_DOWN = 'Slow down: Cairn answers at most 10 commands a minute from one person, and ignores the rest until that minute has passed.';
 /** Chain failures that leave the work for the next pass. */
 const retriable = (error) => error instanceof NodeBusy || error instanceof RpcError || error instanceof NodeValueError;
 
 async function handshake(rpc, config, clean) {
   const chain = decodeChain(await rpc.call('starknet_chainId'));
-  if (chain !== config.chain) throw new CairnError(`Node reports ${clean(chain)}; expected ${config.chain}.`, 2);
+  if (chain !== config.chain) throw new CairnError(`Node chain reports ${clean(chain)}; expected ${config.chain}.`, 2);
   const spec = await rpc.call('starknet_specVersion');
   const version = typeof spec === 'string' ? /^(\d+)\.(\d+)\.(\d+)$/.exec(spec) : null;
   if (!version || !(Number(version[1]) > 0 || Number(version[2]) >= 10)) {
@@ -54,6 +56,12 @@ export async function serve(config, signal) {
     if (signal.aborted || config.mode === 'doctor' || (error instanceof CairnError && error.exitCode === 2)) throw error;
     log('warn', 'node busy: chain identity will be checked again before chain reads.');
   }
+  // Verify every reachable failover endpoint before trusting any of them.
+  for (const endpoint of config.rpcUrls ?? [config.rpcUrl]) {
+    if (identity && endpoint === config.rpcUrls?.[rpc.endpoint]) continue;
+    try { await handshake({call: (method, params) => rpc.request(method, params, endpoint)}, config, clean); }
+    catch (error) { if (signal.aborted || error.exitCode === 2) throw error; }
+  }
   if (config.mode === 'doctor') {
     const block = await rpc.call('starknet_blockNumber');
     if (!Number.isSafeInteger(block) || block < 0) throw new CairnError('Node returned an invalid block number.');
@@ -68,7 +76,7 @@ export async function serve(config, signal) {
       store.transaction(() => store.set('commands', commandList));
     }
     const bot = new Bot({ config, store, rpc, tg, clean, username, me, signal, identity });
-    return config.mode === 'tick' ? await bot.tick() : await bot.run();
+    try { await bot.ops.listen(); return config.mode === 'tick' ? await bot.tick() : await bot.run(); } finally { bot.ops.close(); }
   } finally { store.close(); }
 }
 
@@ -98,6 +106,7 @@ class Bot {
     this.wake = false; // a new track wants its first stage without waiting for the next pass
     this.budget = { start: -Infinity, used: new Map() }; // messages per group in the current pass
     this.counts = { updates: 0, sent: 0, alerts: 0 };
+    this.ops = new Operations(this);
   }
 
   /**
@@ -157,16 +166,25 @@ class Bot {
       const block = await this.rpc.call('starknet_getBlockWithTxHashes', { block_id: 'latest' });
       if (!Number.isSafeInteger(block?.block_number) || block.block_number < 0 || !Number.isSafeInteger(block.timestamp)) throw new Error('invalid header');
       this.head = block;
+      await this.ops.head(block);
       // The first head ever read becomes the cursor: Cairn never backfills.
-      if (this.store.cursor === null) this.store.transaction(() => { this.store.cursor = block.block_number; });
+      if (this.store.cursor === null) this.store.transaction(() => { this.store.cursor = Math.max(0, block.block_number - this.config.confirmations); });
     } catch (error) {
       if (this.signal.aborted || (error instanceof CairnError && error.exitCode === 2)) throw error;
       this.head = null;
+      await this.ops.failed();
       log('warn', 'node busy: latest header unavailable.');
     }
   }
   async poll(timeout) {
-    const batch = await this.tg.call('getUpdates', { offset: this.store.offset, limit: 100, timeout, allowed_updates: ALLOWED_UPDATES });
+    let batch;
+    try { batch = await this.tg.call('getUpdates', { offset: this.store.offset, limit: 100, timeout, allowed_updates: ALLOWED_UPDATES }); this.ops.telegramFailed = false; }
+    catch (error) {
+      if (this.signal.aborted || this.config.mode !== 'run' || [2,3].includes(error.exitCode) || /conflict/.test(error.message)) throw error;
+      this.ops.telegramFailed = true;
+      await sleep(this.config.pollMs, this.signal);
+      return [];
+    }
     if (!Array.isArray(batch)) throw new CairnError('Telegram returned invalid updates.');
     return batch;
   }
@@ -195,7 +213,31 @@ class Bot {
     if (Number.isSafeInteger(message.migrate_from_chat_id)) return () => { this.subs.migrate(message.migrate_from_chat_id, chat.id); return null; };
     // A chat that writes again gets its pending alerts.
     const resume = () => this.subs.resume(chat.id);
+    // Inspect transient input before any command, rate limit, label or export can retain it.
+    const protection = this.store.sql('SELECT * FROM protection WHERE chat_id=?').get(chat.id);
+    const sensitive = (protection?.seed !== 0 && seedRun(message.text ?? message.caption ?? '')) ||
+      (protection?.links !== 0 && blockedLink(message, this.config.blocklist));
+    if (sensitive) {
+      let deleted = false;
+      try { deleted = !!(await this.tg.call('deleteMessage', {chat_id:chat.id,message_id:message.message_id})); } catch (error) { if (!(error instanceof TelegramRefused)) throw error; }
+      return () => ({chat_id:chat.id, lines:textLines(deleted ? 'Safety guard: removed a possible recovery phrase or blocked link. Never share wallet recovery words.' : 'Safety guard: possible recovery phrase or blocked link. I need the Delete messages administrator permission to remove it. Never share wallet recovery words.',this.clean)});
+    }
     const command = parseCommand(message, this.username) ?? parsePaste(message);
+    if (command && ['network','guard'].includes(command.name)) {
+      const target = {chat_id:chat.id, ...(message.message_thread_id ? {message_thread_id:message.message_thread_id} : {})};
+      const reply = value => ({...target,lines:textLines(value,this.clean)});
+      if (!(await this.isAdmin(chat,message))) return () => reply('Only administrators can change network alerts or safety guards.');
+      const match = command.name === 'network' ? /^(on|off)$/.exec(command.argument) : /^(seed|links) (on|off)$/.exec(command.argument);
+      if (!match) return () => reply('Usage: /network on|off or /guard seed|links on|off.');
+      return () => {
+        this.subs.chat(chat);
+        this.store.sql('INSERT OR IGNORE INTO protection(chat_id) VALUES (?)').run(chat.id);
+        const key = command.name === 'network' ? 'network' : match[1];
+        const enabled = match[command.name === 'network' ? 1 : 2] === 'on' ? 1 : 0;
+        this.store.sql(`UPDATE protection SET ${key}=?, thread_id=? WHERE chat_id=?`).run(enabled,message.message_thread_id ?? null,chat.id);
+        return reply(`${key === 'network' ? 'Network alerts' : key+' guard'} ${enabled ? 'on' : 'off'}.`);
+      };
+    }
     if (!command) return () => { resume(); return null; };
     const target = { chat_id: chat.id, ...(Number.isSafeInteger(message.message_thread_id) ? { message_thread_id: message.message_thread_id } : {}) };
     const sender = message.sender_chat?.id ?? message.from?.id;
@@ -330,6 +372,7 @@ class Bot {
 
   async background() {
     if (!this.head) return;
+    try { await this.ops.reconcile(); } catch (error) { if (!retriable(error)) throw error; return; }
     await this.scan();
     await this.trackPass();
     const now = this.head.timestamp;
@@ -345,7 +388,13 @@ class Bot {
    */
   async scan() {
     const cursor = this.store.cursor;
-    const range = cursor === null ? null : this.scanner.next(cursor, this.head.block_number);
+    const safeHead = Math.max(0, this.head.block_number - this.config.confirmations);
+    if (cursor !== null && safeHead - cursor > this.config.maxGap) {
+      await this.ops.broadcast(`Catch-up gap: skipped ${safeHead - cursor} blocks. Scanning resumes after block ${safeHead}.`);
+      this.store.cursor = safeHead;
+      return;
+    }
+    const range = cursor === null ? null : this.scanner.next(cursor, safeHead);
     this.behind = false;
     if (!range) return;
     const interests = this.subs.interests();
@@ -373,7 +422,7 @@ class Bot {
       for (const [chatId, address, token] of found.seen) this.subs.noteSeen(chatId, address, token);
       this.store.cursor = range.to;
     });
-    this.behind = range.to < this.head.block_number;
+    this.behind = range.to < safeHead;
   }
   async trackPass() {
     for (const track of this.subs.allTracks()) {

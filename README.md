@@ -446,3 +446,61 @@ Anyone can enter its rounds with their coding agent: give it this prompt.
 ```text
 I want you to contribute to 0xNad/cairn on Hotpod. Download https://agent-launchpad-six.vercel.app/skill/SKILL.md with curl, read all of it, and follow it: install the launchpad CLI and the skill, use the key in ~/.launchpad/<agent>/env (if I have no Hotpod agent yet, ask me to create one on https://agent-launchpad-six.vercel.app/me/agents and to save its key with the commands it shows; never ask me for the key itself), find this repository's project with launchpad projects, and enter its open round following roles/build.md.
 ```
+
+## Unattended deployment (Node 24)
+
+1. Open **@BotFather** in Telegram, run `/newbot`, choose a name and username, and save its token privately. Never paste it in chat or commit it. Add the bot to your group as administrator with **Delete messages** and permission to send messages. Use BotFather `/setprivacy` → Disable for this bot so it receives ordinary messages for safety guards; remove and re-add it after changing privacy. Privacy mode left on limits protection to messages Telegram delivers. In a private chat the bot can warn even when Telegram refuses deletion.
+2. Choose two independent Starknet JSON-RPC providers supporting spec **0.10.0 or newer**, on the same chain. Use their HTTPS RPC URLs including the correct version path. `SN_MAIN` is mainnet; use `SN_SEPOLIA` and its network file for testing. Cairn verifies every reachable endpoint's chain on startup and exits 2 for a mismatch. Offline endpoints are retried; failure of all endpoints pauses scans and notifies only the operator. Keep provider credentials in the private environment file.
+3. Create `cairn.env` with mode 600, outside the source checkout:
+
+```sh
+TELEGRAM_BOT_TOKEN=your-botfather-token
+STARKNET_RPC_URLS=https://provider-one.example/rpc/v0_10,https://provider-two.example/rpc/v0_10
+CAIRN_CHAIN=SN_MAIN
+CAIRN_OPERATOR_CHAT=123456789
+CAIRN_CONFIRMATIONS=2
+CAIRN_REORG_DEPTH=64
+CAIRN_STALL_SECONDS=120
+CAIRN_MAX_GAP=10000
+CAIRN_HTTP_PORT=8080
+CAIRN_HTTP_HOST=0.0.0.0
+```
+
+Start a private conversation with the bot first so it can send operator alerts. Substitute your numeric Telegram chat id. The monitoring HTTP server has no authentication: bind only to a private interface or publish only on loopback. It exposes exactly `GET /healthz` and `GET /metrics`. A healthy response includes head and seconds since the head changed; HTTP 503 reasons are `rpc`, `telegram`, or `stalled`. Prometheus counters describe this process lifetime.
+
+```sh
+docker build -t cairn:local .
+docker volume create cairn-data
+# Give the non-root image user ownership of the empty persistent volume once.
+docker run --rm --user 0 -v cairn-data:/data --entrypoint chown cairn:local node:node /data
+docker run --rm --env-file ./cairn.env -v cairn-data:/data cairn:local node cairn.mjs doctor
+docker run -d --name cairn --restart unless-stopped --env-file ./cairn.env \
+  -v cairn-data:/data -p 127.0.0.1:8080:8080 cairn:local
+curl --fail http://127.0.0.1:8080/healthz
+curl http://127.0.0.1:8080/metrics
+docker logs --tail 20 cairn
+```
+
+As a group administrator run `/network on` to subscribe to stall/recovery notices. `/network off` unsubscribes. Stalls use wall clock (not block timestamps), persist across restart, and send one recovery message with elapsed duration. Node outages go only to the operator. All subscriptions still cover only future blocks. Confirmation depth delays event scans; gaps **greater than** `CAIRN_MAX_GAP` are skipped with a notice. Equality is scanned. This policy intentionally loses older backlog events: investigate them separately in your explorer.
+
+The retained block hashes detect forks, rewind the existing scanner and preserve ledger deduplication. A missing transaction gets a correction replying to its original alert; a transaction re-included anywhere does not get a duplicate or correction. Beyond retained history Cairn warns and rescans only the retained horizon. Delivery records have the existing seven-day retention. Stop and independently reconcile older history after a deeper fork. As with original Telegram sends, a crash between acceptance and saving a delivery can leave an ambiguous result.
+
+### Member safety
+
+`/guard seed on|off` and `/guard links on|off` require a group administrator (private chats control their own settings). Both default to on, and `/forget` removes their overrides and network subscription. Recovery protection checks consecutive English BIP-39 dictionary words, without requiring a checksum: a run of 12 or more is removed. It never repeats or saves the phrase. This may remove prose made entirely of dictionary words; it is exposure prevention, not wallet validation. The dictionary is the Bitcoin BIPs English BIP-39 list, MIT licensed; see `src/BIP39-NOTICE`.
+
+Links match parsed hosts and subdomains, never paths or userinfo. Default blocked host: `starknet-bot.com`. Set `CAIRN_BLOCKLIST` to a UTF-8 file with one domain per line (`#` comments and empty lines ignored) to **replace** that list; mount it read-only in Docker and set its container path. Hidden Telegram text links are checked too. Without deletion rights the warning names **Delete messages**. Test with an invented phrase, never a real wallet recovery phrase.
+
+### systemd alternative and maintenance
+
+Install Node **24** and put the checkout at `/opt/cairn`. Create a dedicated `cairn` system account, put the same private variables in `/etc/cairn.env` (root owned, mode 600), and install `deploy/cairn.service` in `/etc/systemd/system/`. Adjust its `ExecStart` to your Node 24 path. Use `CAIRN_HTTP_HOST=127.0.0.1` for this deployment. `StateDirectory` provisions `/var/lib/cairn` automatically.
+
+```sh
+systemctl daemon-reload
+systemctl enable --now cairn
+systemctl status cairn
+journalctl -u cairn --since today
+systemctl stop cairn
+```
+
+SIGTERM / `docker stop --time 30 cairn` stops the single polling loop and closes SQLite and HTTP cleanly. Run only one process per data directory. To back up, stop the service/container, copy the **whole** data volume privately, then restart. Restore only while stopped, with owner `node` (Docker) or `cairn` (systemd), directory mode 700 and files mode 600. Never copy a live SQLite file alone. Test upgrades on a private copy of the data and run `doctor` before restarting. Roll back code together with its stopped database backup when a schema version changes.
