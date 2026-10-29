@@ -44,8 +44,9 @@ export function tradeOf(token, swaps, transfers, venues) {
     const named = own.some((s) => s.legs.some((leg) => leg.token === token));
     const routed = venue.aggregator && transfers.some((t) => t.kind === 'Transfer' && t.token === token && (t.a === venue.address || t.b === venue.address));
     if (!named && !routed) continue;
-    const nets = netsOf(own), net = nets.get(token) ?? 0n;
-    return net === 0n ? null : { venue, swaps: own, nets, net };
+    const relevant = own.filter(s => s.legs.some(leg => leg.token === token));
+    const nets = netsOf(relevant), net = nets.get(token) ?? 0n;
+    return net === 0n ? null : { venue, swaps: relevant, nets, net };
   }
   return null;
 }
@@ -186,35 +187,31 @@ async function heldNone(rpc, token, owner, block) {
   }
 }
 
-// Half-decades of US dollars: the size bar grows by one dot at $10, $30, $100, $300, $1,000 … $1,000,000.
-const STEPS = [10n, 30n, 100n, 300n, 1_000n, 3_000n, 10_000n, 30_000n, 100_000n, 300_000n, 1_000_000n].map((d) => d * 100n);
 const WHALE = 100_000n * 100n;
-
-/**
- * One dot per half-decade of USD value, green for a buy and red for a sell, so a feed reads by size at a glance;
- * a trade with no USD value grows with its amount over the chat's floor instead.
- */
+/** Logarithmic dollar tiers; unpriced trades grow by multiples of the chat's floor. */
 export function sizeBar(side, cents, amount, floor) {
-  let dots = 1;
-  if (cents !== null) dots += STEPS.filter((s) => cents >= s).length;
-  else if (floor) dots += [3n, 10n, 30n, 100n, 300n, 1000n].filter((m) => amount >= floor * m).length;
-  return `${(side === 'buy' ? '🟢' : '🔴').repeat(dots)}${cents !== null && cents >= WHALE ? ' 🐋' : ''}`;
+  const dot = side === 'buy' ? '🟢' : '🔴';
+  if (cents !== null && cents >= WHALE) return `${dot}🐋`;
+  const dots = cents !== null ? [100n, 1000n, 10000n].filter(d => cents >= d * 100n).length
+    : floor ? [3n, 10n, 30n, 100n, 300n, 1000n].filter(m => amount >= floor * m).length : 0;
+  return dot.repeat(Math.min(4, 1 + dots));
 }
 
 /**
  * A chat's post, four short lines that read at a glance on a phone: the size bar, the side and the USD value;
  * the exact amount and what was paid (or got) for it; the trader; the venue, the block time and the link.
  */
-function render(post, feed, fmt) {
+export function render(post, feed, fmt) {
   const { token, side, amount, others, value, trader, name, newHolder, block } = post;
   const cents = value ? centsOf(value) : null;
   const symbol = token.verified ? escapeHtml(token.symbol) : `<code>${escapeHtml(token.symbol)}</code>`;
   const worth = value ? ` · ≈${escapeHtml(usdText(value))}` : '';
   const lines = [`${sizeBar(side, cents, amount, feed.minUnits)} <b>${side === 'buy' ? 'Buy' : 'Sell'}</b> ${fmt.token(token)}${worth}`];
   const paid = others.map((o) => `${decimal(o.amount, o.token.decimals)} ${fmt.token(o.token)}`).join(' + ');
-  lines.push(`${decimal(amount, token.decimals)} ${symbol}${paid ? ` for ${paid}` : ''}`);
-  if (trader) lines.push(`👤 ${fmt.contract(trader, name ? escapeHtml(name) : short(trader))}${newHolder ? ' · 🆕 new holder' : ''}`);
-  lines.push(`${post.venue.name} · ${utc(block.timestamp)} · ${fmt.tx(post.tx, 'View transaction')}`);
+  lines.push(`${decimal(amount, token.decimals)} ${symbol}`);
+  if (paid) lines.push(`${side === 'buy' ? 'Paid' : 'Received'} ${paid}`);
+  if (trader) lines.push(`👤 ${fmt.contract(trader, name ? escapeHtml(name) : short(trader))}${newHolder ? ' · new holder' : ''}`);
+  lines.push(`${post.venue.name} · ${utc(block.timestamp).slice(11, 16)} UTC · ${fmt.tx(post.tx, 'tx')}`);
   return lines.join('\n');
 }
 

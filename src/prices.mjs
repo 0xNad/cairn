@@ -39,9 +39,6 @@ export const centsOf = ({ num, den }) => (200n * num + den) / (2n * den);
 export const atLeast = ({ num, den }, cents) => 100n * num >= cents * den;
 /** A value as shown: rounded half up to cents, as $1,234.57, and <$0.01 for any value above zero below a cent. */
 export const usdText = (value) => (value.num > 0n && 100n * value.num < value.den ? '<$0.01' : dollars(centsOf(value)));
-/** Two answers of one pair are the same sample: nothing was published between the blocks they were read at. */
-const same = (a, b) => a.price === b.price && a.decimals === b.decimals && a.timestamp === b.timestamp && a.sources === b.sources
-  && a.missing === b.missing && a.error === b.error;
 
 export class Prices {
   constructor(config, rpc) {
@@ -49,13 +46,10 @@ export class Prices {
     this.maxAge = config.priceMaxAge ?? 900;
     this.rpc = rpc;
     this.memo = new Map(); // `${pair} ${block}` → sample, for this pass
-    this.range = null; // the blocks this pass scans
   }
   get enabled() { return this.contract !== null; }
   /** Starts a new pass: prices are read again. */
-  reset() { this.memo.clear(); this.range = null; }
-  /** The pass scans blocks `from` to `to`: when a pair answers the same at both ends, that answer serves every block between. */
-  horizon(from, to) { this.range = { from, to }; }
+  reset() { this.memo.clear(); }
   /**
    * Pragma's median for `pair` at block `number`: a sample, { missing: true }, or { error } when the node or the
    * contract answers with an error (an unknown pair, a past block the node no longer serves) or another shape:
@@ -80,17 +74,11 @@ export class Prices {
   }
   /**
    * The fresh USD sample of a verified token as of `block` ({ number, timestamp }), or null. Pragma moves only
-   * when a publisher updates the pair, every few minutes: a pass reads each pair at both ends of its range, and
-   * at a block between them only when the two answers differ.
+   * when a publisher updates the pair. Each trade reads its own block, even inside a catch-up range.
    */
   async usd(token, block) {
     if (!this.enabled || !token?.verified || !usdPair(token.pragma_pair)) return null;
-    const pair = token.pragma_pair, { from, to } = this.range ?? {};
-    let sample;
-    if (this.range && block.number > from && block.number < to) {
-      const first = await this.sample(pair, from), last = await this.sample(pair, to);
-      sample = same(first, last) ? last : await this.sample(pair, block.number);
-    } else sample = await this.sample(pair, block.number);
+    const sample = await this.sample(token.pragma_pair, block.number);
     return sample.price !== undefined && ageOf(sample, block.timestamp) <= this.maxAge ? sample : null;
   }
 }

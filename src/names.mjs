@@ -193,8 +193,8 @@ export class Names {
     if (!labels.length) return null;
     const back = await this.#forward(labels);
     if (back !== address) {
-      // The name moved, or never pointed here: remember "no name" so the next passes stay quiet.
-      this.#save(address, [], now);
+      // Unverified reverse data is retried on the next pass, including a new reverse lookup.
+      this.store.sql('DELETE FROM names WHERE address = ?').run(address);
       return null;
     }
     const text = labels.map(decode);

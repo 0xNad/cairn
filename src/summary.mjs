@@ -6,6 +6,7 @@ import { usdText } from './prices.mjs';
 
 export const GROUP_BUDGET = 3;
 export const GROUP_TYPES = new Set(['group', 'supergroup']);
+const POLICY = Object.freeze({ network: { individual: true }, correction: { individual: true } });
 const MAX_LINKS = 10; // transaction links a summary lists for its wallet alerts and for its track updates
 
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
@@ -34,17 +35,23 @@ function heavier(a, b) {
  * How a chat's due alerts fit its budget this pass: { full, rest } — `full` sent one by one, `rest` covered
  * by one summary. When more are due than fit, the ones sent in full are the weightiest (above), kept in chain
  * order, so a burst shows its biggest trades. Private chats have no budget; a group that already used its
- * budget waits for the next pass.
+ * budget waits for the next pass. Individual notices consume slots first and are never summarized.
  */
-export function plan(rows, type, used) {
+export function plan(rows, type, used, chainReady = true, catchingUp = false) {
+  if (!chainReady) rows = rows.filter(row => row.kind === 'network');
+  if (catchingUp && GROUP_TYPES.has(type)) rows = rows.filter(row => POLICY[row.kind]?.individual);
   if (!GROUP_TYPES.has(type)) return { full: rows, rest: [] };
   const left = GROUP_BUDGET - used;
   if (left <= 0) return { full: [], rest: [] };
-  if (rows.length <= left) return { full: rows, rest: [] };
-  const weights = rows.map(weight);
-  const order = rows.map((_, i) => i).sort((i, j) => heavier(weights[j], weights[i]) || i - j);
-  const chosen = new Set(order.slice(0, left - 1));
-  return { full: rows.filter((_, i) => chosen.has(i)), rest: rows.filter((_, i) => !chosen.has(i)) };
+  const individual = rows.filter(row => POLICY[row?.kind]?.individual);
+  const full = individual.slice(0, left), remaining = left - full.length;
+  if (!remaining) return { full, rest: [] };
+  const candidates = rows.filter(row => !POLICY[row?.kind]?.individual);
+  if (candidates.length <= remaining) return { full: [...full, ...candidates], rest: [] };
+  const weights = candidates.map(weight);
+  const order = candidates.map((_, i) => i).sort((i, j) => heavier(weights[j], weights[i]) || i - j);
+  const chosen = new Set(order.slice(0, remaining - 1));
+  return { full: [...full, ...candidates.filter((_, i) => chosen.has(i))], rest: candidates.filter((_, i) => !chosen.has(i)) };
 }
 
 /** Exact USD values with power-of-ten denominators, added up. */
@@ -59,8 +66,9 @@ const valueIn = (d) => (d.value ? { num: BigInt(d.value[0]), den: BigInt(d.value
  */
 export function summarise(rows, fmt) {
   const trades = new Map(), alerts = [], tracks = [];
-  let whales = 0, approvals = 0, largest = null;
+  let whales = 0, approvals = 0, largest = null, low = Infinity, high = -Infinity;
   for (const row of rows) {
+    if (Number.isSafeInteger(row.block)) { low = Math.min(low, row.block); high = Math.max(high, row.block); }
     const d = read(row.digest);
     if (d?.k === 'trade') {
       const key = `${d.side} ${d.token}`;
@@ -70,8 +78,9 @@ export function summarise(rows, fmt) {
       if (valueIn(d)) {
         t.value = add(t.value, valueIn(d));
         t.priced++;
-        if (!largest || BigInt(d.cents) > BigInt(largest.d.cents)) largest = { d, tx: row.tx_hash };
+
       }
+      if (!largest || heavier(weight(row), weight(largest.row)) > 0) largest = { d, tx: row.tx_hash, row };
     } else if (row.kind === 'track') tracks.push(row);
     else {
       alerts.push(row);
@@ -79,9 +88,7 @@ export function summarise(rows, fmt) {
       if (d?.approval) approvals++;
     }
   }
-  const blocks = rows.map((r) => r.block).filter(Number.isSafeInteger);
-  const low = Math.min(...blocks), high = Math.max(...blocks);
-  const where = !blocks.length ? '' : low === high ? ` in block ${low}` : ` in blocks ${low}–${high}`;
+  const where = low === Infinity ? '' : low === high ? ` in block ${low}` : ` in blocks ${low}–${high}`;
   const lines = [`➕ <b>${rows.length} more</b>${where}, summarised to keep the group readable:`];
   const symbol = (t) => (t.verified ? escapeHtml(t.symbol) : `<code>${escapeHtml(t.symbol)}</code> (unverified)`);
   for (const t of trades.values()) {
@@ -99,8 +106,8 @@ export function summarise(rows, fmt) {
   if (tracks.length) lines.push(`⏱ ${plural(tracks.length, 'tracked transaction update')}: ${linked(tracks)}`);
   if (largest) {
     const { d } = largest;
-    const worth = escapeHtml(usdText(valueIn(d)));
-    lines.push(`Largest: ${fmt.tx(largest.tx, `${d.side === 'buy' ? 'Buy' : 'Sell'} ${decimal(BigInt(d.amount), d.decimals)} ${escapeHtml(d.symbol)} ≈${worth}`)}`);
+    const worth = valueIn(d) ? ` ≈${escapeHtml(usdText(valueIn(d)))}` : '';
+    lines.push(`Largest: ${fmt.tx(largest.tx, `${d.side === 'buy' ? 'Buy' : 'Sell'} ${decimal(BigInt(d.amount), d.decimals)} ${escapeHtml(d.symbol)}${worth}`)}`);
   }
   return lines.join('\n');
 }

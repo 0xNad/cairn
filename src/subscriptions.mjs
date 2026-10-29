@@ -5,7 +5,7 @@
 export const LIMITS = Object.freeze({ whales: 5, tracks: 10, minimums: 20, muted: 100, label: 32 });
 const OFFER_TTL = 24 * 3600; // seconds of chain time a Watch or Track button keeps working
 /** Every table holding a chat's data, children before the chat itself: /forget and migrations walk it. */
-const CHAT_TABLES = ['watches', 'seen', 'whales', 'minimums', 'muted', 'tracks', 'offers', 'feeds', 'deliveries', 'chats'];
+const CHAT_TABLES = ['network_subscriptions', 'protection', 'watches', 'seen', 'whales', 'minimums', 'muted', 'tracks', 'offers', 'feeds', 'deliveries', 'chats'];
 const FEED_COLUMNS = 'id, chat_id, token, symbol, min, min_units, min_usd, mode, since_block, thread_id';
 /** A topic for export: only chats with forum topics show one. */
 const topic = (row) => (row.thread_id === null || row.thread_id === undefined ? {} : { thread_id: row.thread_id });
@@ -28,6 +28,17 @@ export class Subscriptions {
   /** A chat that writes again, or re-adds the bot, gets its pending alerts. */
   resume(chatId) { this.#q('UPDATE chats SET paused = 0 WHERE chat_id = ? AND paused <> 0').run(chatId); }
   isPaused(chatId) { return this.#q('SELECT paused FROM chats WHERE chat_id = ?').get(chatId)?.paused === 1; }
+
+  /** Network alerts are subscriptions; paused chats stay subscribed but receive no notices. */
+  network(chat, on, thread = null) {
+    this.chat(chat);
+    if (on) this.#q(`INSERT INTO network_subscriptions (chat_id, thread_id) VALUES (?, ?)
+      ON CONFLICT (chat_id) DO UPDATE SET thread_id = excluded.thread_id`).run(chat.id, thread);
+    else this.#q('DELETE FROM network_subscriptions WHERE chat_id = ?').run(chat.id);
+  }
+  networkOf(chatId) { return this.#q('SELECT thread_id FROM network_subscriptions WHERE chat_id = ?').get(chatId) ?? null; }
+  networkOn(chatId) { return this.networkOf(chatId) !== null; }
+  networkSubscribers() { return this.#q('SELECT chat_id, thread_id FROM network_subscriptions JOIN chats USING(chat_id) WHERE paused = 0').all(); }
 
   // ---- watches -------------------------------------------------------------------------------------
 
@@ -135,6 +146,12 @@ export class Subscriptions {
     if (track) this.#q('DELETE FROM tracks WHERE id = ?').run(track.id);
     return track ?? null;
   }
+  /** A rebuilt acceptance can reopen a previously completed track until its L1 notice. */
+  resumeTrack(track, head, stage) {
+    this.#q(`INSERT INTO tracks (chat_id, hash, since_block, since_time, stage, thread_id) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT (chat_id, hash) DO UPDATE SET stage = min(tracks.stage, excluded.stage)`)
+      .run(track.chat_id, track.hash, head.block_number, head.timestamp, stage, track.thread_id);
+  }
   trackStage(id, stage) { this.#q('UPDATE tracks SET stage = ? WHERE id = ?').run(stage, id); }
   trackDone(id) { this.#q('DELETE FROM tracks WHERE id = ?').run(id); }
   /** Keeps a pasted address or hash for a day, so that its button can carry a short id instead. */
@@ -189,8 +206,11 @@ export class Subscriptions {
     const deliveries = { pending: 0, sent: 0, summarized: 0, dropped: 0 };
     for (const r of this.#q('SELECT state, count(*) AS n FROM deliveries WHERE chat_id = ? GROUP BY state').all(chatId)) deliveries[r.state] = r.n;
     const feed = this.feedOf(chatId);
+    const protection = this.#q('SELECT seed, links FROM protection WHERE chat_id = ?').get(chatId);
     return {
       chat_id: chatId,
+      ...(protection ? { protection } : {}),
+      ...(this.networkOn(chatId) ? { network: true } : {}),
       watches: this.watches(chatId).map((w) => ({ address: w.address, label: w.label, since_block: w.since_block, seen: this.seen(chatId, w.address), ...topic(w) })),
       whales: this.whales(chatId).map((w) => ({ token: w.token, symbol: w.symbol, min: w.min, ...topic(w) })),
       minimums: Object.fromEntries(this.minimums(chatId).map((m) => [m.token, m.amount])),
