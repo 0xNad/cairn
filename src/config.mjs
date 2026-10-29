@@ -51,12 +51,29 @@ export function loadConfig(args, env = process.env) {
   const token = env.TELEGRAM_BOT_TOKEN;
   if (typeof token !== 'string' || !/^\d+:[A-Za-z0-9_-]{30,}$/.test(token)) bad('TELEGRAM_BOT_TOKEN: missing or malformed BotFather token.');
   const telegramRoot = url(env.TELEGRAM_API_ROOT ?? 'https://api.telegram.org', 'TELEGRAM_API_ROOT', true);
-  const rpcUrl = url(env.STARKNET_RPC_URL, 'STARKNET_RPC_URL');
+  const rpcUrls = (env.STARKNET_RPC_URLS === undefined ? [env.STARKNET_RPC_URL] : env.STARKNET_RPC_URLS.split(',').map(s => s.trim()))
+    .map(value => url(value, 'STARKNET_RPC_URLS / STARKNET_RPC_URL'));
+  const rpcUrl = rpcUrls[0];
+  let blocklist;
+  try { blocklist = readFileSync(env.CAIRN_BLOCKLIST ?? fileURLToPath(new URL('../resources/blocklist.txt', import.meta.url)), 'utf8'); }
+  catch { bad('CAIRN_BLOCKLIST: cannot read domain list.'); }
+  const blockedHosts = blocklist.split(/\r?\n/).map(s => s.split('#')[0].trim().toLowerCase()).filter(Boolean).map(host => {
+    if (!/^[a-z0-9.-]+$/.test(host) || host.includes('..') || !host.includes('.')) bad('CAIRN_BLOCKLIST: expected one domain per line.');
+    return host.replace(/\.$/, '');
+  });
+  const operatorChat = env.CAIRN_OPERATOR_CHAT === undefined ? null : Number(env.CAIRN_OPERATOR_CHAT);
+  if (operatorChat !== null && (!/^-?\d+$/.test(env.CAIRN_OPERATOR_CHAT) || !Number.isSafeInteger(operatorChat) || operatorChat === 0)) bad('CAIRN_OPERATOR_CHAT: must be a nonzero chat id.');
   const chain = env.CAIRN_CHAIN ?? 'SN_MAIN';
   if (!['SN_MAIN', 'SN_SEPOLIA'].includes(chain)) bad('CAIRN_CHAIN: must be SN_MAIN or SN_SEPOLIA.');
   const explorer = url(env.CAIRN_EXPLORER_URL ?? 'https://voyager.online', 'CAIRN_EXPLORER_URL').replace(/\/$/, '');
   const config = {
-    mode: args[0], token, telegramRoot, rpcUrl, chain, explorer,
+    mode: args[0], token, telegramRoot, rpcUrl, rpcUrls, chain, explorer, blockedHosts, operatorChat,
+    stallSeconds: integer(env, 'CAIRN_STALL_SECONDS', 120, 1),
+    reorgDepth: integer(env, 'CAIRN_REORG_DEPTH', 64, 1, 10000),
+    confirmations: integer(env, 'CAIRN_CONFIRMATIONS', 0, 0, 10000),
+    maxGap: integer(env, 'CAIRN_MAX_GAP', 10000, 1),
+    httpPort: env.CAIRN_HTTP_PORT === undefined ? null : integer(env, 'CAIRN_HTTP_PORT', 0, 0, 65535),
+    httpHost: env.CAIRN_HTTP_HOST ?? '127.0.0.1',
     data: dataDirectory(env.CAIRN_DATA ?? './data'),
     pollMs: integer(env, 'CAIRN_POLL_MS', 10000, 50),
     tgTimeout: integer(env, 'CAIRN_TG_TIMEOUT', 30, 0, 50),

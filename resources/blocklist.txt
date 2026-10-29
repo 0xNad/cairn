@@ -1,0 +1,2 @@
+# One domain per line; includes its subdomains. Replace with CAIRN_BLOCKLIST.
+starknet-bot.com

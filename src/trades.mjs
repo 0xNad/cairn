@@ -44,8 +44,10 @@ export function tradeOf(token, swaps, transfers, venues) {
     const named = own.some((s) => s.legs.some((leg) => leg.token === token));
     const routed = venue.aggregator && transfers.some((t) => t.kind === 'Transfer' && t.token === token && (t.a === venue.address || t.b === venue.address));
     if (!named && !routed) continue;
-    const nets = netsOf(own), net = nets.get(token) ?? 0n;
-    return net === 0n ? null : { venue, swaps: own, nets, net };
+    // Only swaps naming this token determine its quote; another swap may be unrelated.
+    const relevant = own.filter(s => s.legs.some(leg => leg.token === token));
+    const nets = netsOf(relevant), net = nets.get(token) ?? 0n;
+    return net === 0n ? null : { venue, swaps: relevant, nets, net };
   }
   return null;
 }
@@ -202,7 +204,7 @@ export function sizeBar(side, cents, amount, floor) {
 }
 
 /**
- * A chat's post, four short lines that read at a glance on a phone: the size bar, the side and the USD value;
+ * A chat's post, five short lines that read at a glance on a phone: the size bar, the side and the USD value;
  * the exact amount and what was paid (or got) for it; the trader; the venue, the block time and the link.
  */
 function render(post, feed, fmt) {
@@ -210,11 +212,11 @@ function render(post, feed, fmt) {
   const cents = value ? centsOf(value) : null;
   const symbol = token.verified ? escapeHtml(token.symbol) : `<code>${escapeHtml(token.symbol)}</code>`;
   const worth = value ? ` · ≈${escapeHtml(usdText(value))}` : '';
-  const lines = [`${sizeBar(side, cents, amount, feed.minUnits)} <b>${side === 'buy' ? 'Buy' : 'Sell'}</b> ${fmt.token(token)}${worth}`];
+  const lines = [sizeBar(side, cents, amount, feed.minUnits), `<b>${side === 'buy' ? 'Buy' : 'Sell'}</b> ${fmt.token(token)}${worth}`];
   const paid = others.map((o) => `${decimal(o.amount, o.token.decimals)} ${fmt.token(o.token)}`).join(' + ');
   lines.push(`${decimal(amount, token.decimals)} ${symbol}${paid ? ` for ${paid}` : ''}`);
   if (trader) lines.push(`👤 ${fmt.contract(trader, name ? escapeHtml(name) : short(trader))}${newHolder ? ' · 🆕 new holder' : ''}`);
-  lines.push(`${post.venue.name} · ${utc(block.timestamp)} · ${fmt.tx(post.tx, 'View transaction')}`);
+  lines.push(`${post.venue.name} · ${utc(block.timestamp)} · ${fmt.tx(post.tx, 'Tx')}`);
   return lines.join('\n');
 }
 

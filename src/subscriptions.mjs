@@ -5,7 +5,7 @@
 export const LIMITS = Object.freeze({ whales: 5, tracks: 10, minimums: 20, muted: 100, label: 32 });
 const OFFER_TTL = 24 * 3600; // seconds of chain time a Watch or Track button keeps working
 /** Every table holding a chat's data, children before the chat itself: /forget and migrations walk it. */
-const CHAT_TABLES = ['watches', 'seen', 'whales', 'minimums', 'muted', 'tracks', 'offers', 'feeds', 'deliveries', 'chats'];
+const CHAT_TABLES = ['protection', 'corrections', 'notices', 'watches', 'seen', 'whales', 'minimums', 'muted', 'tracks', 'offers', 'feeds', 'deliveries', 'chats'];
 const FEED_COLUMNS = 'id, chat_id, token, symbol, min, min_units, min_usd, mode, since_block, thread_id';
 /** A topic for export: only chats with forum topics show one. */
 const topic = (row) => (row.thread_id === null || row.thread_id === undefined ? {} : { thread_id: row.thread_id });
@@ -28,6 +28,19 @@ export class Subscriptions {
   /** A chat that writes again, or re-adds the bot, gets its pending alerts. */
   resume(chatId) { this.#q('UPDATE chats SET paused = 0 WHERE chat_id = ? AND paused <> 0').run(chatId); }
   isPaused(chatId) { return this.#q('SELECT paused FROM chats WHERE chat_id = ?').get(chatId)?.paused === 1; }
+
+  protection(chatId) {
+    const r = this.#q('SELECT network, seed, links, thread_id FROM protection WHERE chat_id = ?').get(chatId);
+    return r ? { network: r.network === 1, seed: r.seed === 1, links: r.links === 1, thread_id: r.thread_id }
+      : { network: false, seed: true, links: true, thread_id: null };
+  }
+  protect(chat, key, enabled, thread = null) {
+    if (!['network', 'seed', 'links'].includes(key)) throw new Error('invalid protection setting');
+    this.chat(chat);
+    this.#q('INSERT OR IGNORE INTO protection (chat_id) VALUES (?)').run(chat.id);
+    this.#q(`UPDATE protection SET ${key} = ? WHERE chat_id = ?`).run(enabled ? 1 : 0, chat.id);
+    if (key === 'network') this.#q('UPDATE protection SET thread_id = ? WHERE chat_id = ?').run(thread, chat.id);
+  }
 
   // ---- watches -------------------------------------------------------------------------------------
 
@@ -201,6 +214,7 @@ export class Subscriptions {
       buttons: this.#q('SELECT kind, value, chain_time FROM offers WHERE chat_id = ? ORDER BY id').all(chatId)
         .map((o) => ({ kind: o.kind, value: o.value, chain_time: o.chain_time })),
       deliveries,
+      protection: this.protection(chatId),
     };
   }
   /**

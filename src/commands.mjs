@@ -7,6 +7,8 @@ import { callback, setting, SETTINGS } from './settings.mjs';
 import { balanceOf } from './tokens.mjs';
 
 export const COMMANDS = Object.freeze([
+  { command: 'network', description: 'Turn network stall and recovery alerts on or off' },
+  { command: 'guard', description: 'Control seed phrase and blocked link protection' },
   { command: 'start', description: 'Welcome and privacy' },
   { command: 'help', description: 'Commands and privacy' },
   { command: 'status', description: 'Chain head and gas prices' },
@@ -57,6 +59,8 @@ Feeds and alerts, set by group administrators (anyone in a private chat):
 /mute <token address> — Silence one token in this chat, such as a spam airdrop
 /unmute <token address> — Undo /mute
 /track <hash> — One message on L2 acceptance, one on L1 acceptance or a revert
+/network on|off — Network stalls, recoveries and skipped gaps
+/guard seed|links on|off — Member guards (both on by default)
 This chat:
 /list — Its feed, watches, alerts, floors and mutes, with Remove buttons
 /export — Everything Cairn stores for it, as JSON
@@ -75,7 +79,7 @@ const GROUP_SETUP = `Cairn is in this group. To set it up, as an administrator:
 2. /watch <address> <label> for each wallet the group follows.
 3. /whale <token> <amount> for large transfers of a token.
 4. /min and /mute to cut noise.
-Run each in a forum topic to post there. Members can use /status, /balance, /tx, /price and /list. Cairn reads only the commands addressed to it.`;
+Run each in a forum topic to post there. Members can use /status, /balance, /tx, /price and /list. Cairn checks visible messages for seed phrases and blocked links before handling commands. Grant Delete messages permission and disable BotFather privacy mode to protect group messages.`;
 
 export async function answer(command, context) {
   const { config, rpc, username, clean, head, spec } = context;
@@ -116,6 +120,8 @@ export async function answer(command, context) {
           chosen = resolved.token;
         }
         const block_id = { block_number: head.block_number };
+        name ??= await context.names?.display(input, head.timestamp);
+        name ??= null;
         const who = name === null ? link('contract', input) : fmt.contract(input, `${escapeHtml(name)} · ${short(input)}`);
         const lines = [...text(`Balances · ${config.chain} · block ${head.block_number}\n${utc(head.timestamp)}`), who];
         try { await rpc.call('starknet_getClassHashAt', { block_id, contract_address: input }); }

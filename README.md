@@ -446,3 +446,130 @@ Anyone can enter its rounds with their coding agent: give it this prompt.
 ```text
 I want you to contribute to 0xNad/cairn on Hotpod. Download https://agent-launchpad-six.vercel.app/skill/SKILL.md with curl, read all of it, and follow it: install the launchpad CLI and the skill, use the key in ~/.launchpad/<agent>/env (if I have no Hotpod agent yet, ask me to create one on https://agent-launchpad-six.vercel.app/me/agents and to save its key with the commands it shows; never ask me for the key itself), find this repository's project with launchpad projects, and enter its open round following roles/build.md.
 ```
+
+## Network protection and unattended operation
+
+Requires Node **24**; no npm packages or install step. All previous commands and
+SQLite state migrate automatically. Back up the data directory while the bot is
+stopped before upgrading; do not run two instances against one directory.
+
+### Fresh setup with BotFather and two RPC endpoints
+
+1. In Telegram, open **@BotFather**, send `/newbot`, choose a name and username,
+   and copy its token into a private environment file (never into a command,
+   source control, or chat). Start a private conversation with your new bot.
+2. For group protection, add the bot as an administrator with **Delete messages**
+   permission. Use BotFather `/setprivacy` → **Disable**, then remove and re-add
+   the bot if Telegram has not applied the setting. Without access to ordinary
+   messages, it cannot protect them. No other administrator privileges are needed.
+3. Choose two independent Starknet JSON-RPC providers offering **spec 0.10.0 or
+   newer**, on the same chain (`SN_MAIN` or `SN_SEPOLIA`). Obtain their HTTPS RPC
+   URLs from their dashboards; API keys may be in the URL, so protect this file.
+   Set `STARKNET_RPC_URLS` to a comma-separated list. It overrides the legacy
+   `STARKNET_RPC_URL`. All reachable endpoints are checked for chain identity;
+   mismatched chains exit 2. An unavailable endpoint must pass identity validation
+   when it returns before it can supply chain reads. URLs are never metric labels.
+4. Copy `deploy/cairn.env.example` to `cairn.env`, `chmod 600 cairn.env`, and edit it.
+   Choose `CAIRN_OPERATOR_CHAT` as the numeric chat ID of the private conversation
+   where you started the bot (`/export` shows `chat_id`). Only this chat receives
+   endpoint-outage notices. With no operator chat configured, health still reports
+   the outage but no Telegram endpoint notice can be delivered.
+5. In each group, run `/network on`. An administrator can turn it off with
+   `/network off`. A forum topic remembers where the subscription was created.
+   `/guard seed on|off` and `/guard links on|off` are also admin-only in groups.
+   Both guards start **on**, even without a network subscription.
+
+### Docker
+
+From this checkout, with Docker installed:
+
+```sh
+docker build -t cairn:local .
+docker volume create cairn-data
+docker run --rm --env-file ./cairn.env -v cairn-data:/data cairn:local node cairn.mjs doctor
+docker run -d --name cairn --restart unless-stopped --env-file ./cairn.env \
+  -e CAIRN_HTTP_HOST=0.0.0.0 -p 127.0.0.1:8080:8080 \
+  -v cairn-data:/data cairn:local
+curl --fail http://127.0.0.1:8080/healthz
+curl http://127.0.0.1:8080/metrics
+docker logs --tail 30 cairn
+docker stop --time 20 cairn
+```
+
+The container uses a non-root user and the volume keeps subscriptions and delivery
+records through replacement. HTTP remains bound to host loopback in this example;
+never publish the health port to the Internet. To change a blocklist or network
+file, mount it read-only and set its corresponding environment path. Stop the
+container before backing up the whole volume. After an upgrade, use the same
+volume; run `doctor` first to catch credentials, chain and RPC-spec mistakes.
+SIGTERM and SIGINT cancel polling, close HTTP and release the database lock.
+
+### systemd alternative
+
+Install Node 24 so `/usr/bin/node --version` reports v24, copy the checkout to
+`/opt/cairn` (root-owned, readable by the service), then:
+
+```sh
+sudo useradd --system --home-dir /var/lib/cairn --shell /usr/sbin/nologin cairn
+sudo install -m 600 cairn.env /etc/cairn.env
+sudo install -m 644 deploy/cairn.service /etc/systemd/system/cairn.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now cairn
+sudo systemctl status cairn
+sudo journalctl -u cairn -n 30
+```
+
+The unit creates private `/var/lib/cairn`, restarts transient failures, and stops
+retrying configuration/token errors (exit 2/3). After correcting configuration,
+`sudo systemctl restart cairn`. `sudo systemctl stop cairn` performs graceful
+shutdown; back up `/var/lib/cairn` while stopped. A corrupt state file is an error,
+not permission to erase it. Restore a consistent backup rather than deleting it.
+
+### Failure policy and monitoring
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `CAIRN_CONFIRMATIONS` | 0 | Scan through head minus this many blocks. Watches still start after the head at subscription time. |
+| `CAIRN_REORG_DEPTH` | 64 | Retain this many head hashes. Validate history before scanning or sending replacement alerts. |
+| `CAIRN_MAX_GAP` | 10000 | A larger scan gap is skipped with one notice per `/network` subscriber. Equality is scanned normally. |
+| `CAIRN_STALL_SECONDS` | 120 | Wall-clock seconds without a changed head before one stall notice; recovery includes the duration. |
+| `CAIRN_HTTP_PORT` | unset | No listener unless set. `0` binds an available port and announces a JSON `{event:"http",port}` on stderr. |
+| `CAIRN_HTTP_HOST` | 127.0.0.1 | Explicit listener address. Container deployment overrides this to 0.0.0.0 behind a loopback host publish. |
+| `CAIRN_BLOCKLIST` | bundled file | UTF-8 file, one lowercase DNS domain per line; blank lines and `#` comments allowed. Replaces defaults. |
+
+`GET /healthz` returns `{ok,head,lag_s}` (200), or 503 with `reason` (`rpc`,
+`telegram`, `stalled`, or `reorg`). Lag is elapsed wall time since the observed
+head changed, not the age of a historical chain timestamp. A healthy failover
+keeps health green. `GET /metrics` provides `cairn_head_block`,
+`cairn_updates_total`, `cairn_messages_sent_total`, `cairn_alerts_total` and
+`cairn_rpc_errors_total`. Counters reset on process restart. No other HTTP routes
+or methods are served. Alert on sustained non-200 health; inspect the fixed,
+redacted log messages and provider status before restarting.
+
+The same loop handles lookups, scans and transaction tracking. On a reorg it walks
+back within the retained hashes, verifies affected transactions, rewinds the scan
+cursor, and queues corrections in the existing SQLite transaction. A re-included
+transaction keeps its delivered identity and receives no duplicate or correction.
+A missing transaction gets a reply to its original alert, including a summary
+message if it was summarized. Replacement events use the same ordered ledger.
+If no common ancestor remains, the retained window is rescanned and subscribers
+are told older history cannot be verified. Seven-day ledger retention still
+applies. Failover discards endpoint-specific pagination tokens and restarts the
+range; cursor advancement stays atomic with the new pending alerts.
+
+Network latches and correction claims persist through restarts. Telegram has no
+idempotency keys: a correction or network notice claimed immediately before a
+crash/ambiguous send can be lost, but is not blindly repeated. Explicit permission
+refusals are retained for when access returns. `/forget` removes these records
+and all guard/network settings for that chat; a returning chat gets defaults.
+
+Seed detection uses the complete bundled English BIP-39 vocabulary offline. A
+whitespace-separated run of at least 12 words is protected, including 15, 18, 21
+and 24 words; checksum validation is deliberately unnecessary. Wrapping punctuation is ignored; nonword tokens
+interrupt a run. Text, captions, and edits are checked before command parsing;
+only a fixed warning is returned, and message bodies never enter SQLite or logs.
+The warning cannot revoke an already shared phrase. Link matching parses hosts,
+including Telegram hidden-link entities; it covers the listed domain and its
+subdomains, not lookalike suffixes, URL userinfo or path strings. The bundled
+list is deliberately small: maintain your own list for your community. These
+local checks neither follow links nor send messages to external scanners.
