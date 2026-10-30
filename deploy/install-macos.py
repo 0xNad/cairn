@@ -5,6 +5,7 @@ import os
 import plistlib
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 parser = argparse.ArgumentParser(description=__doc__)
@@ -43,6 +44,7 @@ spec = {
     'StandardErrorPath': str(logs / 'supervisor.log'),
 }
 # Refuse to replace a service pointing at an unrelated application.
+old = None
 if service.exists():
     old = plistlib.loads(service.read_bytes())
     if old.get('Label') != label or not any(str(x).endswith('/deploy/launch.mjs') for x in old.get('ProgramArguments', [])):
@@ -53,7 +55,24 @@ if args.prepare_only:
     print('Prepared ' + str(service))
 else:
     target = 'gui/' + str(os.getuid())
-    # Replace only this application's prior service, preserving its private SQLite data.
-    subprocess.run(['launchctl', 'bootout', target + '/' + label], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    subprocess.run(['launchctl', 'bootstrap', target, str(service)], check=True)
+    job = target + '/' + label
+    def loaded():
+        return subprocess.run(['launchctl', 'print', job], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+    if loaded() and old == spec:
+        # Updating files or credentials needs a restart, not unregistering and racing launchd's cleanup.
+        subprocess.run(['launchctl', 'kickstart', '-k', job], check=True)
+    else:
+        if loaded():
+            subprocess.run(['launchctl', 'bootout', job], check=True)
+        # bootout can return before launchd permits registration again. Reconcile the handle before retrying.
+        for attempt in range(40):
+            if not loaded():
+                result = subprocess.run(['launchctl', 'bootstrap', target, str(service)], capture_output=True, text=True)
+                if result.returncode == 0:
+                    break
+                if loaded():
+                    break  # registration happened despite an ambiguous acknowledgement
+            time.sleep(0.25)
+        else:
+            raise SystemExit('Cairn service could not be registered; inspect launchctl and the private logs.')
     print('Started ' + label + '; inspect logs in ' + str(logs))
