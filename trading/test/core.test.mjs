@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { CHAIN, EXCHANGE_CLASS, input, units, minReceived, validateBundle, validateCalls, tradeStatus } from '../lib/core.mjs';
+import { CHAIN, EXCHANGE, EXCHANGE_CLASS, input, units, minReceived, validateBundle, validateCalls, tradeStatus, verifySwap } from '../lib/core.mjs';
 const q = JSON.parse(readFileSync(new URL('./fixtures/quote.json', import.meta.url)))[0];
 const build = JSON.parse(readFileSync(new URL('./fixtures/build.json', import.meta.url)));
 export const request = { sell:'ETH', buy:'STRK', amount:'0.001', owner:'0x1', slippageBps:50 };
@@ -12,6 +12,7 @@ test('exact decimal arithmetic preserves wei, large amounts and six decimal toke
   assert.equal(units('123456789123456789.123456',6),123456789123456789123456n);
   for(const bad of ['1e18','-1','1,000','0','NaN','Infinity','1.0000001','01']) assert.throws(()=>units(bad,6));
   assert.equal(minReceived(101n,50),100n,'matches AVNU build integer floor, not SDK helper ceiling');
+  const dust=fixture();dust.buyAmount='1';dust.minimumReceived='0';assert.throws(()=>validateBundle(dust,request,2000));
 });
 test('captured real quote/build validates against reviewed exact-input trade',()=>{
   assert.equal(validateBundle(fixture(),request,2000).length,2);
@@ -42,4 +43,11 @@ test('status keeps execution and finality separate; a reverted L2 transaction is
   assert.equal(tradeStatus({execution_status:'REVERTED',finality_status:'ACCEPTED_ON_L2'}).state,'reverted');
   assert.equal(tradeStatus({execution_status:'SUCCEEDED',finality_status:'ACCEPTED_ON_L2'}).state,'confirmed');
   assert.equal(tradeStatus({execution_status:'SUCCEEDED',finality_status:'ACCEPTED_ON_L1'}).state,'settled');
+});
+test('a successful receipt must contain the exact reviewed AVNU swap, recipient and minimum output',()=>{
+ const b=fixture(), e={from_address:EXCHANGE,keys:['0xe316f0d9d2a3affa97de1d99bb2aac0538e2666d0d8545545ead241ef0ccab'],data:[b.owner,b.sell.address,b.amount,'0x0',b.buy.address,b.buyAmount,'0x0',b.owner]};
+ assert.equal(verifySwap({events:[e]},b,b.minimumReceived),b.buyAmount);
+ assert.equal(verifySwap({events:[]},b,b.minimumReceived),null);
+ for(const i of [0,1,2,4,5,7]){const changed=structuredClone(e);changed.data[i]='0x2';assert.equal(verifySwap({events:[changed]},b,b.minimumReceived),null);}
+ assert.equal(verifySwap({events:[{...e,from_address:'0x2'}]},b,b.minimumReceived),null);
 });

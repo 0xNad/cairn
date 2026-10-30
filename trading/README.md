@@ -24,7 +24,7 @@ AVNU's custom `RouteSwapSerde` preserves legacy direct routes without an enum ta
 
 Slippage is stored in basis points internally: default50 (0.5%), offered10/50/100. AVNU receives a fraction (0.005), never50 or100. The quote review expires after at most30 seconds and respects an earlier provider expiry. Input, account or network changes invalidate the review. Once the wallet prompt is open, its transaction cannot be recalled by the website; on-chain minimum received remains the execution bound, not a claimed enforceable timestamp deadline.
 
-An unknown wallet response never triggers a retry. The UI blocks another trade until the user checks wallet activity. Known hashes remain in local history and can be refreshed after reload; L2 success is not described as Ethereum finality. Browser storage is convenience/recovery evidence, not a guarantee of global idempotency across other apps/devices. There is no background signing, session key, DCA, limit order, bridge, leverage or custody service.
+An unknown wallet response never triggers a retry. The UI blocks another trade until the user checks wallet activity. Known hashes remain in local history and can be refreshed after reload; L2 success is not described as Ethereum finality. A successful receipt is called a confirmed swap only when its AVNU event matches the reviewed owner, tokens, exact input, recipient and minimum output; an unrelated successful transaction is shown as unverified. Browser storage is convenience/recovery evidence, not a guarantee of global idempotency across other apps/devices. There is no background signing, session key, DCA, limit order, bridge, leverage or custody service.
 
 ## Privacy and operation
 

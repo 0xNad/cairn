@@ -1,4 +1,4 @@
-import { CHAIN, EXCHANGE, EXCHANGE_CLASS, TOKENS, address, felt, input, minReceived, validateCalls, tradeStatus } from './core.mjs';
+import { CHAIN, EXCHANGE, EXCHANGE_CLASS, TOKENS, address, felt, input, minReceived, validateCalls, tradeStatus, verifySwap } from './core.mjs';
 
 export class ApiError extends Error { constructor(message, status = 400) { super(message); this.status = status; } }
 const BALANCE = '0x35a73cd311a05d46deda634c5ee045db92f811b4e74bca4437fcb5302b7af33';
@@ -50,6 +50,7 @@ export function createService({ rpcUrls = [], fetcher = fetch, now = Date.now, v
       if (felt(q.chainId) !== CHAIN || address(q.sellTokenAddress) !== e.sell.address || address(q.buyTokenAddress) !== e.buy.address || BigInt(q.sellAmount) !== BigInt(e.amount)
         || typeof q.quoteId !== 'string' || q.quoteId.length > 100 || BigInt(q.buyAmount) <= 0n || BigInt(q.buyAmount) >= 1n << 256n) throw new ApiError('Provider quote differs from your requested trade.', 502);
       if (q.fee && BigInt(q.fee.integratorFees ?? '0') !== 0n) throw new ApiError('Unexpected application fee.', 502);
+      if (minReceived(q.buyAmount, e.slippageBps) <= 0n) throw new ApiError('Amount is too small to protect the minimum received.');
       const createdAt = now();
       const expiresAt = Math.min(createdAt + 30000, q.expiry ? q.expiry * 1000 : Infinity);
       if (!Number.isSafeInteger(expiresAt) || expiresAt <= createdAt + 3000) throw new ApiError('Quote expired. Please refresh it.');
@@ -74,7 +75,14 @@ export function createService({ rpcUrls = [], fetcher = fetch, now = Date.now, v
       let receipt; try { receipt = await rpc('starknet_getTransactionReceipt', { transaction_hash: hash }); }
       catch (e) { if (e.code === 29) return { hash, ...tradeStatus(null) }; throw e; }
       if (!receipt || felt(receipt.transaction_hash) !== hash) throw new ApiError('Receipt does not match this transaction. Check your wallet.', 503);
-      return { hash, ...tradeStatus(receipt), finality: receipt.finality_status ?? null, execution: receipt.execution_status ?? null,
+      let status = tradeStatus(receipt), actualReceived = null;
+      if (['confirmed','settled'].includes(status.state)) {
+        const expected=input(raw), minimum=BigInt(raw.minimumReceived);
+        if (minimum <= 0n || minimum >= 1n << 256n) throw new ApiError('Invalid minimum received.');
+        actualReceived=verifySwap(receipt,expected,minimum);
+        if (actualReceived === null) status={state:'mismatch',label:'Transaction confirmed, but the reviewed swap was not verified. Check the explorer.'};
+      }
+      return { hash, ...status, actualReceived, finality: receipt.finality_status ?? null, execution: receipt.execution_status ?? null,
         block: receipt.block_number ?? null, actualFee: receipt.actual_fee ?? null };
     },
   };

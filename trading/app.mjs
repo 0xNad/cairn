@@ -141,7 +141,7 @@ $('confirm').onclick=async()=> {
     const [accounts,chain]=await Promise.all([request({type:'wallet_requestAccounts',params:{silent_mode:true}}),request({type:'wallet_requestChainId'})]);
     if (felt(chain)!==CHAIN || address(accounts[0])!==b.owner || wallet!==w || owner!==b.owner) throw new Error('Wallet account or network changed. Get a new quote.');
     validateBundle(b,values());
-    record={id:crypto.randomUUID(),owner:b.owner,sell:b.sell.symbol,buy:b.buy.symbol,amount:format(b.amount,b.sell.decimals),at:Date.now(),state:'awaiting_wallet',label:'Waiting for wallet approval',hash:null};
+    record={id:crypto.randomUUID(),owner:b.owner,sell:b.sell.symbol,buy:b.buy.symbol,amount:format(b.amount,b.sell.decimals),minimumReceived:b.minimumReceived,slippageBps:b.slippageBps,at:Date.now(),state:'awaiting_wallet',label:'Waiting for wallet approval',hash:null};
     history.unshift(record); history=history.slice(0,20); save(); notice('Review and approve the swap in your wallet.');
     const result=await request({type:'wallet_addInvokeTransaction',params:{calls:calls.map(c=>({contract_address:c.contractAddress,entry_point:c.entrypoint,calldata:c.calldata}))}});
     record.hash=address(result.transaction_hash); record.state='pending'; record.label='Submitted — waiting for confirmation'; save();
@@ -158,8 +158,8 @@ $('confirm').onclick=async()=> {
 };
 async function poll(record, attempt=0) {
   if (!record.hash || !history.includes(record)) return;
-  try { const result=await api('receipt',{hash:record.hash}); record.state=result.state; record.label=result.label; record.finality=result.finality; save();
-    if (['confirmed','settled','reverted'].includes(result.state)) { await loadAccount(); return; }
+  try { const result=await api('receipt',{hash:record.hash,owner:record.owner,sell:record.sell,buy:record.buy,amount:record.amount,slippageBps:record.slippageBps,minimumReceived:record.minimumReceived}); record.state=result.state; record.label=result.label; record.finality=result.finality; record.actualReceived=result.actualReceived; save();
+    if (['confirmed','settled','reverted','mismatch'].includes(result.state)) { await loadAccount(); return; }
   } catch { record.label='Status unavailable — check your wallet before retrying'; save(); }
   if (attempt<24) setTimeout(()=>poll(record,attempt+1),5000);
 }

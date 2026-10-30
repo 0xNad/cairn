@@ -82,7 +82,7 @@ export function validateBundle(b, expected, now = Date.now()) {
   if (b.owner !== e.owner || b.sell?.address !== e.sell.address || b.buy?.address !== e.buy.address || b.amount !== e.amount || b.slippageBps !== e.slippageBps) throw new Error('Quote does not match your wallet and inputs.');
   if (!Number.isSafeInteger(b.createdAt) || !Number.isSafeInteger(b.expiresAt) || b.createdAt > now + 1000 || b.expiresAt <= now
     || b.expiresAt > b.createdAt + 30000) throw new Error('Quote expired. Get a fresh quote.');
-  if (BigInt(b.buyAmount) <= 0n || BigInt(b.buyAmount) >= 1n << 256n || b.minimumReceived !== minReceived(b.buyAmount, e.slippageBps).toString()) throw new Error('Invalid minimum received.');
+  if (BigInt(b.buyAmount) <= 0n || BigInt(b.buyAmount) >= 1n << 256n || BigInt(b.minimumReceived) <= 0n || b.minimumReceived !== minReceived(b.buyAmount, e.slippageBps).toString()) throw new Error('Invalid minimum received.');
   return validateCalls(b, b);
 }
 export function tradeStatus(r) {
@@ -92,4 +92,16 @@ export function tradeStatus(r) {
   if (execution === 'SUCCEEDED' && finality === 'ACCEPTED_ON_L1') return { state: 'settled', label: 'Confirmed on Ethereum' };
   if (execution === 'SUCCEEDED' && finality === 'ACCEPTED_ON_L2') return { state: 'confirmed', label: 'Swap confirmed on Starknet' };
   return { state: 'pending', label: finality === 'PRE_CONFIRMED' ? 'Executed — awaiting Starknet confirmation' : 'Submitted — waiting for confirmation' };
+}
+export function verifySwap(receipt, expected, minimum) {
+  const selector = '0xe316f0d9d2a3affa97de1d99bb2aac0538e2666d0d8545545ead241ef0ccab';
+  for (const e of receipt.events ?? []) {
+    try {
+      if (address(e.from_address) !== EXCHANGE || felt(e.keys?.[0]) !== selector || e.data?.length !== 8) continue;
+      const d=e.data, received=u256(d[5],d[6]);
+      if (address(d[0]) === expected.owner && address(d[1]) === expected.sell.address && u256(d[2],d[3]) === BigInt(expected.amount)
+        && address(d[4]) === expected.buy.address && address(d[7]) === expected.owner && received >= BigInt(minimum)) return received.toString();
+    } catch { /* An unrelated/malformed event cannot verify this trade. */ }
+  }
+  return null;
 }
