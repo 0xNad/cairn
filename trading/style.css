@@ -186,7 +186,7 @@ h1 {
   font-size: 12px;
   font-weight: 600;
 }
-.tabs button[aria-selected="true"] {
+.tabs button[aria-pressed="true"] {
   background: var(--dark);
   color: #f2f8e5;
 }

@@ -94,13 +94,12 @@ try {
   const p = new URLSearchParams(location.search);
   for (const [param,id] of [['sell','sell-token'],['buy','buy-token']]) if (p.has(param)) $(id).value = token(p.get(param)).symbol;
   if (p.has('amount')) { units(p.get('amount'),token($('sell-token').value).decimals); $('amount').value = p.get('amount'); }
-  if (p.get('mode') === 'sell') { $('sell-tab').setAttribute('aria-selected','true'); $('sell-tab').setAttribute('aria-pressed','true'); $('buy-tab').setAttribute('aria-selected','false'); $('buy-tab').setAttribute('aria-pressed','false'); }
+  if (p.get('mode') === 'sell') { $('sell-tab').setAttribute('aria-pressed','true'); $('buy-tab').setAttribute('aria-pressed','false'); }
 } catch { notice('That trade link was invalid. Choose your tokens and amount.','error'); }
 $('amount').oninput = () => invalidate(); $('slippage').onchange = () => invalidate();
 $('reverse').onclick = () => { const a = $('sell-token').value; $('sell-token').value = $('buy-token').value; $('buy-token').value = a; $('amount').value = ''; invalidate(); balanceLabel(); };
 for (const mode of ['buy','sell']) $(mode+'-tab').onclick = () => {
-  if ($(mode+'-tab').getAttribute('aria-selected') === 'true') return;
-  $('buy-tab').setAttribute('aria-selected',String(mode==='buy')); $('sell-tab').setAttribute('aria-selected',String(mode==='sell'));
+  if ($(mode+'-tab').getAttribute('aria-pressed') === 'true') return;
   $('buy-tab').setAttribute('aria-pressed',String(mode==='buy')); $('sell-tab').setAttribute('aria-pressed',String(mode==='sell'));
   const a = $('sell-token').value; $('sell-token').value = $('buy-token').value; $('buy-token').value = a; $('amount').value = ''; invalidate(); balanceLabel();
 };
