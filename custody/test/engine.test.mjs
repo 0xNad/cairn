@@ -37,6 +37,7 @@ function env(t, { lost = false, changedFee = false } = {}) {
       return { transaction_hash: invokeHash(tx) };
     },
     getTransactionReceipt: async () => ({
+      transaction_hash: invokeHash(signed),
       execution_status: "SUCCEEDED",
       finality_status: "ACCEPTED_ON_L2",
     }),

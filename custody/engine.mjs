@@ -353,6 +353,7 @@ export class Custody {
           );
       } else {
         const r = await this.provider.getTransactionReceipt(i.hash);
+        if (address(r.transaction_hash) !== i.hash) throw Error("Receipt hash mismatch.");
         if (r.execution_status === "REVERTED")
           this.vault.state(user, id, "reverted");
         else if (
