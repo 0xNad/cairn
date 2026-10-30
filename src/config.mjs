@@ -109,6 +109,10 @@ export function loadConfig(args, env = process.env) {
     if (u.protocol !== 'https:' || u.search || u.hash) bad('CAIRN_TRADING_URL: use an HTTPS website URL without a query or fragment.');
     config.tradingUrl = u.href;
   }
+  if (env.CAIRN_CUSTODY === '1') {
+    if (config.chain !== 'SN_MAIN' || !config.tradingUrl) bad('Custody requires SN_MAIN and CAIRN_TRADING_URL.');
+    config.custodyDirectory = resolve(config.data, 'custody');
+  } else if (env.CAIRN_CUSTODY !== undefined && env.CAIRN_CUSTODY !== '0') bad('CAIRN_CUSTODY: use 0 or 1.');
   if (!['error', 'warn', 'info', 'debug'].includes(config.logLevel)) bad('CAIRN_LOG: must be error, warn, info or debug.');
   config.blocklist = loadBlocklist(config.blocklistPath);
   config.wordlist = loadWordlist();

@@ -1,9 +1,11 @@
+import {custodyHome,custodyTrade,custodyReply,custodyCallback,parseCustodyReply,custodyToken,custodyQuickTrade} from './custody-ui.mjs';
+import { startTrade, tradeReply, tradeCallback, parseTradeReply } from './trading-flow.mjs';
 import { NodeBusy, RpcError } from './errors.mjs';
 import { normalize, unsigned } from './felt.mjs';
 import { amount, decimal, escapeHtml, links, plainText, short, textLines, utc } from './format.mjs';
 import { looksLikeName } from './names.mjs';
 import { ageOf, usdPair } from './prices.mjs';
-import { callback, setting, SETTINGS } from './settings.mjs';
+import { callback as settingsCallback, setting, SETTINGS } from './settings.mjs';
 import { balanceOf } from './tokens.mjs';
 
 export const COMMANDS = Object.freeze([
@@ -29,11 +31,15 @@ export const COMMANDS = Object.freeze([
   { command: 'export', description: 'Everything Cairn stores for this chat, as JSON' },
   { command: 'forget', description: 'Delete everything Cairn stores for this chat' },
 ]);
+// Keep existing commands working; expose only everyday actions in Telegram's menu.
 export function commandsFor(config) {
-  return config.tradingUrl ? [...COMMANDS,
-    { command: 'trade', description: 'Open wallet-connected Starknet trading' },
-    { command: 'buy', description: 'Buy a token using your own wallet' },
-    { command: 'sell', description: 'Sell a token using your own wallet' }] : COMMANDS;
+  return config.tradingUrl ? [
+    { command: 'start', description: 'Open Cairn' },
+    { command: 'trade', description: 'Buy or sell tokens' },
+    { command: 'price', description: 'Token prices' },
+    { command: 'list', description: 'Manage alerts' },
+    { command: 'help', description: 'Help and settings' },
+  ] : COMMANDS;
 }
 export function parseCommand(message, username) {
   const match = /^\/(\w+)(?:@(\w+))?(?=\s|$)(?:\s+([\s\S]*))?$/.exec(message?.text ?? '');
@@ -94,6 +100,7 @@ export async function answer(command, context) {
   const text = (value) => textLines(value, clean);
   const fmt = context.fmt ?? links(config, clean);
   const link = (kind, value) => fmt.link(kind, value);
+  if (config.tradingUrl && ['start', 'help', 'menu'].includes(command.name)) return (await compactView(command.name === 'help' ? 'help' : 'home', context)).lines;
   if (command.name === 'start' || command.name === 'help') {
     if (command.name === 'start' && command.argument === 'setup' && context.chat && context.chat.type !== 'private') return text(GROUP_SETUP);
     return [...text(HELP), ...(config.tradingUrl ? [...text('Trading: /trade, /buy STRK 100 USDC, or /sell STRK 100 USDC. Amount is what you spend. Review and sign on the companion website; Cairn never holds wallet keys.'), `<a href="${escapeHtml(config.tradingUrl)}">Open Cairn trading</a>`] : []), `<a href="https://t.me/${escapeHtml(clean(username))}?startgroup=setup">Add Cairn to a group</a>`];
@@ -108,7 +115,7 @@ export async function answer(command, context) {
       url.searchParams.set('buy', command.name === 'buy' ? asset : pay);
       url.searchParams.set('amount', value); url.searchParams.set('mode', command.name);
     }
-    return [...text('Trade on Starknet with your own wallet. The amount is what you spend. Open the companion website, connect your wallet, review the quote and sign there. Cairn never receives your keys.'), `<a href="${escapeHtml(url.href)}">Open Cairn trading ↗</a>`];
+    return [...text('Buy or sell on Starknet. Review the quote and approve in your wallet.'), `<a href="${escapeHtml(url.href)}">Open Cairn trading ↗</a>`];
   }
   if (command.name === 'price') return price(command.argument, context);
   if (!['status', 'balance', 'tx'].includes(command.name)) return text('Unknown command. Use /help for available commands.');
@@ -288,9 +295,61 @@ async function paste(value, context) {
 
 /** Routes a command to its handler and returns its commit, as settings handlers do. */
 export async function respond(command, context) {
+  if(context.custody && ['start','menu','trade'].includes(command.name))return command.name==='trade'||command.argument==='trade'?custodyTrade(context):custodyHome(context);
+  if(context.custody && ['buy','sell'].includes(command.name))return custodyQuickTrade(command,context);
+  if(context.custody && command.name==='custody-token')return custodyToken(command.argument,context);
+  if(context.custody && command.name==='custody-reply')return custodyReply(command.argument,context);
+  if (context.config.tradingUrl && (command.name === 'trade' || command.name === 'start' && command.argument === 'trade')) return startTrade(context);
+  if (command.name === 'trade-reply') return tradeReply(command.argument,context);
+  if (context.config.tradingUrl && ['start', 'help', 'menu'].includes(command.name)) {
+    const view = await compactView(command.name === 'help' ? 'help' : 'home', context);
+    return () => { context.subs.clearTrade(context.chat.id); return view; };
+  }
   if (command.name === 'paste') return paste(command.argument, context);
-  if (SETTINGS.has(command.name)) return setting(command, context);
+  if (SETTINGS.has(command.name)) {
+    const commit=await setting(command,context);
+    return context.custody && command.name==='forget' ? ()=>{const r=commit();return {...r,lines:[...r.lines,'Trading wallet and transaction recovery records remain. Use My wallet to withdraw; monitoring deletion never destroys wallet keys.']};} : commit;
+  }
   const lines = await answer(command, context);
-  return () => ({ lines });
+  return () => ({ lines, ...(context.config.tradingUrl && ['trade','buy','sell'].includes(command.name) ? {keyboard: [[nav('‹ Home','home')]]} : {}) });
 }
-export { callback };
+
+
+const nav = (text, page) => ({text, callback_data: 'ui:' + page});
+const back = () => [[nav('‹ Home', 'home')]];
+const PAGES = {
+  home: ['<b>Cairn</b> · Your Starknet companion', '', 'Trade, check a wallet or follow what moves.', 'Paste a wallet, .stark name or transaction to look it up.'],
+  help: ['<b>What would you like to do?</b>', '', 'Use the buttons below. You can always return with /start.'],
+  wallets: ['<b>Follow a wallet</b>', '', 'Paste an address or .stark name in this chat.', 'Cairn shows its balances, with a <b>Watch</b> button for alerts.', '', 'Paste a transaction hash for its status and a <b>Track</b> button.', 'In a group, use /watch &lt;address&gt; [label].'],
+  alerts: ['<b>Alerts &amp; feeds</b>', '', 'Wallet transfers → paste an address, then tap Watch.', 'Token trades → /feed STRK $100 all', 'Large transfers → /whale STRK 10000', '', 'Manage alerts below. Group changes require an administrator.'],
+  tools: ['<b>Advanced settings</b>', '', '/min STRK 10 · ignore small wallet transfers', '/mute &lt;token address&gt; · silence a token', '/unmute &lt;token address&gt; · undo', '/network on or off · network alerts', '/guard seed|links on or off · group protection', '', 'Group protection changes require an administrator.'],
+  privacy: ['<b>Your data</b>', '', 'Wallet keys stay in your wallet. Never send a recovery phrase.', 'Trading shares your wallet address with AVNU and the RPC provider. Trade history stays in your browser.', '', 'The bot stores this chat’s subscriptions, settings and delivery records; not message text. Rate-limit identifiers expire after one minute.', '/export · view stored bot data', '/forget · delete this chat’s bot data', '', 'Public on-chain facts, not financial advice.'],
+};
+async function compactView(page, ctx) {
+  if (page === 'prices' || page === 'status') return {lines: await answer({name:page === 'prices' ? 'price' : 'status',argument:''},ctx), keyboard:back()};
+  if (page === 'list') { const commit = await setting({name:'list',argument:''},ctx); const view = commit(); return {...view,keyboard:[...(view.keyboard ?? []),[nav('+ Add alerts','alerts'),nav('‹ Home','home')]]}; }
+  const lines = page==='privacy' && ctx.custody ? ['<b>Your trading wallet &amp; data</b>','','Cairn generates and encrypts your trading-wallet key on its server. It can sign when you confirm a trade, activation or withdrawal. This is a custodial trading wallet.','Public addresses and trade intents are linked to your Telegram user id to protect access. Keys never enter logs or chat exports.','Trade drafts expire after 15 minutes. Transaction records remain for recovery.','/export shows monitoring data; /forget removes monitoring settings. Neither deletes a funded trading wallet. Withdraw funds from My wallet.'] : PAGES[page] ?? PAGES.home;
+  let keyboard = back();
+  if (page === 'home') keyboard = [
+    [{text:'⇄ Buy / Sell',callback_data:'bt:new'}],
+    [nav('◉ Wallet lookup','wallets'),nav('↗ Prices','prices')],
+    [nav('◷ My alerts','list'),nav('Help & settings','help')],
+  ];
+  if (page === 'help') keyboard = [[nav('Wallets','wallets'),nav('Alerts & feeds','alerts')],[nav('Network status','status'),nav('Advanced','tools')],[nav('Privacy & data','privacy'),{text:'Add to group ↗',url:`https://t.me/${encodeURIComponent(ctx.username)}?startgroup=setup`}],...back()];
+  if (page === 'alerts') keyboard = [[nav('Manage alerts','list')],...back()];
+  return {lines,keyboard};
+}
+// Navigation only reads data. Subscription callbacks keep their ownership/admin checks.
+export async function callback(query, ctx) {
+  if(ctx.custody && String(query.data ?? '').startsWith('cw:'))return custodyCallback(query,ctx);
+  if(ctx.custody && ['ui:home','bt:new'].includes(query.data))return custodyCallback({...query,data:query.data==='ui:home'?'cw:home':'cw:trade'},ctx);
+  if (ctx.config.tradingUrl && String(query.data ?? '').startsWith('bt:')) return tradeCallback(query,ctx);
+  const page = /^ui:(home|help|wallets|alerts|tools|privacy|prices|status|list)$/.exec(String(query.data ?? ''))?.[1];
+  if (!ctx.config.tradingUrl || !page) return settingsCallback(query,ctx);
+  const chat=query.message?.chat, id=query.message?.message_id;
+  if (!Number.isSafeInteger(chat?.id) || !Number.isSafeInteger(id)) return () => ({answer:'Open /start for a fresh menu.'});
+  const view=await compactView(page,ctx);
+  return () => { if(page==='home')ctx.subs.clearTrade(chat.id); return {edit:{chat_id:chat.id,message_id:id,...view}}; };
+}
+
+export { parseTradeReply, parseCustodyReply };

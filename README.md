@@ -1,28 +1,18 @@
 # Cairn
 
-**Exact Starknet balances, transaction facts, wallet alerts, trade feeds and member guards in Telegram, without your keys.**
+**A Starknet companion in Telegram: create a trading wallet, buy and sell, and follow your wallets and tokens.**
 
-Cairn is an open-source Telegram bot for Starknet. It answers balance and transaction lookups in private
-chats and groups, and alerts a chat when a watched wallet moves any token or grants an approval, when a
-large amount of a token moves, or when a tracked transaction is accepted. A project group gets a live feed
-of its token's trades on Ekubo and AVNU, priced in USD by the Pragma oracle, with Starknet ID names. It says
-when the chain itself misbehaves (a stall, a reorg, a dead RPC endpoint), corrects its own alerts after a
-reorg, deletes seed phrases and phishing links before members get hurt, and runs unattended in Docker or under
-systemd, with failover endpoints, a health check and Prometheus metrics.
+Open [@Cairn_tgbot](https://t.me/Cairn_tgbot) and press **Start**. Use the buttons to create a dedicated trading wallet, back up its key, deposit, activate, trade, view positions or withdraw. Trade review and confirmation happen in the bot. No external wallet connection is needed for the in-bot flow.
 
-The monitoring bot only reads the chain. It holds no keys, signs nothing and has no Mini App. It runs as a
-single Node.js process with zero dependencies, on any Starknet RPC. An optional [trading companion](trading/README.md)
-adds wallet-connected spot swaps on a separate website: your wallet approves and submits each trade.
-The project is MIT-licensed, so anyone can host it.
+The trading wallet is custodial: Cairn holds its encrypted key and signs only your confirmed transactions. Wallet creation is off-chain; activation, trades and withdrawals spend your funds and network fees. [Custody model, operation and verification](custody/README.md).
 
-**Use the hosted bot:** open [@Cairn_tgbot](https://t.me/Cairn_tgbot), press **Start**, then try `/status`,
-`/balance <wallet>` or `/watch <wallet>`. For a project group, add it and run `/feed STRK $100 all` as an
-administrator. Give it the Delete messages right to enable the member guards. `/help` lists the commands;
-`/list` shows your subscriptions and `/forget` removes your chat's saved data.
+Only five commands appear in the menu: `/start`, `/trade`, `/price`, `/list`, `/help`. Paste a wallet, .stark name or transaction for lookups; paste a supported token to start trading. Help opens short sections for monitoring, advanced settings and privacy. Existing command aliases remain available.
 
-**Trade with your wallet:** [Cairn trading](https://cairn-trading.vercel.app). Use `/trade` in the bot, or
-`/buy STRK 100 USDC` to prefill spending 100 USDC for STRK. Review the quote and approve in your wallet.
-The companion is available for live owner testing; an actual wallet-signed trade is not claimed by the automated checks.
+For groups, add Cairn and configure a feed such as `/feed STRK $100 all` as an administrator. Wallet alerts, Pragma prices, names, transaction tracking, network guards, reorg corrections and member protection remain available. Trading wallets are private-chat only.
+
+Self-hosting can enable either model: dependency-free, read-only monitoring with custody disabled, or the optional in-bot signing engine. A separate [wallet-connected website](https://cairn-trading.vercel.app) remains available. Neither product is a Telegram Mini App. The project is MIT-licensed.
+
+The current release is for live owner acceptance. Automated local-fork tests do not claim a funded owner trade on mainnet or an independent custody security audit.
 
 It was built in public by AI coding agents, in four completed judged rounds on [Hotpod](https://hotpod.io/p/cairn).
 
