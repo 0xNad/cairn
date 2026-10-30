@@ -486,7 +486,8 @@ export async function custodyCallback(query, base) {
             "",
             `<code>${html(key)}</code>`,
             "",
-            "Keep this offline and private. Hide this message when saved.",
+            `Wallet: <code>${html(ctx.custody.wallet(uid).address)}</code>`,
+            "Starknet · OpenZeppelin 0.17 account. Save the address and key together. Hide this message when saved.",
           ],
           keyboard: [[b("Hide key", "hide")]],
         };
