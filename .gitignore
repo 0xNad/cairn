@@ -2,3 +2,5 @@
 data/
 node_modules/
 .DS_Store
+trading/dist/
+.vercel/

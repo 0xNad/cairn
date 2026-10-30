@@ -29,6 +29,12 @@ export const COMMANDS = Object.freeze([
   { command: 'export', description: 'Everything Cairn stores for this chat, as JSON' },
   { command: 'forget', description: 'Delete everything Cairn stores for this chat' },
 ]);
+export function commandsFor(config) {
+  return config.tradingUrl ? [...COMMANDS,
+    { command: 'trade', description: 'Open wallet-connected Starknet trading' },
+    { command: 'buy', description: 'Buy a token using your own wallet' },
+    { command: 'sell', description: 'Sell a token using your own wallet' }] : COMMANDS;
+}
 export function parseCommand(message, username) {
   const match = /^\/(\w+)(?:@(\w+))?(?=\s|$)(?:\s+([\s\S]*))?$/.exec(message?.text ?? '');
   if (!match || (match[2] && match[2].toLowerCase() !== username.toLowerCase())) return null;
@@ -90,7 +96,19 @@ export async function answer(command, context) {
   const link = (kind, value) => fmt.link(kind, value);
   if (command.name === 'start' || command.name === 'help') {
     if (command.name === 'start' && command.argument === 'setup' && context.chat && context.chat.type !== 'private') return text(GROUP_SETUP);
-    return [...text(HELP), `<a href="https://t.me/${escapeHtml(clean(username))}?startgroup=setup">Add Cairn to a group</a>`];
+    return [...text(HELP), ...(config.tradingUrl ? [...text('Trading: /trade, /buy STRK 100 USDC, or /sell STRK 100 USDC. Amount is what you spend. Review and sign on the companion website; Cairn never holds wallet keys.'), `<a href="${escapeHtml(config.tradingUrl)}">Open Cairn trading</a>`] : []), `<a href="https://t.me/${escapeHtml(clean(username))}?startgroup=setup">Add Cairn to a group</a>`];
+  }
+  if (config.tradingUrl && ['trade', 'buy', 'sell'].includes(command.name)) {
+    const words = command.argument.split(/\s+/).filter(Boolean), url = new URL(config.tradingUrl);
+    if (command.name === 'trade' && words.length || command.name !== 'trade' && words.length && (words.length < 2 || words.length > 3)) return text('Use /trade, /buy STRK 100 USDC, or /sell STRK 100 USDC. The amount is the token you spend.');
+    if (words.length) {
+      const [asset, value, pay = 'USDC'] = words;
+      if (!/^[A-Za-z0-9.]{1,11}$/.test(asset) || !/^[A-Za-z0-9.]{1,11}$/.test(pay) || !/^(0|[1-9][0-9]*)(\.[0-9]+)?$/.test(value) || value.length > 100 || !/[1-9]/.test(value)) return text('Use a token symbol and a positive decimal amount. Example: /buy STRK 100 USDC.');
+      url.searchParams.set('sell', command.name === 'buy' ? pay : asset);
+      url.searchParams.set('buy', command.name === 'buy' ? asset : pay);
+      url.searchParams.set('amount', value); url.searchParams.set('mode', command.name);
+    }
+    return [...text('Trade on Starknet with your own wallet. The amount is what you spend. Open the companion website, connect your wallet, review the quote and sign there. Cairn never receives your keys.'), `<a href="${escapeHtml(url.href)}">Open Cairn trading ↗</a>`];
   }
   if (command.name === 'price') return price(command.argument, context);
   if (!['status', 'balance', 'tx'].includes(command.name)) return text('Unknown command. Use /help for available commands.');

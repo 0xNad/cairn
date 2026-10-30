@@ -104,6 +104,11 @@ export function loadConfig(args, env = process.env) {
     blocklistPath: resolve(env.CAIRN_BLOCKLIST ?? BLOCKLIST),
     logLevel: env.CAIRN_LOG ?? 'info',
   };
+  if (env.CAIRN_TRADING_URL) {
+    const u = new URL(url(env.CAIRN_TRADING_URL, 'CAIRN_TRADING_URL'));
+    if (u.protocol !== 'https:' || u.search || u.hash) bad('CAIRN_TRADING_URL: use an HTTPS website URL without a query or fragment.');
+    config.tradingUrl = u.href;
+  }
   if (!['error', 'warn', 'info', 'debug'].includes(config.logLevel)) bad('CAIRN_LOG: must be error, warn, info or debug.');
   config.blocklist = loadBlocklist(config.blocklistPath);
   config.wordlist = loadWordlist();
