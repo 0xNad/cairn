@@ -1,4 +1,9 @@
 import { log } from './errors.mjs';
+import { hex64 } from './felt.mjs';
+
+// A lower head can be a lagging failover node. A replacement at the same height is a changed chain tip.
+const changed = (seen, head) => !seen || head.block_number > seen.n
+  || (head.block_number === seen.n && seen.hash !== hex64(head.block_hash));
 
 // Network alerts (round 4). After every head read, the bot tells this module what it saw: a head, or null when
 // every RPC endpoint failed. From that it keeps, in CAIRN_DATA, the highest head seen and the wall-clock time Cairn
@@ -7,7 +12,7 @@ import { log } from './errors.mjs';
 // restarts and group budgets like any alert:
 // - a stall alert for every chat with /network on once the head has not changed for CAIRN_STALL_SECONDS, one per
 //   chat and stall (a chat that subscribes during a stall gets it too), and one recovery, with the stall's length,
-//   to each chat that got the stall alert, when a higher block arrives;
+//   to each chat that got the stall alert, when a higher block or a same-height replacement arrives;
 // - an outage notice to CAIRN_OPERATOR_CHAT only, once per outage, when every endpoint fails, and one when an
 //   endpoint answers again; subscribers hear nothing of it, since the chain itself may be fine;
 // - a notice to every chat a skipped gap concerns (the scanner jumped over more than CAIRN_MAX_GAP blocks).
@@ -42,14 +47,14 @@ export class Network {
   constructor({ store, ledger, subs, config }) {
     Object.assign(this, { store, ledger, subs, config });
   }
-  /** The highest head seen: { n, at, t } (its number, the wall-clock ms Cairn first saw it, its timestamp), or null. */
+  /** The highest head seen: { n, hash, at, t }, or null. Older state without a hash learns it on the next read. */
   get seen() { return this.store.getJson('head_seen'); }
   get stall() { return this.store.getJson('stall'); }
   get outage() { return this.store.getJson('outage'); }
   /** Whether `head` would start a stall now: no higher block for CAIRN_STALL_SECONDS, and none recorded yet. */
   stalling(head, now = Date.now()) {
     const seen = this.seen;
-    return Boolean(seen) && head.block_number <= seen.n && now - seen.at >= this.config.stallSeconds * 1000 && !this.stall;
+    return Boolean(seen) && !changed(seen, head) && now - seen.at >= this.config.stallSeconds * 1000 && !this.stall;
   }
   /** After each head read: the head, or null when every endpoint failed. `endpoint` names the one that answered. */
   observe(head, { now = Date.now(), endpoints = 1, endpoint = 'the node' } = {}) {
@@ -76,7 +81,7 @@ export class Network {
       }
     }
     const seen = this.seen;
-    if (!seen || head.block_number > seen.n) {
+    if (changed(seen, head)) {
       const stall = this.stall;
       if (stall) {
         this.store.setJson('stall', null);
@@ -86,7 +91,7 @@ export class Network {
           if (sub) this.#add(row.chat_id, sub.thread_id, stall.key, 1, head, texts.resumed(stall, head, now));
         }
       }
-      this.store.setJson('head_seen', { n: head.block_number, at: now, t: head.timestamp });
+      this.store.setJson('head_seen', { n: head.block_number, hash: hex64(head.block_hash), at: now, t: head.timestamp });
       return;
     }
     if (now - seen.at < this.config.stallSeconds * 1000) return;

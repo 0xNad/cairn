@@ -2,7 +2,7 @@ import { NodeBusy, RpcError } from './errors.mjs';
 import { hex64, NodeValueError } from './felt.mjs';
 import { CORRECTION } from './ledger.mjs';
 
-// Reorgs (round 4). Cairn keeps the hash and time of each block a pass scanned up to, for the last
+// Reorgs (round 4). Cairn keeps the hash and time of every recently scanned block, for the last
 // CAIRN_REORG_DEPTH blocks. Before each scan it compares the node's hash of the cursor block with the kept one (one
 // header read; none when the cursor is the head just read): since every block commits to its parent, an unchanged
 // cursor block means nothing below it changed either. When it differs, Cairn walks back through the hashes it keeps,
@@ -102,6 +102,18 @@ export class Forks {
   }
   /** The kept hash and time of a scanned block, or null. */
   kept(number) { return this.#q('SELECT number, hash, timestamp FROM blocks WHERE number = ?').get(number) ?? null; }
+  /** Prepare the complete retained window before advancing a scan. A failed header leaves state untouched. */
+  async history(from, to, head) {
+    const blocks = [];
+    for (let number = Math.max(from, to - this.depth + 1); number <= to; number++) {
+      const block = number === head.block_number
+        ? { number, hash: hex64(head.block_hash), timestamp: head.timestamp }
+        : await this.header(number);
+      if (!block) throw new NodeValueError();
+      blocks.push(block);
+    }
+    return blocks;
+  }
   /** Keeps a block a scan reached and forgets those CAIRN_REORG_DEPTH below it. Runs in the caller's transaction. */
   remember({ number, hash, timestamp }) {
     this.#q('INSERT INTO blocks (number, hash, timestamp) VALUES (?, ?, ?) ON CONFLICT (number) DO UPDATE SET hash = excluded.hash, timestamp = excluded.timestamp')
