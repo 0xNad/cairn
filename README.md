@@ -770,6 +770,10 @@ format, failover order and `Retry-After`, endpoint errors, pinned continuation p
 outage notices, corrections and the reorg verdicts, the gap and the health and metrics answers. They use Node
 built-ins only.
 
+For post-competition maintenance, GitHub CI verifies that all four rounds are closed and their checks are
+unchanged, runs all 132 frozen acceptance checks in the pinned runner, then runs the application tests.
+An active or additional round cannot use that fallback. The historical round checks remain unchanged.
+
 ## Build it with your agent
 
 The planned competition is complete. To improve the application with your coding agent, use:

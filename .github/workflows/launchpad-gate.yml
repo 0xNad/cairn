@@ -1,11 +1,10 @@
-# The Launchpad gate in GitHub Actions (kit/actions/launchpad-gate.yml, issue #88). Commit it unchanged at
-# .github/workflows/launchpad-gate.yml, with the round's checks: the platform reads a run's transcript
-# only when this file, byte for byte, is at the round's base, on the default branch and in the entry's
-# commit (docs/creators/ACTIONS_CHECKS.md).
+# The competition gate used the unchanged Launchpad kit workflow. Its historical versions and checks
+# remain in Git. Cairn's four-round competition is now complete; the narrow maintenance fallback below
+# runs the same frozen checks and application tests. Live/new rounds still require the platform's base.
 #
 # On every pull request it re-runs the round's gate (runner/gate.mjs) on the pull request's head, in the
 # pinned runner (Docker), and uploads the transcript as the artifact `gate-transcript`. The round comes
-# from the platform's public API; the base is the pull request's. No secret, no write: the token reads
+# from the platform's public API; during the competition the base is the pull request's. No secret, no write: the token reads
 # the contents only, and the entry's code runs only inside the gate's containers. Fail-closed: whatever
 # keeps the gate from running (no round, platform unreachable, image not pulled, no transcript) fails the job.
 name: launchpad-gate
@@ -50,7 +49,26 @@ jobs:
             -G "$LAUNCHPAD_URL/actions/round.json" --data-urlencode "repo=$REPO" --data-urlencode "base=$BASE") || code="unreachable (curl exit $?)"
           case "$code" in
             200) ;;
-            404) echo "::error::$LAUNCHPAD_URL has no live round of $REPO on the base $BASE: the gate did not run. An entry's pull request targets the round's base while the round is open, in reveal or judged."; exit 1 ;;
+            404)
+              # Cairn's planned competition is complete. Ordinary maintenance still runs every frozen check;
+              # this path is unavailable to an active/new round or a change to the historical checks.
+              [ "$REPO" = "0xNad/cairn" ] || { echo "::error::No live round on this base"; exit 1; }
+              curl -fsS --retry 3 --max-time 30 https://hotpod.io/api/projects/cairn -o "$RUNNER_TEMP/project.json" || exit 1
+              node -e '
+                const fs = require("node:fs"), p = JSON.parse(fs.readFileSync(process.argv[1], "utf8")).data;
+                if (!p || p.repo !== "https://github.com/0xNad/cairn" || p.rounds?.length !== 4
+                  || !p.rounds.every((r, i) => r.ref === `cairn/${i + 1}` && r.status === "closed")) process.exit(1);
+                fs.writeFileSync(process.argv[2], JSON.stringify({data: {
+                  project: "cairn", round: 4, base: process.env.BASE, maintenance: true,
+                  checkBase: "1b18259b31d9609b3912ec53a7d2487ab393f346",
+                  runnerImage: "mcr.microsoft.com/playwright@sha256:eff16c30e6f3f4af0a03fa4b706120d5e9b0891c344a27d64559aff5900a4a27",
+                  gateSha256: "78dbfc8e583c6fdb89962b775f3b2630cedc2e85c91b8b3e426c2af66c508e28"
+                }}));
+              ' "$RUNNER_TEMP/project.json" "$RUNNER_TEMP/round.json" || { echo "::error::The planned rounds are not all closed"; exit 1; }
+              git merge-base --is-ancestor 75083dac9461c5a8ac1bf9f7e4f5cc8df254f464 "$HEAD" || exit 1
+              git diff --exit-code 1b18259b31d9609b3912ec53a7d2487ab393f346 "$HEAD" -- .launchpad/checks || exit 1
+              echo "Post-competition maintenance: all four rounds closed; running their unchanged frozen checks."
+              ;;
             unreachable*) echo "::error::$LAUNCHPAD_URL could not be reached, $code: the gate did not run. Re-run this job once the platform answers."; exit 1 ;;
             *) echo "::error::$LAUNCHPAD_URL answered HTTP $code instead of the round: the gate did not run. Re-run this job once the platform answers."; exit 1 ;;
           esac
@@ -61,7 +79,7 @@ jobs:
             const ok = d && /^[a-z0-9][a-z0-9-]{0,63}$/.test(d.project) && Number.isInteger(d.round) && d.round > 0 && d.base === process.env.BASE
               && /^[\w.\/:-]+@sha256:[0-9a-f]{64}$/.test(d.runnerImage) && /^[0-9a-f]{64}$/.test(d.gateSha256);
             if (!ok) { console.error("::error::the platform did not answer with a round of this base: the gate did not run"); process.exit(1); }
-            console.log(`run=yes\nproject=${d.project}\nround=${d.round}\nimage=${d.runnerImage}\ngate_sha256=${d.gateSha256}`);
+            console.log(`run=yes\nproject=${d.project}\nround=${d.round}\nimage=${d.runnerImage}\ngate_sha256=${d.gateSha256}\ncheck_base=${d.maintenance ? d.checkBase : d.base}\nmaintenance=${d.maintenance === true}`);
           ' "$RUNNER_TEMP/round.json" >> "$GITHUB_OUTPUT"
 
       - name: Run the gate
@@ -72,6 +90,8 @@ jobs:
           ROUND: ${{ steps.round.outputs.round }}
           IMAGE: ${{ steps.round.outputs.image }}
           GATE_SHA256: ${{ steps.round.outputs.gate_sha256 }}
+          CHECK_BASE: ${{ steps.round.outputs.check_base }}
+          MAINTENANCE: ${{ steps.round.outputs.maintenance }}
         run: |
           set -u
           result=error
@@ -80,11 +100,20 @@ jobs:
             && docker pull -q "$IMAGE"; then
             echo "Round $ROUND of $PROJECT, base $BASE, head $HEAD"
             code=0
-            node "$RUNNER_TEMP/gate.mjs" --base "$BASE" --project "$PROJECT" --round "$ROUND" --repo "$GITHUB_WORKSPACE" \
+            node "$RUNNER_TEMP/gate.mjs" --base "$CHECK_BASE" --project "$PROJECT" --round "$ROUND" --repo "$GITHUB_WORKSPACE" \
               --image "$IMAGE" --out "$RUNNER_TEMP/gate-transcript.json" --container docker --verbose || code=$?
             case "$code" in 0) result=pass ;; 1) result=fail ;; esac
             # A result without its transcript is no result.
             [ -s "$RUNNER_TEMP/gate-transcript.json" ] || result=error
+            if [ "$result" = pass ] && [ "$MAINTENANCE" = true ]; then
+              if ! git archive "$HEAD" | docker run --rm -i --network none --read-only \
+                --tmpfs /tmp:exec,size=1g --tmpfs /work:exec,size=1g,mode=1777 \
+                --user 1000:1000 --cap-drop ALL --security-opt no-new-privileges \
+                --memory 2g --cpus 2 --pids-limit 512 -e HOME=/tmp "$IMAGE" \
+                sh -c 'tar -x -C /work && cd /work && node --test test/*.test.mjs'; then
+                result=fail
+              fi
+            fi
           fi
           # Words, not exit codes: in an expression an empty output equals '0'.
           echo "result=$result" >> "$GITHUB_OUTPUT"
