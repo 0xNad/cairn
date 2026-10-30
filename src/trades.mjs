@@ -31,21 +31,24 @@ export function netsOf(swaps) {
 
 /**
  * The trade of `token` in one transaction, from its swaps (every venue) and its token events, or null. The first
- * venue in precedence order whose swaps involve the token nets it over those swaps, and later venues are ignored
- * in that transaction: so an AVNU route through Ekubo counts once, as AVNU. An aggregator's swap involves the
- * token when it sells or buys it, or when the token passed through the aggregator's contract in that
- * transaction, a hop of its route, which nets to zero. A net of zero (a round trip, or a hop) is no trade.
- * Returns { venue, swaps, nets, net }.
+ * venue in precedence order whose swaps involve the token counts, and later venues are ignored in that
+ * transaction: so an AVNU route through Ekubo counts once, as AVNU. An aggregator's Swap is a whole trade, so the
+ * token nets over the Swaps that name it, as the brief says: another Swap of other tokens in the same transaction
+ * neither pays for it nor shows in the post. A pool's swaps are hops of one route, netted together. The token also
+ * involves an aggregator when it passed through its contract in that transaction without a Swap naming it: a hop
+ * of its route, which is no trade. A net of zero (a round trip) is no trade either. Returns { venue, swaps, nets, net }.
  */
 export function tradeOf(token, swaps, transfers, venues) {
   for (const venue of venues) {
     const own = swaps.filter((s) => s.venue.key === venue.key);
     if (!own.length) continue;
-    const named = own.some((s) => s.legs.some((leg) => leg.token === token));
+    const naming = own.filter((s) => s.legs.some((leg) => leg.token === token));
     const routed = venue.aggregator && transfers.some((t) => t.kind === 'Transfer' && t.token === token && (t.a === venue.address || t.b === venue.address));
-    if (!named && !routed) continue;
-    const nets = netsOf(own), net = nets.get(token) ?? 0n;
-    return net === 0n ? null : { venue, swaps: own, nets, net };
+    if (!naming.length && !routed) continue;
+    const counted = venue.aggregator ? naming : own;
+    if (!counted.length) return null; // only a hop of the aggregator's route
+    const nets = netsOf(counted), net = nets.get(token) ?? 0n;
+    return net === 0n ? null : { venue, swaps: counted, nets, net };
   }
   return null;
 }
@@ -186,18 +189,19 @@ async function heldNone(rpc, token, owner, block) {
   }
 }
 
-// Half-decades of US dollars: the size bar grows by one dot at $10, $30, $100, $300, $1,000 … $1,000,000.
-const STEPS = [10n, 30n, 100n, 300n, 1_000n, 3_000n, 10_000n, 30_000n, 100_000n, 300_000n, 1_000_000n].map((d) => d * 100n);
+// Decades of US dollars: the size bar grows by one dot at $10, $100, $1,000 and $10,000, and a whale joins it from
+// $100,000. Five dots at most, so that the first line of the largest trade still fits a phone.
+const STEPS = [10n, 100n, 1_000n, 10_000n].map((d) => d * 100n);
 const WHALE = 100_000n * 100n;
 
 /**
- * One dot per half-decade of USD value, green for a buy and red for a sell, so a feed reads by size at a glance;
- * a trade with no USD value grows with its amount over the chat's floor instead.
+ * One dot per decade of USD value, green for a buy and red for a sell, so a feed reads by size at a glance; a trade
+ * with no USD value grows with its amount over the chat's floor instead (10, 100, 1,000 and 10,000 times it).
  */
 export function sizeBar(side, cents, amount, floor) {
   let dots = 1;
   if (cents !== null) dots += STEPS.filter((s) => cents >= s).length;
-  else if (floor) dots += [3n, 10n, 30n, 100n, 300n, 1000n].filter((m) => amount >= floor * m).length;
+  else if (floor) dots += [10n, 100n, 1000n, 10000n].filter((m) => amount >= floor * m).length;
   return `${(side === 'buy' ? '🟢' : '🔴').repeat(dots)}${cents !== null && cents >= WHALE ? ' 🐋' : ''}`;
 }
 
@@ -214,7 +218,7 @@ function render(post, feed, fmt) {
   const paid = others.map((o) => `${decimal(o.amount, o.token.decimals)} ${fmt.token(o.token)}`).join(' + ');
   lines.push(`${decimal(amount, token.decimals)} ${symbol}${paid ? ` for ${paid}` : ''}`);
   if (trader) lines.push(`👤 ${fmt.contract(trader, name ? escapeHtml(name) : short(trader))}${newHolder ? ' · 🆕 new holder' : ''}`);
-  lines.push(`${post.venue.name} · ${utc(block.timestamp)} · ${fmt.tx(post.tx, 'View transaction')}`);
+  lines.push(`${post.venue.name} · ${utc(block.timestamp)} · ${fmt.tx(post.tx, 'View tx')}`);
   return lines.join('\n');
 }
 

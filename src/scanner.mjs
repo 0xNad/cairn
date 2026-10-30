@@ -1,4 +1,4 @@
-import { RpcError } from './errors.mjs';
+import { EndpointLost, RpcError } from './errors.mjs';
 import { FIELD, hex64, NodeValueError, normalize, SELECTORS, u256, unsigned } from './felt.mjs';
 
 /**
@@ -12,7 +12,9 @@ const MAX_PAGES = 10_000;
 /**
  * The scanner: each pass reads the blocks after the cursor, at most CAIRN_MAX_BLOCKS, once per filter. A
  * range is read whole or not at all: a failed page fails the range (the cursor stays, the next pass reads it
- * again from its first page), and an invalid continuation token (error 33) restarts it.
+ * again from its first page), and an invalid continuation token (error 33) restarts it. From round 4 a range is
+ * read from one endpoint: its continuation tokens go back only to the endpoint that issued them, and when that
+ * endpoint fails mid-range, the range restarts from its first page on the next endpoint.
  */
 export class Scanner {
   constructor(rpc, config) {
@@ -29,19 +31,21 @@ export class Scanner {
     for (let attempt = 0; ; attempt++) {
       try { return await this.#pages(range, filter); }
       catch (error) {
-        if (error instanceof RpcError && error.code === 33 && attempt < restarts) continue;
+        const restart = (error instanceof RpcError && error.code === 33) || (error instanceof EndpointLost && this.rpc.endpoints?.length > 1);
+        if (restart && attempt < restarts) continue;
         throw error;
       }
     }
   }
   async #pages(range, filter) {
     const events = [], tokens = new Set();
-    let token;
+    let token, endpoint;
     for (let page = 0; page < MAX_PAGES; page++) {
-      const answer = await this.rpc.call('starknet_getEvents', { filter: {
+      const { result: answer, endpoint: used } = await this.rpc.request('starknet_getEvents', { filter: {
         from_block: { block_number: range.from }, to_block: { block_number: range.to }, ...filter, chunk_size: PAGE,
         ...(token === undefined ? {} : { continuation_token: token }),
-      } });
+      } }, { endpoint });
+      endpoint = used; // the next page's token is only valid on this endpoint
       if (!answer || !Array.isArray(answer.events)) throw new NodeValueError();
       events.push(...answer.events);
       token = typeof answer.continuation_token === 'string' && answer.continuation_token !== '' ? answer.continuation_token : undefined;

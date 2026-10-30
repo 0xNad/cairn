@@ -3,17 +3,22 @@ import { normalize } from './felt.mjs';
 import { dollars, escapeHtml, parseDecimal, plainText, short, unescapeHtml } from './format.mjs';
 import { addressInput, looksLikeName } from './names.mjs';
 import { usdPair } from './prices.mjs';
+import { duration } from './network.mjs';
 import { LIMITS } from './subscriptions.mjs';
 import { VENUES } from './venues.mjs';
 
 // The chat settings: round 2's /watch, /unwatch, /list, /whale, /unwhale, /min, /mute, /unmute, /track,
-// /export, /forget and the buttons, and round 3's /feed and /unfeed. A handler does its reads and chain calls
-// first, then returns a commit: a synchronous function the bot runs in the transaction that also confirms the
-// update, before any reply is sent. In groups every one of them but /list needs an administrator. A feed,
-// watch, whale or track set up in a forum topic posts into that topic.
+// /export, /forget and the buttons, round 3's /feed and /unfeed, and round 4's /network and /guard. A handler does
+// its reads and chain calls first, then returns a commit: a synchronous function the bot runs in the transaction
+// that also confirms the update, before any reply is sent. In groups every one of them but /list needs an
+// administrator, and so do /network and /guard except to read their state. A feed, watch, whale or track set up
+// in a forum topic posts into that topic, and so do network alerts.
 
-export const SETTINGS = new Set(['watch', 'unwatch', 'list', 'whale', 'unwhale', 'min', 'mute', 'unmute', 'track', 'export', 'forget', 'feed', 'unfeed']);
+export const SETTINGS = new Set(['watch', 'unwatch', 'list', 'whale', 'unwhale', 'min', 'mute', 'unmute', 'track', 'export', 'forget', 'feed', 'unfeed',
+  'network', 'guard']);
 const OPEN_IN_GROUPS = new Set(['list']);
+/** Commands whose bare form only shows the chat's state, which every member may read. */
+const STATE_IN_GROUPS = new Set(['network', 'guard']);
 const BUSY = 'node busy: Cairn cannot read the chain right now, so nothing was changed. Please try again shortly.';
 const ADMIN_ONLY = 'Only an administrator of this group can change Cairn’s settings. Anyone here can read them with /list.';
 const FEED_USAGE = 'Usage: /feed &lt;SYMBOL|token address&gt; [&lt;min&gt;|$&lt;usd&gt;] [buys|all], for example /feed STRK $100 all. ' +
@@ -25,7 +30,8 @@ const where = (before, thread) => (thread !== null ? ' Its posts go to this topi
   : before !== null && before !== undefined ? ' Its posts now go to the main thread.' : '');
 
 export async function setting(command, ctx) {
-  if (ctx.chat.type !== 'private' && !OPEN_IN_GROUPS.has(command.name) && !(await ctx.admin())) return say(ADMIN_ONLY);
+  const open = OPEN_IN_GROUPS.has(command.name) || (STATE_IN_GROUPS.has(command.name) && !command.argument.trim());
+  if (ctx.chat.type !== 'private' && !open && !(await ctx.admin())) return say(ADMIN_ONLY);
   try { return await HANDLERS[command.name](command.argument.trim(), ctx); }
   catch (error) {
     if (error instanceof NodeBusy && !ctx.signal.aborted) return say(BUSY);
@@ -209,6 +215,45 @@ const HANDLERS = {
     };
   },
 
+  /** /network on|off: stall and recovery alerts for this chat (in the asking topic); bare, the chat's state. */
+  async network(arg, ctx) {
+    const mode = arg.toLowerCase();
+    if (mode && mode !== 'on' && mode !== 'off') return say('Usage: /network on|off. Bare, /network shows whether this chat gets network alerts.');
+    const stall = duration(ctx.config.stallSeconds * 1000);
+    const what = `Cairn posts here when Starknet produces no new block for ${stall} (a stall), and again when blocks resume, with how long the stall lasted.`;
+    const operator = 'RPC outages of this instance go to its operator only.';
+    if (!mode) {
+      return () => say(ctx.subs.networkOf(ctx.chat.id) ? `📡 Network alerts are on here: ${what} /network off stops them.`
+        : `Network alerts are off here. /network on: ${what}`)();
+    }
+    return () => {
+      const before = ctx.subs.networkOf(ctx.chat.id)?.thread_id;
+      const was = ctx.subs.network(ctx.chat, mode === 'on', ctx.thread);
+      if (mode === 'off') return say(was ? '📡 Network alerts off here. /network on brings them back.' : 'Network alerts were already off here.')();
+      return say(`📡 Network alerts ${was ? 'stay on' : 'on'} here: ${what} ${operator}${where(was ? before : null, ctx.thread)}`)();
+    };
+  },
+
+  /** /guard seed|links on|off: the chat's guards; bare, their state and whether Cairn may delete messages here. */
+  async guard(arg, ctx) {
+    const m = /^(seed|links)\s+(on|off)$/i.exec(arg);
+    if (arg && !m) return say(GUARD_USAGE);
+    const rights = ctx.chat.type === 'private' ? null : await ctx.rights();
+    if (!m) return () => say(guardState(ctx, ctx.subs.guardsOf(ctx.chat.id), rights))();
+    const which = m[1].toLowerCase(), on = m[2].toLowerCase() === 'on';
+    return () => {
+      const was = ctx.subs.guard(ctx.chat, which, on);
+      const name = which === 'seed' ? 'Seed-phrase guard' : 'Link guard';
+      if (was === on) return say(`🛡 The ${name.toLowerCase()} was already ${on ? 'on' : 'off'} here.${on ? rightsNote(rights) : ''}`)();
+      if (!on) {
+        return say(which === 'seed'
+          ? '🛡 Seed-phrase guard off here: Cairn no longer deletes recovery phrases posted in this chat. /guard seed on turns it back on.'
+          : '🛡 Link guard off here: links to blocklisted domains stay up. /guard links on turns it back on.')();
+      }
+      return say(`🛡 ${name} on here: ${which === 'seed' ? SEED_RULE : linkRule(ctx)}${rightsNote(rights)}`)();
+    };
+  },
+
   async export(_, ctx) {
     return () => {
       const json = JSON.stringify(ctx.subs.export(ctx.chat.id));
@@ -221,10 +266,27 @@ const HANDLERS = {
       const c = ctx.subs.forget(ctx.chat.id);
       return say(`🗑 Deleted everything Cairn stored for this chat: ${plural(c.feeds, 'trade feed')}, ${plural(c.watches, 'watch', 'watches')}, ` +
         `${plural(c.whales, 'whale alert')}, ${plural(c.minimums, 'floor')}, ${plural(c.muted, 'mute')}, ${plural(c.tracks, 'track')}, ` +
-        `${plural(c.offers, 'button')} and ${plural(c.deliveries, 'alert record')}.`)();
+        `${plural(c.offers, 'button')} and ${plural(c.deliveries, 'alert record')}${c.network ? ', and its network alerts' : ''}. ` +
+        'The guards are back to their defaults (on).')();
     };
   },
 };
+
+const GUARD_USAGE = 'Usage: /guard seed on|off or /guard links on|off. Bare, /guard shows both guards in this chat.';
+const SEED_RULE = 'a message holding 12 or more BIP-39 words in a row (a seed phrase) is deleted, with a warning that repeats none of them; the words are never stored or logged.';
+const linkRule = (ctx) => `a message linking to a domain of this instance's blocklist (${plural(ctx.guards?.blocklist.size ?? 0, 'domain')}), or to any of its subdomains, is deleted with a warning.`;
+/** In a group, what Cairn's own membership allows: guards need it to be an administrator with the Delete messages right. */
+function rightsNote(rights) {
+  if (!rights) return '';
+  if (!rights.admin) return '\n⚠️ Cairn is not an administrator here, so it cannot see or delete members\' messages: make it an administrator with the Delete messages right.';
+  return rights.canDelete ? '' : '\n⚠️ Cairn is an administrator here but lacks the Delete messages right: it can only warn. Give it that right.';
+}
+function guardState(ctx, guards, rights) {
+  return [`🛡 <b>Guards in this chat</b>`,
+    `• Seed phrases: ${guards.seed ? 'on' : 'off'} — ${SEED_RULE}`,
+    `• Links: ${guards.links ? 'on' : 'off'} — ${linkRule(ctx)}`,
+    'Administrators switch them with /guard seed|links on|off.'].join('\n') + rightsNote(rights);
+}
 
 /** /track and the Track button share the commit and its words. */
 function trackCommit(ctx, chat, hash, reply = say, thread = null) {
@@ -281,8 +343,10 @@ export function listView(chatId, ctx) {
   const { subs, fmt } = ctx;
   const watches = subs.watches(chatId), whales = subs.whales(chatId), floors = subs.minimums(chatId);
   const muted = subs.muted(chatId), tracks = subs.tracks(chatId), feed = subs.feedOf(chatId);
+  const guards = subs.guardsOf(chatId), network = subs.networkOf(chatId);
+  const state = `<b>This chat</b>: network alerts ${network ? 'on' : 'off'} (/network) · guards: seed phrases ${guards.seed ? 'on' : 'off'}, links ${guards.links ? 'on' : 'off'} (/guard)`;
   if (!feed && !watches.length && !whales.length && !floors.length && !muted.length && !tracks.length) {
-    return { lines: ['Nothing is set up in this chat yet.', 'Start with /feed &lt;token&gt;, /watch &lt;address&gt; [label] or /whale &lt;token&gt; &lt;amount&gt;. /help lists everything.'], keyboard: [] };
+    return { lines: ['Nothing is set up in this chat yet.', 'Start with /feed &lt;token&gt;, /watch &lt;address&gt; [label] or /whale &lt;token&gt; &lt;amount&gt;. /help lists everything.', state], keyboard: [] };
   }
   const lines = [], keyboard = [];
   let size = 0, hidden = 0;
@@ -318,6 +382,7 @@ export function listView(chatId, ctx) {
       { text: `Stop tracking ${short(t.hash)}`, callback_data: `rt:${t.id}` });
   }
   if (hidden) lines.push(`… and ${hidden} more lines: /export lists everything.`);
+  lines.push(state);
   return { lines, keyboard };
 }
 

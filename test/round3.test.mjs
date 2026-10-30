@@ -91,6 +91,10 @@ test('trades net per transaction as the brief defines: buys, sells, multi-hop, r
   assert.deepEqual(net([avnu(QUOTE, 10n, OTHER, 20n), ekubo(-100n, 200n), transfer(EKUBO, TRADER, 100n)]), ['Ekubo', 100n]); // unrelated AVNU
   // What was paid: the other tokens the venue moved the other way.
   assert.deepEqual([...trade([avnu(QUOTE, 200n, TOKEN, 100n), avnu(TOKEN, 40n, QUOTE, 80n)]).nets], [[QUOTE, -120n], [TOKEN, 60n]]);
+  // An AVNU Swap of other tokens in the same transaction (OTHER sold for QUOTE, then QUOTE for TOKEN) pays for nothing:
+  // the post reads "1,000 TOKEN for 125 QUOTE", not "for 75 QUOTE + 2 OTHER".
+  const multicall = trade([avnu(OTHER, 2n, QUOTE, 50n), avnu(QUOTE, 125n, TOKEN, 1000n)]);
+  assert.deepEqual([multicall.venue.name, multicall.net, [...multicall.nets], multicall.swaps.length], ['AVNU', 1000n, [[QUOTE, -125n], [TOKEN, 1000n]], 1]);
 });
 
 test('a token that only passes through AVNU on its route, as on mainnet, nets to zero instead of a false Ekubo trade', () => {
@@ -173,11 +177,12 @@ test('a reply line too long for Telegram goes as plain text in pieces instead of
   assert.ok(parseName(`${'A'.repeat(4000)}.stark`).error.length < 200);
 });
 
-test('the size bar grows by half-decades of USD, and by multiples of the floor without a price', () => {
+test('the size bar grows by decades of USD, five dots at most, and by multiples of the floor without a price', () => {
   assert.equal(sizeBar('buy', 900n, 1n, null), '🟢'); // $9
-  assert.equal(sizeBar('buy', 12_500n, 1n, null), '🟢🟢🟢🟢'); // $125: past $10, $30 and $100
-  assert.equal(sizeBar('sell', 100_000_000n, 1n, null), `${'🔴'.repeat(12)} 🐋`); // $1,000,000: every step
-  assert.equal(sizeBar('buy', null, 1000n, 100n), '🟢🟢🟢'); // 10 times the floor
+  assert.equal(sizeBar('buy', 12_500n, 1n, null), '🟢🟢🟢'); // $125: past $10 and $100
+  assert.equal(sizeBar('sell', 25_000_000n, 1n, null), `${'🔴'.repeat(5)} 🐋`); // $250,000: every step, and a whale
+  assert.equal(sizeBar('sell', 100_000_000_000n, 1n, null), `${'🔴'.repeat(5)} 🐋`); // a billion dollars fits the same line
+  assert.equal(sizeBar('buy', null, 1000n, 100n), '🟢🟢'); // 10 times the floor
   assert.equal(sizeBar('buy', null, 1000n, null), '🟢');
 });
 
@@ -223,6 +228,28 @@ test('a summary counts what it covers: trades per token and side with totals, wa
   assert.match(plain(summarise([dust(1)], fmt)), /1 buy · 1 STRK · ≈<\$0\.01\n/);
 });
 
+test('a reverse name that does not resolve back is "no name" for an hour, then checked again', async () => {
+  const store = new Store(mkdtempSync(join(tmpdir(), 'cairn-names-')));
+  try {
+    const NAMING = address(0x4a);
+    let forward = PEER, reverse = 0;
+    const rpc = { async call(_, { request }) {
+      if (request.entry_point_selector === SELECTORS.address_to_domain) { reverse++; return ['0x1', '0x49ed']; }
+      return [forward];
+    } };
+    const { Names } = await import('../src/names.mjs');
+    const names = new Names({ contracts: { naming: NAMING } }, store, rpc);
+    const at = async (now) => { names.reset(); return names.display(TRADER, now); };
+    assert.equal(await at(1_000), null); // ben.stark points at another address
+    forward = TRADER; // its owner fixes it
+    assert.equal(await at(1_000 + 3_599), null);
+    assert.equal(reverse, 1);
+    assert.equal(await at(1_000 + 3_600), 'ben.stark');
+    assert.equal(await at(1_000 + 3_600 + 86_399), 'ben.stark');
+    assert.equal(reverse, 2, 'a verified reverse name is kept a day; the forward check runs every pass');
+  } finally { store.close(); }
+});
+
 test('the trade feed posts what a chat asked for: dollar floors at equality, fresh prices only, names proven, no USD when unverified', async () => {
   const store = new Store(mkdtempSync(join(tmpdir(), 'cairn-feed-')));
   try {
@@ -259,7 +286,7 @@ test('the trade feed posts what a chat asked for: dollar floors at equality, fre
     const [post, ...others] = await run([ekubo(-1000n, 78n), transfer(EKUBO, TRADER, 1000n)]);
     assert.equal(others.length, 0);
     assert.equal(post.chatId, 1);
-    assert.equal(plain(post.body), '🟢🟢🟢 Buy STRK · ≈$78.20\n1,000 STRK for 78 USDC\n👤 ben.stark · 🆕 new holder\nEkubo · 1970-01-01 00:18:20 UTC · View transaction');
+    assert.equal(plain(post.body), '🟢🟢 Buy STRK · ≈$78.20\n1,000 STRK for 78 USDC\n👤 ben.stark · 🆕 new holder\nEkubo · 1970-01-01 00:18:20 UTC · View tx');
     assert.ok(calls.some(([m, p]) => m === 'starknet_call' && p.request.entry_point_selector === SELECTORS.balance_of && p.block_id.block_number === 10)); // block − 1
     // The outside-registry token's sell goes to the chat that follows it, with no dollar sign anywhere.
     const [odd] = await run([ekubo(5n, -9n, STRANGE, QUOTE), transfer(PEER, EKUBO, 5n, STRANGE)]);
@@ -296,7 +323,7 @@ test('a chat keeps one feed: another token replaces it, the same token updates i
   } finally { store.close(); }
 });
 
-test("a round 2 state.db gains round 3's columns and tables in place, keeping its data", () => {
+test("a round 2 state.db gains round 3's and round 4's columns and tables in place, keeping its data", () => {
   const directory = mkdtempSync(join(tmpdir(), 'cairn-r2-db-'));
   const old = new DatabaseSync(join(directory, 'state.db'));
   old.exec(`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
@@ -309,11 +336,12 @@ test("a round 2 state.db gains round 3's columns and tables in place, keeping it
   old.close();
   const store = new Store(directory);
   try {
-    assert.equal(store.get('schema'), '3');
+    assert.equal(store.get('schema'), '4');
     assert.equal(store.offset, 41);
     const columns = (table) => store.db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
     for (const table of ['watches', 'whales', 'tracks', 'deliveries']) assert.ok(columns(table).includes('thread_id'), table);
     assert.ok(columns('deliveries').includes('digest') && columns('feeds').includes('min_usd') && columns('names').includes('labels'));
+    assert.ok(columns('deliveries').includes('reply_to') && columns('deliveries').includes('doubt_since') && columns('blocks').includes('hash'));
     assert.deepEqual(new Subscriptions(store, { maxWatches: 20 }).watches(5).map((w) => [w.label, w.thread_id]), [['Kept', null]]);
   } finally { store.close(); }
 });

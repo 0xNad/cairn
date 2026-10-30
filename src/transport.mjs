@@ -1,6 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { performance } from 'node:perf_hooks';
-import { CairnError, NodeBusy, RpcError, TelegramRefused } from './errors.mjs';
+import { CairnError, EndpointLost, log, NodeBusy, RpcError, TelegramDown, TelegramRefused } from './errors.mjs';
 import { normalize } from './felt.mjs';
 
 const TIMER_MAX = 2147483647;
@@ -42,6 +42,11 @@ const READ_METHODS = new Set(['starknet_chainId', 'starknet_specVersion', 'stark
   'starknet_getBlockWithTxHashes', 'starknet_getClassHashAt', 'starknet_call',
   'starknet_getTransactionStatus', 'starknet_getTransactionReceipt', 'starknet_getTransactionByHash',
   'starknet_getEvents']);
+const IDENTITY = new Set(['starknet_chainId', 'starknet_specVersion']);
+/** JSON-RPC errors that say the endpoint cannot serve the call, rather than answer it: -32xxx, and the spec's UNEXPECTED_ERROR (63). */
+const unserved = (code) => (Number.isInteger(code) && code < 0) || code === 63;
+/** A failed endpoint goes to the back of the line for this long; then the list's order (the primary first) holds again. */
+export const FAILBACK_MS = 60_000;
 
 function validBlockId(value) {
   if (value === 'latest') return true;
@@ -52,11 +57,51 @@ function validBlockId(value) {
   }
   return false;
 }
+function retryAfterOf(response) {
+  const retry = response.headers.get('retry-after');
+  if (retry === null) return 0;
+  const seconds = Number(retry);
+  const ms = Number.isFinite(seconds) ? Math.max(0, seconds * 1000) : Math.max(0, Date.parse(retry) - Date.now());
+  return Number.isFinite(ms) ? ms : 0;
+}
 
+/**
+ * JSON-RPC over the configured endpoints: STARKNET_RPC_URL, or from round 4 the failover list STARKNET_RPC_URLS.
+ * One rate limit covers them all. A call goes to the first endpoint that has not failed in the last minute, in
+ * the list's order; an HTTP 429, 5xx, timeout or broken answer moves it to the next one, and each endpoint gets up
+ * to 3 tries with backoff of at least its Retry-After. With one endpoint this is round 1's rule exactly. An endpoint
+ * answers the chain and spec handshake (`identifyWith`) once, before its first other call; a request pinned to one
+ * endpoint (a continuation token) never moves, and throws EndpointLost when that endpoint fails.
+ */
 export class Rpc {
   #times = [];
   #id = 0;
-  constructor(config, signal) { this.config = config; this.signal = signal; }
+  constructor(config, signal) {
+    this.config = config;
+    this.signal = signal;
+    const urls = config.rpcUrls ?? [config.rpcUrl];
+    this.endpoints = urls.map((url, index) => ({ url, index, failedAt: -Infinity, notBefore: 0, identity: null, requests: 0, errors: 0 }));
+    this.current = 0; // the endpoint that answered last
+    this.check = null;
+  }
+  /** `check(index)` runs the handshake on one endpoint and returns its identity, or throws (exit 2 on a wrong chain). */
+  identifyWith(check) { this.check = check; }
+  /** The endpoint's identity, checked now if it has none yet. Throws NodeBusy when it cannot be reached. */
+  async identify(index) {
+    const endpoint = this.endpoints[index];
+    endpoint.identity ??= await this.check(index);
+    return endpoint.identity;
+  }
+  /** The endpoint ordinary calls now go to; a switch is logged, by the endpoint's place in the list. */
+  use(index) {
+    if (this.current !== index && this.endpoints.length > 1) log('warn', 'rpc endpoint', { using: this.name(index) });
+    this.current = index;
+  }
+  /** Sends an endpoint to the back of the line for `ms`: one whose head stopped moving while another's did not. */
+  demote(index, ms = 10 * FAILBACK_MS) { this.endpoints[index].failedAt = performance.now() + ms - FAILBACK_MS; }
+  /** "endpoint 2 of 3", or "the node" when there is only one: never its URL, which is a secret. */
+  name(index) { return this.endpoints.length > 1 ? `endpoint ${index + 1} of ${this.endpoints.length}` : 'the node'; }
+
   async #slot() {
     for (;;) {
       const now = performance.now();
@@ -65,42 +110,101 @@ export class Rpc {
       await sleep(Math.max(1, 1010 - (now - this.#times[0])), this.signal);
     }
   }
-  async call(method, params = {}) {
-    if (!READ_METHODS.has(method)) throw new CairnError('Unsupported RPC method.');
-    if (params.block_id !== undefined && !validBlockId(params.block_id)) {
-      throw new CairnError('Unsupported block identifier.');
-    }
-    for (let attempt = 0; attempt < 3; attempt++) {
-      await this.#slot();
-      let wait = 200 * 2 ** attempt;
-      try {
-        const id = ++this.#id;
-        const { response, json } = await post(this.config.rpcUrl, { jsonrpc: '2.0', id, method, params }, this.config.rpcTimeout, this.signal);
-        if (response.status === 429 || response.status >= 500) {
-          const retry = response.headers.get('retry-after');
-          if (retry !== null) {
-            const seconds = Number(retry);
-            const ms = Number.isFinite(seconds) ? Math.max(0, seconds * 1000) : Math.max(0, Date.parse(retry) - Date.now());
-            if (Number.isFinite(ms)) wait = Math.max(wait, ms);
-          }
-        } else if (!response.ok) {
-          throw new NodeBusy();
-        } else if (json?.jsonrpc === '2.0' && json.id === id) {
-          if (json.error) throw new RpcError(json.error.code);
-          if (Object.hasOwn(json, 'result')) return json.result;
-        }
-      } catch (error) {
-        if (this.signal.aborted || error instanceof RpcError || error instanceof NodeBusy) throw error;
-        // Interrupted connections, timeouts and malformed bodies are retried, never logged verbatim.
-      }
-      if (attempt < 2) await sleep(wait, this.signal);
-    }
-    throw new NodeBusy();
+  #order(skip) {
+    const now = performance.now(), fresh = (e) => now - e.failedAt >= FAILBACK_MS;
+    return this.endpoints.filter((e) => !skip.has(e.index)).sort((a, b) => Number(fresh(b)) - Number(fresh(a)) || a.index - b.index);
   }
+  /** One HTTP request to one endpoint: { result }, { rpcError }, { retry, retryAfter, why } or { refused, why }. */
+  async #attempt(endpoint, method, params, round) {
+    await this.#slot();
+    endpoint.requests++;
+    const failed = (outcome) => {
+      endpoint.errors++;
+      endpoint.failedAt = performance.now();
+      endpoint.notBefore = endpoint.failedAt + Math.max(200 * 2 ** round, outcome.retryAfter ?? 0);
+      return outcome;
+    };
+    try {
+      const id = ++this.#id;
+      const { response, json } = await post(endpoint.url, { jsonrpc: '2.0', id, method, params }, this.config.rpcTimeout, this.signal);
+      const why = `HTTP ${response.status}`;
+      if (response.status === 429 || response.status >= 500) return failed({ retry: true, retryAfter: retryAfterOf(response), why });
+      if (!response.ok) return failed({ refused: true, why }); // no retry fixes it: try another endpoint
+      if (json?.jsonrpc === '2.0' && json.id === id && (json.error || Object.hasOwn(json, 'result'))) {
+        endpoint.failedAt = -Infinity;
+        return json.error ? { rpcError: json.error.code } : { result: json.result };
+      }
+      return failed({ retry: true, why: 'an answer that is not JSON-RPC' });
+    } catch (error) {
+      if (this.signal.aborted) throw error;
+      // Interrupted connections and timeouts are retried, never logged verbatim.
+      return failed({ retry: true, why: 'no answer: timeout or connection error' });
+    }
+  }
+  /** The result of `method`, and which endpoint gave it: { result, endpoint }. */
+  async request(method, params = {}, { endpoint: pinned } = {}) {
+    if (!READ_METHODS.has(method)) throw new CairnError('Unsupported RPC method.');
+    if (params.block_id !== undefined && !validBlockId(params.block_id)) throw new CairnError('Unsupported block identifier.');
+    const skip = new Set();
+    let last = null, why = null;
+    for (let round = 0; round < 3; round++) {
+      const ready = pinned === undefined ? this.#order(skip) : skip.has(pinned) ? [] : [this.endpoints[pinned]];
+      if (!ready.length) break;
+      if (round > 0) await sleep(Math.max(0, Math.min(...ready.map((e) => e.notBefore)) - performance.now()), this.signal);
+      const start = performance.now() + 10; // a timer may fire a few milliseconds early: the one awaited is due
+      for (const endpoint of ready) {
+        if (round > 0 && endpoint.notBefore > start) continue; // its backoff or Retry-After has not passed
+        if (this.check && !endpoint.identity && !IDENTITY.has(method)) {
+          try { await this.identify(endpoint.index); }
+          catch (error) {
+            if (this.signal.aborted || (error instanceof CairnError && error.exitCode === 2)) throw error; // a wrong chain or spec stops Cairn
+            endpoint.failedAt = performance.now(); // unreachable, or no usable answer: the next endpoint goes first
+            skip.add(endpoint.index);
+            continue;
+          }
+        }
+        const outcome = await this.#attempt(endpoint, method, params, round);
+        if (Object.hasOwn(outcome, 'result')) {
+          if (pinned === undefined) this.use(endpoint.index);
+          return { result: outcome.result, endpoint: endpoint.index };
+        }
+        if (Object.hasOwn(outcome, 'rpcError')) {
+          // A JSON-RPC error of the endpoint itself (internal error, method not served, a provider's refusal) moves
+          // to the next endpoint when there is one; the spec's own errors (not found, contract error…) are answers.
+          if (pinned !== undefined || this.endpoints.length === 1 || !unserved(outcome.rpcError)) throw new RpcError(outcome.rpcError);
+          last = new RpcError(outcome.rpcError);
+          endpoint.errors++;
+          endpoint.failedAt = performance.now();
+          skip.add(endpoint.index);
+        }
+        why = outcome.why ?? why;
+        if (outcome.refused) skip.add(endpoint.index);
+      }
+    }
+    if (last && skip.size === this.endpoints.length) throw last;
+    throw pinned === undefined ? new NodeBusy(why) : new EndpointLost(why);
+  }
+  async call(method, params = {}, options = {}) { return (await this.request(method, params, options)).result; }
 }
+
 export class Telegram {
-  constructor(config, signal) { this.config = config; this.signal = signal; }
+  constructor(config, signal) {
+    this.config = config;
+    this.signal = signal;
+    this.healthy = true; // false once a call failed for want of Telegram, until getUpdates answers again
+    this.errors = 0;
+  }
   async call(method, params = {}) {
+    try {
+      const result = await this.#call(method, params);
+      if (method === 'getUpdates') this.healthy = true;
+      return result;
+    } catch (error) {
+      if (error instanceof TelegramDown) { this.healthy = false; this.errors++; }
+      throw error;
+    }
+  }
+  async #call(method, params) {
     for (let attempt = 0; attempt < 3; attempt++) {
       let result;
       try {
@@ -109,7 +213,7 @@ export class Telegram {
       } catch (error) {
         if (this.signal.aborted) throw error;
         // A send may have been accepted before connection failure. Never resend ambiguously.
-        throw new CairnError('Telegram unreachable; check TELEGRAM_API_ROOT and connectivity.');
+        throw new TelegramDown('Telegram unreachable; check TELEGRAM_API_ROOT and connectivity.');
       }
       const { response, json } = result;
       if (response.ok && json?.ok === true) return json.result;
@@ -120,7 +224,7 @@ export class Telegram {
         case 403: return null;
         case 429: {
           const seconds = json?.parameters?.retry_after;
-          if (!Number.isFinite(seconds) || seconds < 0 || attempt === 2) throw new CairnError('Telegram rate limit; retry_after missing or retries exhausted.');
+          if (!Number.isFinite(seconds) || seconds < 0 || attempt === 2) throw new TelegramDown('Telegram rate limit; retry_after missing or retries exhausted.');
           await sleep(seconds * 1000, this.signal);
           break;
         }
@@ -130,9 +234,9 @@ export class Telegram {
             break;
           }
           if (Number.isInteger(code) && code >= 400 && code < 500 && json?.ok === false) throw new TelegramRefused(method, code, json);
-          throw new CairnError(`Telegram request ${method} failed (${Number.isInteger(code) ? code : 'invalid response'}).`);
+          throw new TelegramDown(`Telegram request ${method} failed (${Number.isInteger(code) ? code : 'invalid response'}).`);
       }
     }
-    throw new CairnError('Telegram retry budget exhausted.');
+    throw new TelegramDown('Telegram retry budget exhausted.');
   }
 }

@@ -11,17 +11,20 @@ const MAX_LINKS = 10; // transaction links a summary lists for its wallet alerts
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const read = (digest) => { try { return digest ? JSON.parse(digest) : null; } catch { return null; } };
 
+/** Round 4's deliveries that are about the chain itself: they go out in full before any alert. */
+const URGENT = new Set(['correction', 'network']);
 /**
- * What makes an alert worth a full message in a burst: a track update first (someone asked for it), then an
- * approval by a watched wallet, then the larger USD value.
+ * What makes an alert worth a full message in a burst: a correction or a network notice first (round 4), then a
+ * track update (someone asked for it), then an approval by a watched wallet, then the larger USD value.
  */
 function weight(row) {
   const d = read(row?.digest);
-  return { track: row?.kind === 'track', approval: d?.approval === true, cents: d?.cents ? BigInt(d.cents) : null,
+  return { urgent: URGENT.has(row?.kind), track: row?.kind === 'track', approval: d?.approval === true, cents: d?.cents ? BigInt(d.cents) : null,
     token: d?.token ?? null, amount: d?.amount ? BigInt(d.amount) : 0n };
 }
 /** Positive when `a` should be sent in full rather than `b`; 0 keeps chain order. */
 function heavier(a, b) {
+  if (a.urgent !== b.urgent) return a.urgent ? 1 : -1;
   if (a.track !== b.track) return a.track ? 1 : -1;
   if (a.approval !== b.approval) return a.approval ? 1 : -1;
   if ((a.cents === null) !== (b.cents === null)) return a.cents !== null ? 1 : -1;
@@ -58,7 +61,7 @@ const valueIn = (d) => (d.value ? { num: BigInt(d.value[0]), den: BigInt(d.value
  * track updates with a link to each, and a link to the largest trade.
  */
 export function summarise(rows, fmt) {
-  const trades = new Map(), alerts = [], tracks = [];
+  const trades = new Map(), alerts = [], tracks = [], notices = [], corrections = [];
   let whales = 0, approvals = 0, largest = null;
   for (const row of rows) {
     const d = read(row.digest);
@@ -73,6 +76,8 @@ export function summarise(rows, fmt) {
         if (!largest || BigInt(d.cents) > BigInt(largest.d.cents)) largest = { d, tx: row.tx_hash };
       }
     } else if (row.kind === 'track') tracks.push(row);
+    else if (row.kind === 'network') notices.push(row);
+    else if (row.kind === 'correction') corrections.push(row);
     else {
       alerts.push(row);
       if (d?.whale) whales++;
@@ -97,6 +102,8 @@ export function summarise(rows, fmt) {
     lines.push(`👁 ${plural(alerts.length, 'wallet alert')}${marks.length ? `, ${marks.join(', ')}` : ''}: ${linked(alerts)}`);
   }
   if (tracks.length) lines.push(`⏱ ${plural(tracks.length, 'tracked transaction update')}: ${linked(tracks)}`);
+  if (corrections.length) lines.push(`↩️ ${plural(corrections.length, 'correction')} after a reorg, for: ${linked(corrections)}`);
+  if (notices.length) lines.push(`⛓ ${plural(notices.length, 'network notice')} (stalls, skipped blocks): /network shows the current state`);
   if (largest) {
     const { d } = largest;
     const worth = escapeHtml(usdText(valueIn(d)));

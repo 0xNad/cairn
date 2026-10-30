@@ -24,6 +24,8 @@ export const COMMANDS = Object.freeze([
   { command: 'mute', description: 'Silence one token in this chat' },
   { command: 'unmute', description: 'Undo /mute' },
   { command: 'track', description: 'Follow one transaction until it is final' },
+  { command: 'network', description: 'Alerts when Starknet stalls and when blocks resume' },
+  { command: 'guard', description: 'Delete seed phrases and phishing links (admins)' },
   { command: 'export', description: 'Everything Cairn stores for this chat, as JSON' },
   { command: 'forget', description: 'Delete everything Cairn stores for this chat' },
 ]);
@@ -39,7 +41,7 @@ export function parsePaste(message) {
   return match ? { name: 'paste', argument: match[1] } : null;
 }
 
-const HELP = `Cairn · Starknet lookups, wallet alerts and trade feeds
+const HELP = `Cairn · Starknet lookups, wallet alerts, trade feeds and member guards
 Lookups, for everyone:
 /status — Chain head and gas prices
 /balance <address> [token] — Exact balances, one token or every verified one
@@ -57,6 +59,9 @@ Feeds and alerts, set by group administrators (anyone in a private chat):
 /mute <token address> — Silence one token in this chat, such as a spam airdrop
 /unmute <token address> — Undo /mute
 /track <hash> — One message on L2 acceptance, one on L1 acceptance or a revert
+/network on|off — An alert when Starknet stops producing blocks, and one when they resume
+Member safety, on by default:
+/guard seed|links on|off — Delete messages holding a seed phrase (12 or more recovery words) or a link to a blocklisted phishing domain, with a warning that repeats nothing of it
 This chat:
 /list — Its feed, watches, alerts, floors and mutes, with Remove buttons
 /export — Everything Cairn stores for it, as JSON
@@ -64,18 +69,19 @@ This chat:
 /start — Welcome and privacy
 /help — Command guide
 
-A name.stark works wherever an address does, and an address shows as its .stark name only when that name resolves back to it. Set up in a forum topic, a feed, watch or whale posts into that topic. A group gets at most 3 alert messages per update: when more are due, the third summarises the rest.
+A name.stark works wherever an address does, and an address shows as its .stark name only when that name resolves back to it. Set up in a forum topic, a feed, watch or whale posts into that topic. A group gets at most 3 alert messages per update: when more are due, the third summarises the rest. If Starknet reorganises a block, an alert whose transaction is gone gets a correction, as a reply to it.
 
 On-chain facts, not financial advice.
 Public balances and transfers only.
 Tokens outside Cairn's registry are marked unverified: anyone can deploy a token with any symbol, and none gets a USD value.
-The operator stores this chat's id and type, its settings (trade feed, watched addresses and labels, whale alerts, floors, mutes, tracked transactions, and the forum topic of each), the tokens seen moving for a watched address, alert delivery records for 7 days, a pasted address or hash for a day (for its button), and the update offset. Shared by every chat: token metadata and .stark names read from the chain. /export shows all of it; /forget deletes it. For the rate limit, each person's id and command times are kept for one minute. Never message text, Telegram names or usernames.`;
+The operator stores this chat's id and type, its settings (trade feed, watched addresses and labels, whale alerts, floors, mutes, tracked transactions, network alerts, guard switches, and the forum topic of each), the tokens seen moving for a watched address, alert delivery records for 7 days, a pasted address or hash for a day (for its button), and the update offset. Shared by every chat: token metadata and .stark names read from the chain. /export shows all of it; /forget deletes it. For the rate limit, each person's id and command times are kept for one minute. Never message text, Telegram names or usernames, and never anything a guard deleted.`;
 const GROUP_SETUP = `Cairn is in this group. To set it up, as an administrator:
 1. /feed <token> [min|$usd] [buys|all] to post the group token's trades.
 2. /watch <address> <label> for each wallet the group follows.
 3. /whale <token> <amount> for large transfers of a token.
 4. /min and /mute to cut noise.
-Run each in a forum topic to post there. Members can use /status, /balance, /tx, /price and /list. Cairn reads only the commands addressed to it.`;
+5. /network on for an alert when Starknet stalls.
+The guards delete seed phrases and blocklisted phishing links from the start (/guard): for that, make Cairn an administrator with the Delete messages right. Run each command in a forum topic to post there. Members can use /status, /balance, /tx, /price and /list.`;
 
 export async function answer(command, context) {
   const { config, rpc, username, clean, head, spec } = context;
@@ -102,7 +108,7 @@ export async function answer(command, context) {
   try {
     switch (command.name) {
       case 'status':
-        return text(`Starknet · ${config.chain}\nHead: ${head.block_number}\n${utc(head.timestamp)}\nL1 gas: ${unsigned(head.l1_gas_price.price_in_fri)} FRI\nL1-data gas: ${unsigned(head.l1_data_gas_price.price_in_fri)} FRI\nL2 gas: ${unsigned(head.l2_gas_price.price_in_fri)} FRI\nRPC spec: ${spec}`);
+        return text(`Starknet · ${config.chain}\nHead: ${head.block_number}\n${utc(head.timestamp)}\nL1 gas: ${unsigned(head.l1_gas_price.price_in_fri)} FRI\nL1-data gas: ${unsigned(head.l1_data_gas_price.price_in_fri)} FRI\nL2 gas: ${unsigned(head.l2_gas_price.price_in_fri)} FRI\nRPC spec: ${spec}${context.endpoint ? ` · ${context.endpoint}` : ''}`);
       case 'balance': {
         if (name !== null) {
           const resolved = context.names ? await context.names.resolve(name) : { error: 'Names are off here: use the 0x address.' };
@@ -116,6 +122,8 @@ export async function answer(command, context) {
           chosen = resolved.token;
         }
         const block_id = { block_number: head.block_number };
+        // An address typed as 0x… shows its verified .stark name too, when it has one (names never throw).
+        name ??= (await context.names?.display(input, head.timestamp)) ?? null;
         const who = name === null ? link('contract', input) : fmt.contract(input, `${escapeHtml(name)} · ${short(input)}`);
         const lines = [...text(`Balances · ${config.chain} · block ${head.block_number}\n${utc(head.timestamp)}`), who];
         try { await rpc.call('starknet_getClassHashAt', { block_id, contract_address: input }); }

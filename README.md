@@ -1,12 +1,14 @@
 # Cairn
 
-**Exact Starknet balances, transaction facts, wallet alerts and trade feeds in Telegram, without your keys.**
+**Exact Starknet balances, transaction facts, wallet alerts, trade feeds and member guards in Telegram, without your keys.**
 
 Cairn is an open-source Telegram bot for Starknet. It answers balance and transaction lookups in private
 chats and groups, and alerts a chat when a watched wallet moves any token or grants an approval, when a
 large amount of a token moves, or when a tracked transaction is accepted. A project group gets a live feed
-of its token's trades on Ekubo and AVNU, priced in USD by the Pragma oracle, with Starknet ID names. Network
-guards are planned for round 4.
+of its token's trades on Ekubo and AVNU, priced in USD by the Pragma oracle, with Starknet ID names. It says
+when the chain itself misbehaves (a stall, a reorg, a dead RPC endpoint), corrects its own alerts after a
+reorg, deletes seed phrases and phishing links before members get hurt, and runs unattended in Docker or under
+systemd, with failover endpoints, a health check and Prometheus metrics.
 
 It only reads the chain. It holds no keys, signs nothing, never trades and has no Mini App. It runs as a
 single Node.js process with zero dependencies, on any Starknet RPC. It is MIT-licensed, so anyone can host it.
@@ -14,27 +16,28 @@ single Node.js process with zero dependencies, on any Starknet RPC. It is MIT-li
 It is built in public by AI coding agents, in four judged rounds on
 [Hotpod](https://agent-launchpad-six.vercel.app).
 
-> **Status:** rounds 1 to 3 are implemented: lookups; wallet alerts on every token, whale alerts, floors,
-> mutes, `/track`, buttons, `/export` and `/forget`; then trade feeds from Ekubo and AVNU, `/price`,
-> USD values, `.stark` names, a message budget for groups and forum topics. Network guards belong to round 4.
-> [ARCHITECTURE.md](ARCHITECTURE.md) specifies the frozen interface.
+> **Status:** all four rounds are implemented: lookups; wallet alerts on every token, whale alerts, floors,
+> mutes, `/track`, buttons, `/export` and `/forget`; trade feeds from Ekubo and AVNU, `/price`, USD values,
+> `.stark` names, a message budget for groups and forum topics; then stall and recovery alerts, reorg
+> corrections, confirmations, RPC failover, gap skips, `/healthz`, `/metrics`, the seed-phrase and link guards
+> and the [deploy guide](#deploy-it). [ARCHITECTURE.md](ARCHITECTURE.md) specifies the frozen interface.
 
 ## What it looks like
 
-A group's trade feed, `/feed STRK $20 all`, as Cairn posted it on mainnet on 24 October 2026:
+A group's trade feed, `/feed STRK $20 all`, on mainnet trades of 24 October 2026:
 
 ```
-🔴🔴🔴🔴🔴 Sell STRK · ≈$849.93
+🔴🔴🔴 Sell STRK · ≈$849.93
 17,802.368766626936800896 STRK for 850.552141 USDC
 👤 0x0187…7914
-Ekubo · 2026-10-24 12:56:22 UTC · View transaction
+Ekubo · 2026-10-24 12:56:22 UTC · View tx
 ```
 
 ```
 🔴🔴 Sell STRK · ≈$12.83
 268.63691294143686493 STRK for 0.005416127807376098 ETH
 👤 firatnam.stark
-AVNU · 2026-10-24 12:56:57 UTC · View transaction
+AVNU · 2026-10-24 12:56:57 UTC · View tx
 ```
 
 The second one is an AVNU route (STRK to USDC on another pool, USDC to a hop token to ETH on Ekubo): it
@@ -54,7 +57,7 @@ A token outside the registry stays plainly unverified, and never gets a USD valu
 🔴 Sell EKUBO (unverified, 0x075a…7a87)
 0.265354465728705132 EKUBO for 0.000138178661682261 ETH
 👤 hatiss-aras.stark
-Ekubo · 2026-10-24 13:12:20 UTC · View transaction
+Ekubo · 2026-10-24 13:12:20 UTC · View tx
 ```
 
 `/price` reads Pragma at the head block:
@@ -70,7 +73,7 @@ Pragma prices · block 16867743 · 2026-10-24 12:56:18 UTC
 Alerts show USD values only from prices updated within 900 s of chain time.
 ```
 
-Wallet alerts as Cairn sent them on mainnet on 24 October 2026, watching the Ekubo router under the label
+Wallet alerts for mainnet transactions of 24 October 2026, watching the Ekubo router under the label
 "Ekubo router" (shortened): a verified token's amount carries its USD value, and the network file's
 contracts read by name.
 
@@ -80,10 +83,10 @@ contracts read by name.
 🔑 Approval: Ekubo router lets spender Ekubo Core spend 378.183585 USDC
 ↑ Out −378.183585 USDC (≈$378.12) from Ekubo router to Ekubo Core
 ↑ Out −7,847.701691064621264732 STRK (≈$374.54) from Ekubo router to 0x0187…7914
-Block 16868035 · 2026-10-24 13:04:34 UTC · View transaction
+Block 16868035 · 2026-10-24 13:04:34 UTC · View tx
 ```
 
-Round 2's alerts, as Cairn sent them on mainnet on 19 October 2026, watching the AVNU exchange contract
+Round 2's alerts, for mainnet transactions of 19 October 2026, watching the AVNU exchange contract
 under the label "AVNU" (the first one is shortened):
 
 ```
@@ -92,12 +95,12 @@ under the label "AVNU" (the first one is shortened):
 ↓ In +0.00089101 strkBTC (unverified, 0x0787…3135) to AVNU from 0x0199…737e
 🔑 Approval: AVNU lets spender 0x0702…f624 spend 722.997876 USDC
 … and 9 more in this transaction.
-Block 16616677 · 2026-10-19 13:23:35 UTC · View transaction
+Block 16616677 · 2026-10-19 13:23:35 UTC · View tx
 ```
 
 ```
 🐋 Whale 15,737.876609793529295857 STRK from 0x0000…5b4b to 0x0448…a791 (2 hops)
-Block 16616896 · 2026-10-19 13:29:55 UTC · View transaction
+Block 16616896 · 2026-10-19 13:29:55 UTC · View tx
 ```
 
 ```
@@ -106,11 +109,47 @@ Fee: 0.11574329611192912 STRK · block 16616704
 View transaction
 ```
 
+When the chain misbehaves, a chat with `/network on` hears it once, and hears again when it is over. These
+are the messages Cairn sends for the checks' fixtures (`npm run transcript` replays them, see
+[Checks](#checks)):
+
+```
+⚠️ Starknet stalled: no new block for 2 s. The head is still block 4200010. Cairn posts here again when blocks resume.
+```
+
+```
+✅ Starknet is producing blocks again: block 4200011 arrived after a 3 s stall at block 4200010.
+```
+
+After a reorg, an alert whose transaction left the chain gets one correction, as a reply to it; whatever
+replaced it is alerted on its own:
+
+```
+↩️ Correction: Starknet reorganised the blocks after 4200010, and transaction 0x0065…188d is no longer on chain. What this alert reported did not happen; anything that replaced it is posted on its own.
+```
+
+The operator alone hears of RPC trouble (`CAIRN_OPERATOR_CHAT`), once per outage:
+
+```
+🚨 RPC outage: all 2 endpoints of STARKNET_RPC_URLS fail, so Cairn cannot read Starknet. Alerts are on hold and none are lost: scanning picks up where it stopped. Cairn says so here once an endpoint answers.
+```
+
+And the guards, on by default, delete a seed phrase or a phishing link with a warning that repeats nothing
+of it:
+
+```
+🛡 Deleted: it held 12 recovery words. Whoever reads them controls the wallet. If those words secure funds, sweep everything to a new wallet straightaway. Nobody legitimate requests them: not admins, moderators or bots.
+```
+
+```
+🛡 Deleted: it linked to starknet-bot[.]com, a domain on this bot's phishing blocklist. Never connect a wallet or sign anything there.
+```
+
 - **A trade post reads at a glance.** The first line is the size, the side and the USD value; the second
   the exact amount and what was paid for it (or got for it); then the trader and the venue, the block time
-  and a link. The row of dots grows by one at every half-decade of USD value ($10, $30, $100, $300, $1,000 …
-  up to $1,000,000, with a 🐋 from $100,000), green for a buy and red for a sell, so a big trade stands out
-  in a scroll.
+  and a link. The row of dots grows by one at every decade of USD value ($10, $100, $1,000 and $10,000: five
+  dots at most, with a 🐋 from $100,000), green for a buy and red for a sell, so a big trade stands out in a
+  scroll, and the first line of the largest one still fits a phone.
 - **One message per chat per transaction**, in chain order: each matching transfer on its own line, with
   the exact amount, the direction (in, out, or between two watched wallets), the counterparty, the label,
   the block, its UTC time and a link to check it. A busy transaction shows ten lines and a count of the rest.
@@ -165,7 +204,10 @@ Connect your coding agent on [Hotpod](https://agent-launchpad-six.vercel.app). E
 - **Want a trade feed in your group?** Add the bot, then as an administrator run `/feed <token> $100`, in
   the forum topic where the posts should go. Open an issue for a venue or a token Cairn should know.
 - **Run a treasury, a DAO or a validator?** Tell us which wallets you would watch, and why.
-- **Want to host an instance?** It is one process: `node cairn.mjs run`, a BotFather token and an RPC URL.
+- **Tired of seed-phrase scams in your group?** Make Cairn an administrator with the Delete messages right: it
+  deletes pasted recovery phrases and links to phishing domains, and warns the group.
+- **Want to host an instance?** [Deploy it](#deploy-it) with Docker or systemd: a BotFather token, two RPC
+  URLs and ten minutes.
 
 ## Safe by design
 
@@ -173,8 +215,11 @@ Connect your coding agent on [Hotpod](https://agent-launchpad-six.vercel.app). E
   builds a signing link.
 - **No custody, no trading, no Mini App.** Holding user keys is what caused the big Telegram-bot losses on
   other chains.
-- **Two hosts only.** It talks to Telegram and your RPC, and nothing else: no telemetry, no price API.
-  Prices come from the Pragma oracle contract and names from the Starknet ID contract, read through your RPC.
+- **Only the hosts you configure.** It talks to Telegram and your RPC endpoints, and nothing else: no
+  telemetry, no price API, no fallback you did not list. Prices come from the Pragma oracle contract and names
+  from the Starknet ID contract, read through your RPC. The blocklist is a local file, never fetched.
+- **Guards that never repeat what they protect.** A seed phrase is deleted unseen by Cairn's storage and logs,
+  and its warning is written without a single BIP-39 word, so it cannot quote one.
 - **It keeps little, and shows all of it.** Per chat: its id and type, its settings (its trade feed included,
   and the forum topic of each), the tokens seen moving for a watched address, alert delivery records for 7
   days, and a pasted address or hash for a day (the value behind its button). Per person, only their id and
@@ -194,10 +239,16 @@ Connect your coding agent on [Hotpod](https://agent-launchpad-six.vercel.app). E
 USDT and WBTC on mainnet) is the list of verified tokens: their symbols are trusted, and `/balance` lists
 them by default. Any other token is read from its contract (`symbol` and `decimals`) and marked unverified.
 
-**Which RPC?** Any Starknet JSON-RPC 0.10 node. The public `starknet-rpc.publicnode.com` works out of the box.
+**Which RPC?** Any Starknet JSON-RPC 0.10 node, and preferably two from different providers: see
+[choosing RPC endpoints](#2-choose-rpc-endpoints). The public `starknet-rpc.publicnode.com` works out of the box.
 
 **Which venues?** Ekubo and the AVNU aggregator, on mainnet. AVNU routes through Ekubo and other pools, so a
-transaction AVNU swapped the token in counts once, as AVNU. A third venue is one entry in `src/venues.mjs`.
+transaction AVNU swapped the token in counts once, as AVNU. A third venue is one entry in `src/venues.mjs`
+and one contract in the network file: say a pool contract `0x0123…` that emits `Swap` events. A selector is
+the hash of the event's name, so its `Swap` has AVNU's selector, and the scanner adds one filter on the same
+ranges, `{"address": "0x0123…", "keys": [["0x00e316f0d9d2a3affa97de1d99bb2aac0538e2666d0d8545545ead241ef0ccab"]]}`;
+the entry's `legs` function turns that event's data into the tokens it moved, signed from the trader's side,
+and its place in the list sets its precedence. The netting and trader rules apply unchanged.
 
 **Where do prices come from?** The Pragma oracle on Starknet, `get_data_median` of each verified token's
 `pragma_pair`. A price older than `CAIRN_PRICE_MAX_AGE` (900 s of chain time by default) gives no USD value.
@@ -208,19 +259,151 @@ who would run it, is still open.
 **Why "Cairn"?** A cairn is a pile of stones that marks a trail and warns walkers, and the word sounds like
 Cairo. It is a working name.
 
-## Run it
+## Deploy it
 
-Node.js 24 or later, nothing else: Cairn has no dependencies. Create a bot with
-[@BotFather](https://t.me/BotFather), then:
+From a fresh Linux machine to a bot that runs unattended: a BotFather token, two RPC endpoints, then Docker
+(step 3) or systemd (step 3b), and the checks of step 4. Cairn needs no database server and no dependencies;
+everything it keeps is one SQLite file in its data directory.
+
+### 1. Create the bot with BotFather
+
+1. In Telegram, open [@BotFather](https://t.me/BotFather), send `/newbot`, then a display name and a username
+   that ends in `bot` (such as `mycommunity_cairn_bot`).
+2. BotFather answers with the bot's token, `7700112233:AAH…`. It is the bot's password: keep it out of chats,
+   screenshots and Git. If it leaks, `/revoke` in BotFather issues a new one.
+3. Optional: `/setdescription` and `/setuserpic`. Cairn registers its command list itself at start.
+4. To use it in a group, add the bot, then make it an **administrator with the Delete messages right**. The
+   guards need it: an administrator bot sees every message (not only commands) and may delete seed phrases
+   and phishing links. Without it, Cairn still answers commands and posts alerts, and `/guard` says what it lacks.
+
+### 2. Choose RPC endpoints
+
+- Cairn reads any Starknet **JSON-RPC 0.10** endpoint (or later) on the chain of `CAIRN_CHAIN` (`SN_MAIN`
+  by default). Providers often serve several spec versions at different paths: use the 0.10 one.
+- Each pass reads one chain-wide `starknet_getEvents` filter with no contract address, plus block headers and
+  a few calls: a few requests every `CAIRN_POLL_MS` (10 s), capped by `CAIRN_RPC_RPS` (5 per second). Some free
+  plans refuse event filters without an address: `doctor` tries that filter on each endpoint and says
+  `"events":"ok"` or why not.
+- **Use two endpoints from different providers** in `STARKNET_RPC_URLS`, your best first:
+  `STARKNET_RPC_URLS=https://<provider>/<path>/<your-key>,https://starknet-rpc.publicnode.com`. Cairn uses the
+  first one that answers and moves to the next on a 429, a 5xx, a timeout or a broken answer, then comes back
+  to the first a minute later. Every endpoint must serve the same chain: Cairn checks each one at start and
+  exits 2 otherwise. The URLs are secrets (keys sit in their paths): logs, `/status` and `/metrics` name an
+  endpoint by its place in the list, never by its URL.
+- Two public mainnet endpoints answered spec 0.10 with the event filter, without a key, on 27 October 2026:
+  `https://starknet-rpc.publicnode.com` and `https://api.zan.top/public/starknet-mainnet/rpc/v0_10`. A provider
+  account (a key in the URL) gives higher limits for the first place. Sepolia needs `CAIRN_CHAIN=SN_SEPOLIA`,
+  a Sepolia endpoint and `CAIRN_EXPLORER_URL=https://sepolia.voyager.online`.
+
+### 3. Run it with Docker
+
+The image is Node.js 24 on Alpine with Cairn's files; it runs as the unprivileged `node` user and keeps its
+state in the volume `/data` (with a host directory instead, `-v /srv/cairn:/data`, make it owned by uid 1000
+first: `sudo chown 1000:1000 /srv/cairn`).
 
 ```sh
 git clone https://github.com/0xNad/cairn && cd cairn
-cp .env.example .env    # put your bot token and an RPC URL in it, then load it into your shell
-node cairn.mjs doctor   # checks the token, the node's chain and its RPC version
-node cairn.mjs run
+cp .env.example .env && chmod 600 .env
+# Edit .env: TELEGRAM_BOT_TOKEN, and STARKNET_RPC_URLS with your two endpoints.
+docker build -t cairn .
+docker volume create cairn-data
+docker run --rm --env-file .env -v cairn-data:/data cairn doctor
+docker run -d --name cairn --restart unless-stopped --env-file .env \
+  --log-opt max-size=10m --log-opt max-file=3 \
+  -v cairn-data:/data -p 127.0.0.1:8080:8080 cairn
+docker logs -f cairn
 ```
 
-`doctor` prints one JSON line with the bot username, decoded chain, block number and RPC version.
+`doctor` prints one line with the bot's username and each endpoint's chain, head block, spec and `events`
+(whether it serves the event filter), or says what is wrong. The image serves `/healthz` and `/metrics` on port 8080 (`CAIRN_HTTP_PORT`), and Docker's own
+health check reads `/healthz`: `docker ps` shows `healthy` once blocks arrive. `-p 127.0.0.1:8080:8080`
+publishes it on the host's loopback only, and the log options keep at most 30 MB of logs. Write `.env` values
+without quotes: `--env-file` keeps them. With Compose, `docker compose up -d --build` does the same from
+`compose.yaml`.
+
+### 3b. Or run it with systemd
+
+On a machine with Node.js 24 (from [nodejs.org](https://nodejs.org) or your distribution) at `/usr/bin/node`
+(`command -v node` says where it is; adjust `ExecStart` if needed):
+
+```sh
+sudo useradd --system --home-dir /var/lib/cairn --shell /usr/sbin/nologin cairn
+sudo git clone https://github.com/0xNad/cairn /opt/cairn
+sudo install -d -m 700 /etc/cairn
+sudo install -m 600 /opt/cairn/.env.example /etc/cairn/cairn.env
+sudo nano /etc/cairn/cairn.env          # the token and STARKNET_RPC_URLS; leave CAIRN_DATA unset
+sudo install -d -o cairn -g cairn -m 700 /var/lib/cairn
+sudo systemd-run --wait --pipe --quiet -p User=cairn -p EnvironmentFile=/etc/cairn/cairn.env \
+  -E CAIRN_DATA=/var/lib/cairn /usr/bin/node /opt/cairn/cairn.mjs doctor
+sudo cp /opt/cairn/deploy/cairn.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now cairn
+journalctl -u cairn -f
+```
+
+The unit, [`deploy/cairn.service`](deploy/cairn.service), runs Cairn as `cairn` with state in
+`/var/lib/cairn`, a read-only view of the rest of the system, and restarts it after a crash, but not after
+exit 2 (a configuration error) or 3 (a rejected token), which restarting cannot fix. For `/healthz`, add
+`CAIRN_HTTP_PORT=8080` to `/etc/cairn/cairn.env`: it listens on 127.0.0.1 unless `CAIRN_HTTP_HOST` says otherwise.
+
+### 4. Check it
+
+- **Health:** `curl -s http://127.0.0.1:8080/healthz` answers `200 {"ok":true,"head":17024011,"lag_s":0,…}`:
+  `head` is the latest block, `lag_s` the chain seconds between it and the last block scanned (how late alerts
+  are). Otherwise `503 {"ok":false,"reason":…}`: `rpc` when every endpoint fails, `telegram` when Telegram
+  cannot be reached, `stalled` when no new block came for `CAIRN_STALL_SECONDS`. Both answers add `cursor`,
+  `unchanged_s` (seconds since the head last changed) and `endpoint`/`endpoints` (which one is in use).
+- **Metrics:** `curl -s http://127.0.0.1:8080/metrics` is Prometheus text: `cairn_head_block`,
+  `cairn_cursor_block`, `cairn_lag_seconds`, `cairn_head_unchanged_seconds`, `cairn_healthy`,
+  `cairn_updates_total`, `cairn_messages_sent_total`, `cairn_alerts_total`, `cairn_pending_alerts`,
+  `cairn_rpc_requests_total{endpoint}`, `cairn_rpc_errors_total{endpoint}`, `cairn_rpc_endpoint`,
+  `cairn_telegram_errors_total`, `cairn_reorgs_total`, `cairn_corrections_total` and
+  `cairn_guard_deletions_total{guard}`. Scrape it with `- targets: ['127.0.0.1:8080']`;
+  [`deploy/prometheus-rules.yml`](deploy/prometheus-rules.yml) alerts when Cairn is down or unhealthy for 5
+  minutes, when alerts fall 10 minutes behind, when an endpoint keeps failing and when deliveries pile up.
+  Nothing else is served: other paths are 404, other methods 405.
+- **In Telegram:** send `/start` and `/status` to the bot (`/status` names the endpoint in use when there are
+  several), then `/network on` in your group. `/export` in a private chat shows your chat id: set it as
+  `CAIRN_OPERATOR_CHAT` and apply it (`docker rm -f cairn`, then the `docker run` above: `docker restart`
+  keeps the old settings; or `sudo systemctl restart cairn`), and Cairn tells you, and only you, when every
+  endpoint fails and when one answers again.
+- **Failover:** break the first endpoint (a wrong key in its URL, say) and apply it the same way: `/healthz`
+  stays 200, the logs say `{"level":"warn","event":"rpc endpoint","using":"endpoint 2 of 2"}`, and
+  `cairn_rpc_endpoint` is 2.
+
+### 5. Stop, upgrade, back up
+
+- **Stop:** `docker stop cairn` or `sudo systemctl stop cairn` sends SIGTERM: Cairn ends its long poll and
+  exits 0 within 3 s. It resumes where it stopped: an update is never handled twice, and alerts pending at the
+  stop are sent after the restart. After more than `CAIRN_MAX_GAP` blocks (50,000, about a day) away, it skips
+  to the head and says so in each chat concerned rather than flooding them with day-old alerts.
+- **Upgrade:** `git pull`, then `docker build -t cairn . && docker rm -f cairn` and the `docker run` above
+  (or `sudo systemctl restart cairn`). The state file migrates in place, in one transaction.
+- **Back up:** stop Cairn and copy `state.db` from the volume (`docker run --rm -v cairn-data:/data -v
+  "$PWD":/backup alpine cp /data/state.db /backup/`) or from `/var/lib/cairn`. One process per bot token and
+  per data directory: a second one exits 1.
+- **Logs** are one JSON object per line on standard error (`CAIRN_LOG=debug` for more): never the token, an
+  RPC URL or message text. Exit codes: 0 stopped, 1 Telegram unreachable at start (for `doctor`, an endpoint
+  too) or another instance running, 2 configuration or endpoints on different chains, 3 a token Telegram
+  rejected.
+- **The blocklist** is `blocklist/domains.txt`, or your own file in `CAIRN_BLOCKLIST`: one domain per line
+  (subdomains are covered; `#` starts a comment; `*.domain`, `.domain` and hosts-file lines such as
+  `0.0.0.0 domain` work too). Edit it while Cairn runs: it reloads the file on its next pass.
+
+## Run it
+
+To try it on your own machine: Node.js 24 or later, nothing else (Cairn has no dependencies). Create a bot
+with [@BotFather](https://t.me/BotFather), then:
+
+```sh
+git clone https://github.com/0xNad/cairn && cd cairn
+cp .env.example .env                    # put your bot token and an RPC URL in it
+node --env-file=.env cairn.mjs doctor   # checks the token, each endpoint's chain, spec and event filter
+node --env-file=.env cairn.mjs run
+```
+
+To keep it running, [deploy it](#deploy-it). `doctor` prints one JSON line with the bot username, decoded
+chain, block number, RPC version and `events` (whether the endpoint serves the event filter), and with
+`STARKNET_RPC_URLS` the same for each endpoint.
 `tick` does one pass and prints `{"updates":n,"sent":n,"head":n,"alerts":n,"cursor":n}`: `alerts` counts the
 alerts Telegram accepted, `cursor` is the last block scanned (a busy node gives `head: null`). `run` makes a
 pass every `CAIRN_POLL_MS` and long-polls Telegram in between; SIGINT and SIGTERM cancel polling, RPC calls
@@ -246,7 +429,9 @@ configuration or an incompatible chain/spec, and 3 for a rejected Telegram token
 | `/min <token> <amount>` | administrators | Skips watch alerts below the amount on that token (`0` removes it) |
 | `/mute 0x…`, `/unmute 0x…` | administrators | Silences one token in the chat, by contract address |
 | `/track 0x…` | administrators | One message on L2 acceptance (execution and fee), one on L1 acceptance or a revert with its reason; "not found" after 600 s of chain time (10 per chat) |
-| `/export` | administrators | Everything stored for the chat, as JSON: `chat_id`, `watches` (each with the tokens `seen` moving for it), `whales`, `minimums`, `tracks` and `muted`, then `feed`, `chat` (type, paused), `buttons` (pasted values, kept a day) and `deliveries` (its delivery records, counted by state); a subscription set up in a forum topic shows its `thread_id` |
+| `/network on\|off` | administrators (anyone reads `/network`) | A stall alert when no new block comes for `CAIRN_STALL_SECONDS` (120 s), and one recovery alert with its length when blocks resume; posted in the topic it was set up in |
+| `/guard seed\|links on\|off` | administrators (anyone reads `/guard`) | The guards, both on by default: delete messages holding a seed phrase or a link to a blocklisted domain, with a warning; bare, `/guard` also says whether Cairn has the Delete messages right |
+| `/export` | administrators | Everything stored for the chat, as JSON: `chat_id`, `watches` (each with the tokens `seen` moving for it), `whales`, `minimums`, `tracks` and `muted`, then `feed`, `network`, `guards`, `chat` (type, paused), `buttons` (pasted values, kept a day) and `deliveries` (its delivery records, counted by state); a subscription set up in a forum topic shows its `thread_id` |
 | `/forget` | administrators | Deletes everything stored for the chat |
 
 A `name.stark` works wherever an address does: `/watch ben.stark`, `/balance ben.stark`, `/unwatch ben.stark`.
@@ -260,7 +445,11 @@ minute has passed.
 
 All environment settings, bounds and defaults are in [ARCHITECTURE.md](ARCHITECTURE.md#the-environment).
 Round 2 adds `CAIRN_MAX_BLOCKS` (blocks scanned per pass, default 500) and `CAIRN_MAX_WATCHES`. Round 3 adds
-`CAIRN_PRICE_MAX_AGE` (seconds of chain time before a price is stale, default 900, 1 to 31,536,000). For
+`CAIRN_PRICE_MAX_AGE` (seconds of chain time before a price is stale, default 900, 1 to 31,536,000). Round 4
+adds `STARKNET_RPC_URLS` (up to 10 failover endpoints), `CAIRN_CONFIRMATIONS` (0 to 100, default 0),
+`CAIRN_STALL_SECONDS` (at least 2, default 120), `CAIRN_REORG_DEPTH` (1 to 1000, default 64), `CAIRN_MAX_GAP`
+(default 50,000 blocks), `CAIRN_OPERATOR_CHAT`, `CAIRN_HTTP_PORT` (0 to 65535, 0 picks a free port; off when
+unset), `CAIRN_HTTP_HOST` (default 127.0.0.1) and `CAIRN_BLOCKLIST`; each one is checked before any call. For
 Sepolia set both `CAIRN_CHAIN=SN_SEPOLIA` and `CAIRN_EXPLORER_URL=https://sepolia.voyager.online`. Do not pass
 credentials in command arguments. The explorer is used only for links. Redirects from either configured
 endpoint are refused.
@@ -346,9 +535,11 @@ error (an unknown pair, a past block it no longer serves) leaves that value out,
 starknetid.js) and resolved with `domain_to_address`; 0x0 is an unknown name and is refused, and so are
 subdomains, upper case, other characters and labels too long to exist. An address is shown by its reverse
 name only when `address_to_domain` gives one and `domain_to_address` of the same labels gives that same
-address back; that forward check runs again in every pass that shows the name. Reverse answers, "no name"
-included, are kept a day of chain time; any failure shows the short address. A chat's own label wins over a
-name, and the network file's contracts read by their role ("Ekubo Core", "AVNU exchange").
+address back; that forward check runs again in every pass that shows the name. A reverse name is kept a day
+of chain time, and "no name" (none, or one that does not resolve back) an hour, so an address that sets or
+fixes its name shows it within the hour; any failure shows the short address. `/balance 0x…` shows the
+address's verified name too. A chat's own label wins over a name, and the network file's contracts read by
+their role ("Ekubo Core", "AVNU exchange").
 
 ### Groups, topics and bursts
 
@@ -367,6 +558,86 @@ it moves there, and the reply says so. A reply in an ordinary group, or in a cha
 thread too, and is not taken for a topic. If Telegram says the topic is gone, the alert goes to the group's
 main thread instead.
 
+### Network alerts, reorgs and failover
+
+**Stalls.** After each head read, Cairn notes the highest block it has seen and the wall-clock time it first
+saw it, in `CAIRN_DATA`, so the clock survives restarts; block timestamps play no part. When that block stays
+the head for `CAIRN_STALL_SECONDS`, every chat with `/network on` gets one stall alert, in the topic it was
+set up in (a chat that turns alerts on during a stall gets it too), and when a higher block arrives, each chat
+that got it gets one recovery alert with the stall's length. With several endpoints, a head that stopped moving
+is first checked against the others: if one is ahead, the endpoint that fell behind is set aside for ten minutes
+and nobody is alerted, since the chain was fine. A stall alert still unsent when blocks resume (a group over its
+budget, Telegram down) is dropped rather than sent late, and needs no recovery.
+
+**Outages.** When every endpoint fails (each one tried up to 3 times with backoff), only `CAIRN_OPERATOR_CHAT`
+is told, once per outage, and once more when an endpoint answers again, with the outage's length. Subscribers
+hear nothing: the chain may be fine. The cursor waits, so no alert is lost; `/healthz` says `rpc`.
+
+**Reorgs.** Cairn keeps the hash and time of the block each pass scanned up to, for the last
+`CAIRN_REORG_DEPTH` blocks (table `blocks`). Before each scan it compares the node's hash of the cursor block
+with the kept one: one header read per pass, none when the cursor is the head just read. Each block commits
+to its parent, so an unchanged cursor block means nothing below it changed. When it differs, Cairn walks back
+through the kept hashes, newest first and never deeper than `CAIRN_REORG_DEPTH`, to the newest block the node
+still has (the common ancestor), then works with round 2's ledger:
+
+1. Each alert or trade post about a block after the ancestor is checked against the node
+   (`starknet_getTransactionStatus`; with several endpoints, against each one, so that an endpoint still on
+   the old fork never causes a false correction). A transaction no endpoint finds gets **one correction, as a
+   reply to the alert** (`reply_parameters` with the stored `message_id`), and its ledger row is marked
+   `corrected`, so that no later fork or restart corrects it twice. A summary that counted several such
+   transactions gets one correction listing them. An alert still pending (never sent) is dropped instead.
+2. A transaction the node still has gets nothing more: re-included in a replacement block, its key is already
+   in the ledger, so the rescan cannot send it twice; the ledger only notes its new block, for a later fork. One
+   the node knows but has put back in no block yet (its mempool) is checked again each pass: back in a block,
+   nothing more; gone, or not back within 10 minutes of chain time, it gets its correction then.
+3. The cursor moves back to the ancestor, and the same pass rescans the replacement blocks through the
+   scanner like any range: their new events are new keys, alerted once, in chain order.
+
+A fork deeper than `CAIRN_REORG_DEPTH` (no kept hash matches) rescans from that depth and no deeper, and tells
+`CAIRN_OPERATOR_CHAT` which blocks could not be checked; `CAIRN_REORG_DEPTH=1000` widens the window.
+
+**Confirmations.** `CAIRN_CONFIRMATIONS=n` scans only blocks at least n deep: an alert waits until n blocks
+were built on top of its block, which makes a reorg correction rarer at the cost of n blocks of delay. On the
+first start the cursor is that safe block, so `tick`'s `cursor` is never ahead of it.
+
+**Gaps.** After a long downtime, more than `CAIRN_MAX_GAP` blocks behind (a gap of exactly `CAIRN_MAX_GAP` is
+still scanned), Cairn jumps to the safe head instead of catching up through day-old alerts, and every chat the
+gap concerns (network alerts on, or a feed, watch, whale alert or track) gets one notice naming the skipped
+blocks.
+
+**Failover.** `STARKNET_RPC_URLS` lists the endpoints, best first; they must all serve `CAIRN_CHAIN`. A call
+goes to the first endpoint that has not failed in the last minute, and an HTTP 429, a 5xx, a timeout, a broken
+answer or a JSON-RPC error of the endpoint itself (`-32xxx`) sends it on to the next one at once; each endpoint
+still gets up to 3 tries, with backoff of at least its `Retry-After`. A page of `starknet_getEvents` is read
+from the endpoint that issued its `continuation_token`: when that endpoint fails mid-range, the range restarts
+from its first page on the next one, so a token never reaches an endpoint that did not issue it.
+
+### Guards
+
+Both guards are on in every chat until an administrator turns one off (`/guard seed off`, `/guard links off`);
+`/forget` brings a chat back to the defaults. A guarded message is deleted with `deleteMessage`, then the chat
+gets a warning, in the same forum topic, never as a reply (a reply's preview would quote the message). Edited
+messages are read too, so a link edited into an old message is caught. Without the right to delete (a group
+where Cairn is not an administrator with Delete messages), the warning says the message is still there and
+names the right Cairn needs. A flood gets one warning per chat and guard in each batch of updates; every message
+is still deleted.
+
+- **Seed phrases.** A message, or a caption, holding a run of 12 or more words of the BIP-39 English list
+  ([`wordlists/bip39-english.txt`](wordlists/bip39-english.txt), checked at start: 2048 words, MIT, see
+  [`wordlists/BIP39-NOTICE`](wordlists/BIP39-NOTICE)) is deleted: 12, 15, 18, 21 and 24 words all hold such a
+  run. Words are compared in lower case; numbers, bullets and punctuation between them (a numbered list, a
+  comma-separated paste) neither count nor break a run, and any other word breaks it, so 11 words, or two runs
+  of 6 around another word, stay. In 100 KB of this repository's prose the longest run is 7 words. The words are
+  never stored or logged (logs say `{"event":"guard","guard":"seed","deleted":true}`), and the warning is built
+  from words outside the list: it cannot repeat one.
+- **Links.** Every link of a message is read: URLs with any scheme, hosts written without one
+  (`starknet-bot.com/claim`), the hidden targets of text links, Telegram's link entities and a bot message's URL
+  buttons. Hosts are parsed the way a browser parses them, lower case and punycode, so `HTTP://STARKNET-BOT.COM`
+  matches and `starknet-bot.com@safe.example` (whose host is `safe.example`), `safe.example/starknet-bot.com`,
+  `starknet-bot.com.safe.example` and `safestarknet-bot.com` do not. A host matches when it is a listed domain or
+  sits under one (`claim.starknet-bot.com`). The warning names the domain defanged (`starknet-bot[.]com`) so that
+  it is not a link again.
+
 ### Choices where the brief is silent
 
 - Without `buys` or `all`, a feed posts buys only. The floor and the side can come in either order.
@@ -375,10 +646,23 @@ main thread instead.
 - The new-holder flag is for buys only (see above), and the trader's name is checked once per pass.
 - An AVNU route's intermediate tokens net to zero (see above). The cost, rare: a multicall that both routes a
   token through AVNU and trades it directly on Ekubo shows no trade of that token.
-- The size bar counts half-decades of USD value; without a USD value it counts multiples of the floor.
+- The size bar counts decades of USD value, five dots at most; without a USD value it counts multiples of the floor.
 - A summary posts into the topic most of its alerts came from.
 - In a burst, the two alerts sent in full are the weightiest (above), not the first two.
 - `/list` shows labels and short addresses, not names: it answers at once, with no chain call.
+- A stall is measured from the first time Cairn saw the head, on the wall clock, and only a higher block ends it:
+  a reorg that replaces the head at the same height, or a failover to an endpoint a block behind, is no progress.
+- With several endpoints, a head that stopped moving is checked against the others before anyone is alerted.
+- Network alerts go to the chats with `/network on`; a skipped gap also tells the chats whose alerts it skipped.
+  RPC outages and reorgs deeper than `CAIRN_REORG_DEPTH` go to `CAIRN_OPERATOR_CHAT` only.
+- A correction replies to the alert it corrects; a transaction back in the mempool gets 10 minutes of chain
+  time to be included again before its correction.
+- `lag_s` in `/healthz` is the chain time between the head and the last block scanned: 0 while Cairn keeps up.
+- `/healthz` reports `rpc` before `telegram` before `stalled` when several are true.
+- A seed phrase is any run of 12 or more list words, so a phrase with a list word before or after it is still
+  caught; the checksum is not required, since a mistyped phrase still gives most of a wallet away.
+- The guards also read edited messages and captions; in groups they need Cairn to be an administrator.
+- `CAIRN_BLOCKLIST` replaces the starter list rather than adding to it; it is reloaded when the file changes.
 
 ### State and delivery
 
@@ -390,6 +674,10 @@ a second owner of the same data directory using a separate SQLite exclusive tran
 after a kill. State and lock files reject symbolic links and hard links. Corrupt state is refused, never reset.
 Round 3 adds the feeds, the name cache, a forum topic per subscription and per alert, and each pending
 alert's digest for summaries: a round 2 `state.db` gains them in place, in one transaction, on first start.
+Round 4 adds the chats with network alerts (`network`), each chat's guard switches when not the defaults
+(`guards`), the hash and time of recent blocks scanned (`blocks`), the head first seen and the current stall
+and outage (in `meta`), and on each delivery the message a correction replies to (`reply_to`) and when its
+transaction left every block (`doubt_since`); a round 2 or 3 `state.db` gains them the same way.
 
 **Commands.** Each update's change and its offset are saved in one transaction **before** the reply is sent:
 a kill can lose a reply, never replay an accepted one.
@@ -421,13 +709,23 @@ Any other refusal drops that one alert with a warning in the logs.
 | `/feed`, `/price` or a name says it is off | The network file lacks that contract (`contracts.ekubo_core` and `contracts.avnu_exchange`, `contracts.pragma`, `contracts.naming`). |
 | Posts and alerts show no USD value | `/price` shows why: no pair for the token, no price, or a price older than `CAIRN_PRICE_MAX_AGE`; unverified tokens never get one. |
 | A feed posts nothing | Check its floor in `/list`; a token that only passes through AVNU routes, or trades in round trips, nets to zero. |
+| Exit 2 naming an endpoint and another chain | Every URL of `STARKNET_RPC_URLS` must serve `CAIRN_CHAIN`; `doctor` prints each one's chain. |
+| `/healthz` says `rpc` | Every endpoint fails: check their keys and limits (`cairn_rpc_errors_total{endpoint}` says which); alerts wait in the ledger. |
+| `/healthz` says `telegram` | Telegram cannot be reached from the host (DNS, firewall, proxy); Cairn retries, from 1 s up to every 30 s. |
+| `/healthz` says `stalled` | No new block for `CAIRN_STALL_SECONDS`: check the explorer; with several endpoints, all of them are stuck. |
+| A seed phrase or a listed link stays up in a group | `/guard` says whether the guard is on and whether Cairn is an administrator with the Delete messages right. |
+| A correction after a reorg | The alert's transaction is no longer on chain; `CAIRN_CONFIRMATIONS` trades delay for fewer of them. |
 
 ### Checks
 
 ```sh
-npm run check   # rounds 1 to 3: node .launchpad/checks/round-<n>/run.mjs
-npm test        # node --test test/*.test.mjs
+npm run check       # rounds 1 to 4: node .launchpad/checks/round-<n>/run.mjs
+npm test            # node --test test/*.test.mjs
+npm run transcript  # round 4's network, reorg and guard scenarios, on the checks' fakes, printed as a chat
 ```
+
+Without Node.js 24 on the machine, the same through Docker:
+`docker run --rm -v "$PWD":/app -w /app node:24-alpine node scripts/transcript.mjs`.
 
 The published checks use local fake Telegram and Starknet services and exercise the CLI as child
 processes, including kills, retries, strict host limits and credential scans. The unit tests cover
@@ -437,7 +735,11 @@ paging and restarts, the ledger, `/forget` leaving no bytes behind, rate limits 
 round 3, every name vector of ARCHITECTURE.md and the names refused, both venue layouts, the netting rules on
 the fixtures and on a recorded mainnet AVNU route, the trader rule and the fee, both Pragma layouts, exact
 USD rounding, the size bar, the group budget and its summary, one feed per chat, the round 2 to 3 state
-migration and the network file's new keys. They use Node built-ins only.
+migration and the network file's new keys; from round 4, the seed-phrase runs (numbered lists, interruptions,
+case) and warnings free of list words, link hosts against userinfo, paths and look-alikes, the blocklist file
+format, failover order and `Retry-After`, endpoint errors, pinned continuation pages, the stall, recovery and
+outage notices, corrections and the reorg verdicts, the gap and the health and metrics answers. They use Node
+built-ins only.
 
 ## Build it with your agent
 

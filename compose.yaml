@@ -1,0 +1,19 @@
+# docker compose up -d   (reads the settings from .env, next to this file: copy .env.example and fill it in)
+services:
+  cairn:
+    build: .
+    image: cairn
+    env_file: .env
+    environment:
+      CAIRN_DATA: /data
+    volumes:
+      - cairn-data:/data
+    ports:
+      - "127.0.0.1:8080:8080"
+    restart: unless-stopped
+    stop_grace_period: 10s
+    logging:
+      driver: json-file
+      options: { max-size: 10m, max-file: "3" }
+volumes:
+  cairn-data:
