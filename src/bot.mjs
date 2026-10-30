@@ -1,6 +1,6 @@
 import { performance } from 'node:perf_hooks';
 import { walletAlerts } from './alerts.mjs';
-import { callback, COMMANDS, parseCommand, parsePaste, respond } from './commands.mjs';
+import { callback, commandsFor, parseCommand, parsePaste, respond } from './commands.mjs';
 import { CairnError, log, NodeBusy, RpcError, TelegramDown, TelegramRefused } from './errors.mjs';
 import { decodeChain, hex64, NodeValueError } from './felt.mjs';
 import { links, messages, redactor, textLines } from './format.mjs';
@@ -110,9 +110,9 @@ export async function serve(config, signal) {
   const store = new Store(config.data);
   try {
     if (config.mode === 'run') await tg.call('deleteWebhook', { drop_pending_updates: false });
-    const commandList = JSON.stringify(COMMANDS);
+    const commands = commandsFor(config), commandList = JSON.stringify(commands);
     if (store.get('commands') !== commandList) {
-      await tg.call('setMyCommands', { commands: COMMANDS });
+      await tg.call('setMyCommands', { commands });
       store.transaction(() => store.set('commands', commandList));
     }
     const bot = new Bot({ config, store, rpc, tg, clean, username, me, signal });

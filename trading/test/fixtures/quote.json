@@ -1,0 +1,93 @@
+[
+  {
+    "quoteId": "1a0ffa0f-f358-4c76-9752-b5fec25a42ab",
+    "sellTokenAddress": "0x49d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7",
+    "sellAmount": "0x38d7ea4c68000",
+    "sellAmountInUsd": 2.23299,
+    "buyTokenAddress": "0x4718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d",
+    "buyAmount": "0x2b627d4058da1a000",
+    "buyAmountInUsd": 2.239033,
+    "fee": {
+      "feeToken": "0x4718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d",
+      "avnuFees": "0xe8d4a51000",
+      "avnuFeesInUsd": 0.0,
+      "avnuFeesBps": "0xa",
+      "integratorFees": "0x0",
+      "integratorFeesInUsd": 0.0,
+      "integratorFeesBps": "0x0"
+    },
+    "chainId": "0x534e5f4d41494e",
+    "blockNumber": "0x1061cc0",
+    "expiry": null,
+    "routes": [
+      {
+        "name": "Ekubo",
+        "address": "0x5dd3d2f4429af886cd1a3b08289dbcea99a294197e9eb43b0e0325b4b",
+        "percent": 1.0,
+        "sellTokenAddress": "0x49d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7",
+        "buyTokenAddress": "0x787150e306e6eae6e3f79dea881770e8bbff2c1b8eb490f969669ee945b3135",
+        "routeInfo": {
+          "poolAddress": "0x55b5f9772697ad743ec6729541afa517c349097d1cced3abf77fa2e7307d8b9",
+          "token0": "0x49d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7",
+          "token1": "0x787150e306e6eae6e3f79dea881770e8bbff2c1b8eb490f969669ee945b3135",
+          "fee": "0x20c49ba5e353f80000000000000000",
+          "tickSpacing": "0x3e8",
+          "extension": "0x0"
+        },
+        "routes": [
+          {
+            "name": "Ekubo",
+            "address": "0x5dd3d2f4429af886cd1a3b08289dbcea99a294197e9eb43b0e0325b4b",
+            "percent": 1.0,
+            "sellTokenAddress": "0x787150e306e6eae6e3f79dea881770e8bbff2c1b8eb490f969669ee945b3135",
+            "buyTokenAddress": "0x3fe2b97c1fd336e750087d68b9b867997fd64a2661ff3ca5a7c771641e8e7ac",
+            "routeInfo": {
+              "poolAddress": "0x144aeb3f417951bba73dd04b237f72d611d1b2e124fdf590528f57c704990ff",
+              "token0": "0x3fe2b97c1fd336e750087d68b9b867997fd64a2661ff3ca5a7c771641e8e7ac",
+              "token1": "0x787150e306e6eae6e3f79dea881770e8bbff2c1b8eb490f969669ee945b3135",
+              "fee": "0x68db8bac710cb4000000000000000",
+              "tickSpacing": "0xc8",
+              "extension": "0x0"
+            },
+            "routes": [
+              {
+                "name": "JediSwap",
+                "address": "0x41fd22b238fa21cfcf5dd45a8548974d8263b3a531a60388411c5e230f97023",
+                "percent": 1.0,
+                "sellTokenAddress": "0x3fe2b97c1fd336e750087d68b9b867997fd64a2661ff3ca5a7c771641e8e7ac",
+                "buyTokenAddress": "0x53c91253bc9682c04929ca02ed00b3e423f6710d2ee7e0d5ebb06f3ecf368a8",
+                "routeInfo": {
+                  "poolAddress": "0x5a8054e5ca0b277b295a830e53bd71a6a6943b42d0dbb22329437522bc80c8"
+                },
+                "routes": [
+                  {
+                    "name": "JediSwap",
+                    "address": "0x41fd22b238fa21cfcf5dd45a8548974d8263b3a531a60388411c5e230f97023",
+                    "percent": 1.0,
+                    "sellTokenAddress": "0x53c91253bc9682c04929ca02ed00b3e423f6710d2ee7e0d5ebb06f3ecf368a8",
+                    "buyTokenAddress": "0x4718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d",
+                    "routeInfo": {
+                      "poolAddress": "0x5726725e9507c3586cc0516449e2c74d9b201ab2747752bb0251aaa263c9a26"
+                    },
+                    "routes": [],
+                    "alternativeSwapCount": 0
+                  }
+                ],
+                "alternativeSwapCount": 0
+              }
+            ],
+            "alternativeSwapCount": 0
+          }
+        ],
+        "alternativeSwapCount": 0
+      }
+    ],
+    "gasFees": "0x98e080cf0574a80",
+    "gasFeesInUsd": 0.03082,
+    "priceImpact": 27.062369289607886,
+    "sellTokenPriceInUsd": 2239.033,
+    "buyTokenPriceInUsd": 0.04464267634067921,
+    "exactTokenTo": false,
+    "estimatedSlippage": 0.0029999999999999996
+  }
+]

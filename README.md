@@ -10,13 +10,19 @@ when the chain itself misbehaves (a stall, a reorg, a dead RPC endpoint), correc
 reorg, deletes seed phrases and phishing links before members get hurt, and runs unattended in Docker or under
 systemd, with failover endpoints, a health check and Prometheus metrics.
 
-It only reads the chain. It holds no keys, signs nothing, never trades and has no Mini App. It runs as a
-single Node.js process with zero dependencies, on any Starknet RPC. It is MIT-licensed, so anyone can host it.
+The monitoring bot only reads the chain. It holds no keys, signs nothing and has no Mini App. It runs as a
+single Node.js process with zero dependencies, on any Starknet RPC. An optional [trading companion](trading/README.md)
+adds wallet-connected spot swaps on a separate website: your wallet approves and submits each trade.
+The project is MIT-licensed, so anyone can host it.
 
 **Use the hosted bot:** open [@Cairn_tgbot](https://t.me/Cairn_tgbot), press **Start**, then try `/status`,
 `/balance <wallet>` or `/watch <wallet>`. For a project group, add it and run `/feed STRK $100 all` as an
 administrator. Give it the Delete messages right to enable the member guards. `/help` lists the commands;
 `/list` shows your subscriptions and `/forget` removes your chat's saved data.
+
+**Trade with your wallet:** [Cairn trading](https://cairn-trading.vercel.app). Use `/trade` in the bot, or
+`/buy STRK 100 USDC` to prefill spending 100 USDC for STRK. Review the quote and approve in your wallet.
+The companion is available for live owner testing; an actual wallet-signed trade is not claimed by the automated checks.
 
 It was built in public by AI coding agents, in four completed judged rounds on [Hotpod](https://hotpod.io/p/cairn).
 
@@ -215,12 +221,12 @@ Every historical brief and rubric is in [`.launchpad/project.md`](.launchpad/pro
 - **Want to host an instance?** [Deploy it](#deploy-it) with Docker or systemd: a BotFather token, two RPC
   URLs and ten minutes.
 
-## Safe by design
+## Monitoring bot safety and privacy
 
 - **Read-only.** Cairn never calls a write method. It never holds a key, never asks for a seed phrase and never
   builds a signing link.
-- **No custody, no trading, no Mini App.** Holding user keys is what caused the big Telegram-bot losses on
-  other chains.
+- **No custody or Mini App.** The bot never executes a trade. When configured, `/trade`, `/buy` and `/sell`
+  open the companion website, where the user's wallet reviews, signs and submits. See its separate [security and operating contract](trading/README.md).
 - **Only the hosts you configure.** It talks to Telegram and your RPC endpoints, and nothing else: no
   telemetry, no price API, no fallback you did not list. Prices come from the Pragma oracle contract and names
   from the Starknet ID contract, read through your RPC. The blocklist is a local file, never fetched.
@@ -235,11 +241,14 @@ Every historical brief and rubric is in [`.launchpad/project.md`](.launchpad/pro
   person's rate-limit entry too.
 - **Groups are run by their administrators.** Members can look things up and read `/list`; only an
   administrator can change what the group watches, and every button press is checked again.
-- **Facts, not advice.** No rankings, no trending lists, no buy buttons.
+- **Facts, not advice.** Monitoring has no rankings or trending lists. Trading is a separate explicit wallet action.
 
 ## FAQ
 
-**Is it a trading bot?** No. It reads the chain and tells you what happened.
+**Can I buy or sell?** The optional [trading companion](trading/README.md) supports exact-input Starknet swaps
+with your own wallet. The Telegram bot opens ordinary links; it never holds keys or sends a chain transaction.
+Set `CAIRN_TRADING_URL` to your hosted HTTPS companion to enable `/trade`, `/buy STRK 100 USDC` and `/sell STRK 100 USDC`.
+The four original competition rounds remain read-only and unchanged; trading is a later extension.
 
 **Which tokens?** Every ERC-20 on Starknet, in both event layouts. The registry (STRK, ETH, USDC, USDC.e,
 USDT and WBTC on mainnet) is the list of verified tokens: their symbols are trusted, and `/balance` lists
