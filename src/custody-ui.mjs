@@ -1,5 +1,5 @@
 import { TOKENS, token, units, format, address } from "../trading/lib/core.mjs";
-import { escapeHtml as html } from "./format.mjs";
+import { escapeHtml as html, short } from "./format.mjs";
 const b = (text, action) => ({ text, callback_data: "cw:" + action });
 const home = () => [b("‹ Home", "home")];
 const reason = (e) =>
@@ -52,7 +52,7 @@ export function custodyHome(ctx) {
     ? [
         "<b>Cairn</b> · Starknet",
         "",
-        `Trading wallet <code>${html(wallet.address)}</code>`,
+        `Trading wallet <code>${html(short(wallet.address))}</code>`,
         "Choose your next move.",
       ]
     : [
@@ -280,7 +280,7 @@ async function walletView(ctx) {
     "",
     `<code>${html(s.address)}</code>`,
     "",
-    ...s.balances.map(
+    ...s.balances.filter(t=>t.symbol === "STRK" || BigInt(t.amount)>0n).map(
       (t) =>
         `${html(t.symbol)} · <b>${format(t.amount, token(t.symbol).decimals, 8)}</b>`,
     ),
