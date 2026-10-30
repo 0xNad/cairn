@@ -13,8 +13,12 @@ systemd, with failover endpoints, a health check and Prometheus metrics.
 It only reads the chain. It holds no keys, signs nothing, never trades and has no Mini App. It runs as a
 single Node.js process with zero dependencies, on any Starknet RPC. It is MIT-licensed, so anyone can host it.
 
-It is built in public by AI coding agents, in four judged rounds on
-[Hotpod](https://agent-launchpad-six.vercel.app).
+**Use the hosted bot:** open [@Cairn_tgbot](https://t.me/Cairn_tgbot), press **Start**, then try `/status`,
+`/balance <wallet>` or `/watch <wallet>`. For a project group, add it and run `/feed STRK $100 all` as an
+administrator. Give it the Delete messages right to enable the member guards. `/help` lists the commands;
+`/list` shows your subscriptions and `/forget` removes your chat's saved data.
+
+It was built in public by AI coding agents, in four completed judged rounds on [Hotpod](https://hotpod.io/p/cairn).
 
 > **Status:** all four rounds are implemented: lookups; wallet alerts on every token, whale alerts, floors,
 > mutes, `/track`, buttons, `/export` and `/forget`; trade feeds from Ekubo and AVNU, `/price`, USD values,
@@ -196,8 +200,10 @@ On Hotpod, every agent builds the same round, starting from the previous round's
 - **Judging.** Entries are revealed and judges rank them.
 - **Next round.** The winner is merged, and it becomes the base everyone builds the next round from.
 
-Connect your coding agent on [Hotpod](https://agent-launchpad-six.vercel.app). Every brief and rubric is in
-[`.launchpad/project.md`](.launchpad/project.md).
+The four rounds are closed and their winners are merged into `main`: [#4](https://github.com/0xNad/cairn/pull/4),
+[#13](https://github.com/0xNad/cairn/pull/13), [#16](https://github.com/0xNad/cairn/pull/16) and
+[#21](https://github.com/0xNad/cairn/pull/21). Further improvements use ordinary issues and pull requests.
+Every historical brief and rubric is in [`.launchpad/project.md`](.launchpad/project.md).
 
 ## For Starknet communities
 
@@ -344,6 +350,27 @@ The unit, [`deploy/cairn.service`](deploy/cairn.service), runs Cairn as `cairn` 
 `/var/lib/cairn`, a read-only view of the rest of the system, and restarts it after a crash, but not after
 exit 2 (a configuration error) or 3 (a rejected token), which restarting cannot fix. For `/healthz`, add
 `CAIRN_HTTP_PORT=8080` to `/etc/cairn/cairn.env`: it listens on 127.0.0.1 unless `CAIRN_HTTP_HOST` says otherwise.
+
+### 3c. Or host it on a Mac
+
+An always-on Mac with Node.js 24 and Python 3 can run Cairn under the current user's `launchd` session:
+
+```sh
+mkdir -p ~/.config/cairn
+cp .env.example ~/.config/cairn/cairn.env
+chmod 700 ~/.config/cairn && chmod 600 ~/.config/cairn/cairn.env
+# Edit the private env file: the token, two RPC URLs, an absolute CAIRN_DATA path,
+# and CAIRN_HTTP_PORT=8486 for local health checks.
+python3 deploy/install-macos.py --node "$(command -v node)"
+curl --fail http://127.0.0.1:8486/healthz
+```
+
+The installer creates `~/Library/LaunchAgents/com.cairn.bot.plist`. It starts now and on user login,
+restarts after a crash and keeps the token out of the service arguments. Configuration and token errors
+stop rather than loop. Logs in `~/Library/Logs/Cairn` rotate at 5 MiB (one previous file each).
+Keep the Mac awake and the user session signed in; this is a user service, not a pre-login system daemon.
+After upgrading, rerun the installer. To stop it:
+`launchctl bootout gui/$(id -u)/com.cairn.bot`.
 
 ### 4. Check it
 
@@ -573,8 +600,10 @@ budget, Telegram down) is dropped rather than sent late, and needs no recovery.
 is told, once per outage, and once more when an endpoint answers again, with the outage's length. Subscribers
 hear nothing: the chain may be fine. The cursor waits, so no alert is lost; `/healthz` says `rpc`.
 
-**Reorgs.** Cairn keeps the hash and time of the block each pass scanned up to, for the last
-`CAIRN_REORG_DEPTH` blocks (table `blocks`). Before each scan it compares the node's hash of the cursor block
+**Reorgs.** Cairn keeps the hash and time of every block in the last
+`CAIRN_REORG_DEPTH` blocks scanned (table `blocks`), including after a wide catch-up scan. Missing headers
+are read before the scan commits; a failed header leaves the cursor and deliveries unchanged.
+Before each scan it compares the node's hash of the cursor block
 with the kept one: one header read per pass, none when the cursor is the head just read. Each block commits
 to its parent, so an unchanged cursor block means nothing below it changed. When it differs, Cairn walks back
 through the kept hashes, newest first and never deeper than `CAIRN_REORG_DEPTH`, to the newest block the node
@@ -650,8 +679,8 @@ is still deleted.
 - A summary posts into the topic most of its alerts came from.
 - In a burst, the two alerts sent in full are the weightiest (above), not the first two.
 - `/list` shows labels and short addresses, not names: it answers at once, with no chain call.
-- A stall is measured from the first time Cairn saw the head, on the wall clock, and only a higher block ends it:
-  a reorg that replaces the head at the same height, or a failover to an endpoint a block behind, is no progress.
+- A stall is measured from the first time Cairn saw the head hash, on the wall clock. A higher block or a
+  replacement hash at the same height resets that clock; a lagging failover endpoint does not reset it.
 - With several endpoints, a head that stopped moving is checked against the others before anyone is alerted.
 - Network alerts go to the chats with `/network on`; a skipped gap also tells the chats whose alerts it skipped.
   RPC outages and reorgs deeper than `CAIRN_REORG_DEPTH` go to `CAIRN_OPERATOR_CHAT` only.
@@ -743,8 +772,8 @@ built-ins only.
 
 ## Build it with your agent
 
-Anyone can enter its rounds with their coding agent: give it this prompt.
+The planned competition is complete. To improve the application with your coding agent, use:
 
 ```text
-I want you to contribute to 0xNad/cairn on Hotpod. Download https://agent-launchpad-six.vercel.app/skill/SKILL.md with curl, read all of it, and follow it: install the launchpad CLI and the skill, use the key in ~/.launchpad/<agent>/env (if I have no Hotpod agent yet, ask me to create one on https://agent-launchpad-six.vercel.app/me/agents and to save its key with the commands it shows; never ask me for the key itself), find this repository's project with launchpad projects, and enter its open round following roles/build.md.
+Improve 0xNad/cairn from current main. Read ARCHITECTURE.md and README.md, preserve the read-only chain boundary, and never change the historical .launchpad/checks or publish credentials. Add focused regression tests, run npm test and npm run check in an isolated environment, and prepare a pull request. Do not enter or create another Hotpod round.
 ```

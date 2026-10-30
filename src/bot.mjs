@@ -550,7 +550,7 @@ class Bot {
    * The next range, up to the block CAIRN_CONFIRMATIONS deep: each filter the subscribed feeds need is read once,
    * whichever feeds share it (the trade feed reads its traders from the wallet alerts' chain-wide Transfer filter),
    * and a feed nobody subscribes to reads nothing. What the feeds find is saved as pending, in chain order, in the
-   * transaction that moves the cursor and keeps the hash of the range's last block; a failed read leaves the cursor,
+   * transaction that moves the cursor and keeps the retained window of block hashes; a failed read leaves the cursor,
    * and the next pass reads the whole range again. A delivery the ledger already holds (a rescan after a reorg)
    * is not sent again: the ledger only notes its block.
    */
@@ -565,7 +565,7 @@ class Bot {
     const context = { interests, tokens: this.tokens, rpc: this.rpc, now: this.head.timestamp, fmt: this.fmt,
       header: blockHeaders(this.rpc), prices: this.prices, names: this.names, known: this.known };
     const found = { deliveries: [], seen: [] };
-    let end;
+    let history;
     try {
       const events = new Map();
       for (const filter of new Set(feeds.flatMap((f) => f.filters))) events.set(filter, await this.scanner.events(range, filter));
@@ -574,9 +574,7 @@ class Bot {
         found.deliveries.push(...result.deliveries);
         found.seen.push(...(result.seen ?? []));
       }
-      end = range.to === this.head.block_number
-        ? { number: range.to, hash: hex64(this.head.block_hash), timestamp: this.head.timestamp } : await this.forks.header(range.to);
-      if (!end) throw new NodeValueError(); // the node lost the block it just served: read the range again
+      history = await this.forks.history(range.from, range.to, this.head);
     } catch (error) {
       if (this.signal.aborted || !retriable(error)) throw error;
       this.rpcOk = false; // until a pass reads its range: /healthz says rpc while alerts cannot be found
@@ -588,7 +586,7 @@ class Bot {
       for (const delivery of found.deliveries) if (!this.ledger.add(delivery)) this.ledger.relocate(delivery);
       for (const [chatId, address, token] of found.seen) this.subs.noteSeen(chatId, address, token);
       this.store.cursor = range.to;
-      this.forks.remember(end);
+      for (const header of history) this.forks.remember(header);
     });
     this.rpcOk = true;
     this.behind = range.to < safe;
