@@ -151,6 +151,11 @@ export class Subscriptions {
     return offer && now - offer.chain_time < OFFER_TTL ? offer : null;
   }
 
+  // A private, user-bound setup draft. Never a signing key or permission to submit.
+  tradeOf(chatId) { return this.#q("SELECT id, value FROM offers WHERE chat_id = ? AND kind = 'trade' ORDER BY id DESC LIMIT 1").get(chatId) ?? null; }
+  clearTrade(chatId) { this.#q("DELETE FROM offers WHERE chat_id = ? AND kind = 'trade'").run(chatId); }
+  saveTrade(chat, draft, now) { this.clearTrade(chat.id); return this.offer(chat, 'trade', JSON.stringify(draft), now); }
+
   // ---- the trade feed (round 3) --------------------------------------------------------------------------
 
   feedOf(chatId) { return this.#q(`SELECT ${FEED_COLUMNS} FROM feeds WHERE chat_id = ?`).get(chatId) ?? null; }
@@ -291,5 +296,5 @@ export class Subscriptions {
     return { watchers, whales, muted, floors, labels, feeds, empty: watchers.size === 0 && whales.size === 0 };
   }
   /** Drops buttons older than a day of chain time. */
-  prune(now) { this.#q('DELETE FROM offers WHERE chain_time < ?').run(now - OFFER_TTL); }
+  prune(now) { this.#q('DELETE FROM offers WHERE chain_time < ?').run(now - OFFER_TTL); this.#q("DELETE FROM offers WHERE kind = 'trade' AND chain_time < ?").run(Math.floor(Date.now()/1000) - 900); }
 }

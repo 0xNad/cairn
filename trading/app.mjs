@@ -3,6 +3,13 @@ import { createStore, StandardConnect, StandardDisconnect, StandardEvents, Stark
 import { CHAIN, TOKENS, address, felt, token, input, units, format, validateBundle } from './lib/core.mjs';
 
 const $ = id => document.getElementById(id), short = a => a.slice(0,7) + '…' + a.slice(-5);
+let expectedOwner = null;
+try { const p=new URLSearchParams(location.search); if(p.has('owner'))expectedOwner=address(p.get('owner')); } catch { /* Invalid link cannot authorize a wallet. */ }
+function showView(name) {
+  for(const view of ['trade','activity','help']) $('view-'+view).hidden=view!==name;
+  for(const tab of document.querySelectorAll('nav [data-view]')) { if(tab.dataset.view===name)tab.setAttribute('aria-current','page');else tab.removeAttribute('aria-current'); }
+}
+for(const tab of document.querySelectorAll('[data-view]'))tab.onclick=()=>showView(tab.dataset.view);
 const store = createStore({ eip1193Adapters: [] }); // Discover Starknet wallets; never auto-install a MetaMask Snap.
 let wallet = null, owner = null, walletOff = null, balances = new Map(), deployed = true, bundle = null, busy = false, signing = false, epoch = 0, timer = null, serviceReady = false;
 const KEY = 'cairn-trades-v1';
@@ -28,12 +35,13 @@ function button() {
 function invalidate(message) {
   epoch++; bundle = null; clearInterval(timer); timer = null;
   $('review').hidden = true; $('trade-form').hidden = false; $('receive-amount').textContent = '0.00';
-  $('sell-usd').textContent = 'Exact input'; $('buy-usd').textContent = 'Get a quote to see your route';
+  $('sell-usd').textContent = 'Exact input'; $('buy-usd').textContent = 'Quote after connecting';
   if (message) notice(message); button();
 }
 function balanceLabel() {
+  for(const side of ['sell','buy']) { const t=token($(side+'-token').value); $(side+'-mark').textContent=({STRK:'✦',ETH:'♦',USDC:'$', 'USDC.e':'$',USDT:'₮',WBTC:'₿'})[t.symbol]; $(side+'-mark').dataset.token=t.symbol; }
   const t = token($('sell-token').value), b = balances.get(t.symbol);
-  $('balance-label').textContent = !owner ? 'Connect to see balance' : b === null || b === undefined ? 'Balance unavailable' : `Balance: ${format(b,t.decimals,6)} ${t.symbol}`;
+  $('balance-label').textContent = !owner ? 'Balance —' : b === null || b === undefined ? 'Balance unavailable' : `Balance: ${format(b,t.decimals,6)} ${t.symbol}`;
 }
 async function loadAccount() {
   if (!owner) return; const who = owner;
@@ -56,7 +64,9 @@ async function connect(w) {
     const request = w.features[StarknetWalletApi].request;
     const chain = await request({type:'wallet_requestChainId'});
     if (felt(chain) !== CHAIN) throw new Error('Switch your wallet to Starknet mainnet, then connect again.');
-    walletOff?.(); wallet = w; owner = address(result.accounts[0].address); balances = new Map();
+    const nextOwner=address(result.accounts[0].address);
+    if(expectedOwner && nextOwner!==expectedOwner)throw new Error('Connect the wallet used for your Telegram quote: '+short(expectedOwner)+'.');
+    walletOff?.(); wallet = w; owner = nextOwner; balances = new Map();
     walletOff = w.features[StandardEvents].on('change', () => {
       if (signing) notice('Wallet changed during signing. Check the wallet and transaction result before another trade.','error');
       owner = null; wallet = null; balances = new Map(); $('connect').textContent = 'Connect wallet ↗'; invalidate('Wallet changed. Reconnect and get a fresh quote.'); balanceLabel();
@@ -84,13 +94,13 @@ try {
   const p = new URLSearchParams(location.search);
   for (const [param,id] of [['sell','sell-token'],['buy','buy-token']]) if (p.has(param)) $(id).value = token(p.get(param)).symbol;
   if (p.has('amount')) { units(p.get('amount'),token($('sell-token').value).decimals); $('amount').value = p.get('amount'); }
-  if (p.get('mode') === 'sell') { $('sell-tab').setAttribute('aria-selected','true'); $('buy-tab').setAttribute('aria-selected','false'); }
+  if (p.get('mode') === 'sell') { $('sell-tab').setAttribute('aria-pressed','true'); $('buy-tab').setAttribute('aria-pressed','false'); }
 } catch { notice('That trade link was invalid. Choose your tokens and amount.','error'); }
 $('amount').oninput = () => invalidate(); $('slippage').onchange = () => invalidate();
 $('reverse').onclick = () => { const a = $('sell-token').value; $('sell-token').value = $('buy-token').value; $('buy-token').value = a; $('amount').value = ''; invalidate(); balanceLabel(); };
 for (const mode of ['buy','sell']) $(mode+'-tab').onclick = () => {
-  if ($(mode+'-tab').getAttribute('aria-selected') === 'true') return;
-  $('buy-tab').setAttribute('aria-selected',String(mode==='buy')); $('sell-tab').setAttribute('aria-selected',String(mode==='sell'));
+  if ($(mode+'-tab').getAttribute('aria-pressed') === 'true') return;
+  $('buy-tab').setAttribute('aria-pressed',String(mode==='buy')); $('sell-tab').setAttribute('aria-pressed',String(mode==='sell'));
   const a = $('sell-token').value; $('sell-token').value = $('buy-token').value; $('buy-token').value = a; $('amount').value = ''; invalidate(); balanceLabel();
 };
 for (const b of document.querySelectorAll('[data-percent]')) b.onclick = () => {
@@ -99,15 +109,15 @@ for (const b of document.querySelectorAll('[data-percent]')) b.onclick = () => {
   if (t.symbol === 'STRK' && b.dataset.percent === '100') return notice('Keep some STRK for network fees. Enter the amount to sell manually.');
   $('amount').value = format(BigInt(balance)*BigInt(b.dataset.percent)/100n,t.decimals); invalidate();
 };
-function detail(label,value) { const row=document.createElement('div'), dt=document.createElement('dt'), dd=document.createElement('dd'); dt.textContent=label; dd.textContent=value; row.append(dt,dd); $('review-details').append(row); }
+function detail(label,value,target='review-details') { const row=document.createElement('div'), dt=document.createElement('dt'), dd=document.createElement('dd'); dt.textContent=label; dd.textContent=value; row.append(dt,dd); $(target).append(row); }
 function showReview(b) {
   $('receive-amount').textContent = format(b.buyAmount,b.buy.decimals,8);
-  $('review-details').replaceChildren();
-  detail('You pay',format(b.amount,b.sell.decimals)+' '+b.sell.symbol);
-  detail('Estimated received',format(b.buyAmount,b.buy.decimals)+' '+b.buy.symbol);
+  $('review-details').replaceChildren(); $('route-details').replaceChildren();
+  $('review-pay').textContent=format(b.amount,b.sell.decimals)+' '+b.sell.symbol;
+  $('review-receive').textContent=format(b.buyAmount,b.buy.decimals,8)+' '+b.buy.symbol;
   detail('Minimum received',format(b.minimumReceived,b.buy.decimals)+' '+b.buy.symbol);
-  detail('Slippage tolerance',(b.slippageBps/100)+'%'); detail('Route',b.routes.join(' → ') || 'AVNU');
-  detail('Cairn trading fee','0');
+  detail('Slippage',(b.slippageBps/100)+'%','route-details'); detail('Route',b.routes.join(' → ') || 'AVNU','route-details');
+  detail('Cairn trading fee','0','route-details');
   if (b.fee) { const t=TOKENS.find(t=>t.address===b.fee.token); detail('AVNU fee (included)',t ? format(b.fee.avnuAmount,t.decimals)+' '+t.symbol : 'Included in quoted output'); }
   detail('Network fee (estimate)',b.gasEstimate ? format(b.gasEstimate,18,8)+' STRK · final fee in wallet' : 'Shown by your wallet');
   detail('Recipient',short(b.owner));
@@ -145,14 +155,15 @@ $('confirm').onclick=async()=> {
     history.unshift(record); history=history.slice(0,20); save(); notice('Review and approve the swap in your wallet.');
     const result=await request({type:'wallet_addInvokeTransaction',params:{calls:calls.map(c=>({contract_address:c.contractAddress,entry_point:c.entrypoint,calldata:c.calldata}))}});
     record.hash=address(result.transaction_hash); record.state='pending'; record.label='Submitted — waiting for confirmation'; save();
-    notice('Transaction submitted. Follow its status in your activity.','success');
-    invalidate(); poll(record); await loadAccount();
+    notice('Transaction submitted. Follow its status in Activity.','success');
+    invalidate(); showView('activity'); poll(record); await loadAccount();
   } catch(error) {
     if (record) {
       if ([4001,113].includes(error.code)) { record.state='cancelled'; record.label='Cancelled in wallet'; }
       else { record.state='unknown'; record.label='Wallet result unknown — check your wallet before another trade'; }
       save();
     }
+    if(record?.state==='unknown')showView('activity');
     invalidate(); notice(record?.state==='unknown' ? record.label : error.message || 'Wallet request failed. Get a fresh quote.','error');
   } finally { signing=false; button(); }
 };
@@ -164,6 +175,7 @@ async function poll(record, attempt=0) {
   if (attempt<24) setTimeout(()=>poll(record,attempt+1),5000);
 }
 function renderHistory() {
+  $('activity-count').hidden=history.length===0; $('activity-count').textContent=history.length; $('clear-history').hidden=history.length===0;
   $('empty-history').hidden=history.length>0; const list=$('history-list'); list.replaceChildren();
   for (const h of history) {
     const row=document.createElement('div'); row.className='trade-row'; const text=document.createElement('div');
@@ -178,5 +190,5 @@ function renderHistory() {
 $('clear-history').onclick=()=>{ if(signing) return; if(history.some(h=>['unknown','awaiting_wallet','pending'].includes(h.state))) return notice('Resolve pending or unknown wallet results before clearing history.','error'); history=[];save(); };
 renderHistory();
 for (const h of history) if (h.hash && ['pending','unknown'].includes(h.state)) poll(h);
-api('config').then(c=>{if(felt(c.chainId)!==CHAIN)throw new Error('Wrong trading network.');serviceReady=true;$('release').textContent='Trading service online · '+String(c.version).slice(0,10);button();}).catch(()=>{$('release').textContent='Trading service temporarily unavailable';notice('Trading is temporarily unavailable. No transaction has been submitted.','error');button();});
+api('config').then(c=>{if(felt(c.chainId)!==CHAIN)throw new Error('Wrong trading network.');serviceReady=true;$('release').textContent='Starknet · '+String(c.version).slice(0,10);button();}).catch(()=>{$('release').textContent='Trading service temporarily unavailable';notice('Trading is temporarily unavailable. No transaction has been submitted.','error');button();});
 balanceLabel();

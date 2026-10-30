@@ -1,6 +1,6 @@
 # Cairn trading
 
-Wallet-connected, exact-input Starknet spot swaps. A normal companion website; no Telegram Mini App, server signer, wallet key, custody or automatic trading. The existing monitoring bot remains a dependency-free read-only process. This is a post-competition extension, not a change to the original four frozen rounds.
+Wallet-connected, exact-input Starknet spot swaps. A normal companion website; no Telegram Mini App, server signer, wallet key, custody or automatic trading. With custody disabled, the monitoring bot remains a dependency-free read-only process. The optional [in-bot custody flow](../custody/README.md) is a separate signing model, with wallet creation, trading and withdrawals inside Telegram. This is a post-competition extension, not a change to the original four frozen rounds.
 
 ## User flow
 

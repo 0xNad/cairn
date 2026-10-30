@@ -4,7 +4,7 @@ import {answer,COMMANDS,commandsFor} from '../src/commands.mjs';
 import {loadConfig} from '../src/config.mjs';
 const context={config:{tradingUrl:'https://cairn.example/'},clean:x=>x,username:'cairn_bot'};
 test('trading is optional and preserves the original registered command list',()=>{
- assert.equal(commandsFor({}),COMMANDS);assert.equal(commandsFor(context.config).length,COMMANDS.length+3);
+ assert.equal(commandsFor({}),COMMANDS);assert.deepEqual(commandsFor(context.config).map(c=>c.command),['start','trade','price','list','help']);
 });
 test('buy/sell links encode exact-input semantics without a Telegram identity',async()=>{
  for(const[name,arg,sell,buy]of[['buy','STRK 100 USDC','USDC','STRK'],['sell','STRK 100 USDC','STRK','USDC']]){

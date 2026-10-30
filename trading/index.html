@@ -1,39 +1,285 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#151e1b"><meta name="description" content="Buy and sell Starknet tokens with your own wallet. Quotes by AVNU. Keys stay in your wallet.">
-  <title>Cairn · Trade on Starknet</title>
-  <link rel="icon" type="image/svg+xml" href="/cairn.svg">
-</head>
-<body>
-  <header><a class="brand" href="/" aria-label="Cairn home"><img src="/cairn.svg" alt="" width="32" height="32">cairn<span>TRADE</span></a><span class="network"><i></i> Starknet mainnet</span><button id="connect" class="wallet">Connect wallet <span>↗</span></button></header>
-  <main>
-    <section class="intro"><p class="eyebrow">YOUR WALLET. YOUR CALL.</p><h1>A clear path <br>from token to token.</h1><p>Buy and sell on Starknet. <br>Review the trade. Sign in your wallet.</p><div class="principles"><span>↗ &nbsp; Routed by AVNU</span><span>◇ &nbsp; No Cairn trading fee</span><span>⌁ &nbsp; Keys stay with you</span></div><a class="bot-link" href="https://t.me/Cairn_tgbot" target="_blank" rel="noopener noreferrer">Monitoring, alerts &amp; feeds in Telegram <span>↗</span></a></section>
-    <section class="trade-card" aria-label="Trade tokens">
-      <div class="card-top"><div class="tabs" role="tablist" aria-label="Trade direction"><button id="buy-tab" role="tab" aria-selected="true">Buy</button><button id="sell-tab" role="tab" aria-selected="false">Sell</button></div><span class="subtle">SPOT SWAP</span></div>
-      <form id="trade-form">
-        <div class="amount-panel"><div class="field-label"><label for="amount">You pay</label><span id="balance-label">Connect to see balance</span></div><div class="amount-row"><input id="amount" aria-label="Amount to pay" inputmode="decimal" autocomplete="off" placeholder="0.00" maxlength="100"><select id="sell-token" aria-label="Token to pay"></select></div><div class="amount-footer"><span id="sell-usd">Exact input</span><div class="presets"><button type="button" data-percent="25">25%</button><button type="button" data-percent="50">50%</button><button type="button" data-percent="100">Max</button></div></div></div>
-        <button type="button" id="reverse" aria-label="Reverse tokens">↓</button>
-        <div class="amount-panel receive"><div class="field-label"><label for="buy-token">You receive</label><span>Estimated</span></div><div class="amount-row"><output id="receive-amount">0.00</output><select id="buy-token" aria-label="Token to receive"></select></div><div class="amount-footer"><span id="buy-usd">Get a quote to see your route</span></div></div>
-        <div class="settings-row"><label for="slippage">Slippage tolerance</label><select id="slippage"><option value="10">0.1%</option><option value="50" selected>0.5%</option><option value="100">1.0%</option></select></div>
-        <div id="notice" role="status" aria-live="polite">Connect your Starknet wallet to get started.</div>
-        <button type="submit" id="quote-button" class="primary">Connect wallet <span>↗</span></button>
-      </form>
-      <p class="card-note">Your wallet approves each trade. Network and AVNU fees apply.</p>
-      <div id="review" hidden>
-        <div class="review-head"><h2>Review trade</h2><span id="quote-timer"></span></div>
-        <dl id="review-details"></dl>
-        <label id="impact-warning" class="warning" hidden><input type="checkbox" id="accept-impact"> I understand this quote has a price impact above 1%.</label>
-        <p class="review-note">The approval covers this input amount only. Your wallet shows the final network fee. After submission, a trade cannot be cancelled here.</p>
-        <button id="confirm" type="button" class="primary">Confirm in wallet <span>↗</span></button><button id="cancel-review" class="secondary">Back to editing</button>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f5f6f0" />
+    <meta
+      name="description"
+      content="Cairn — swap Starknet tokens with your own wallet."
+    />
+    <title>Cairn · Trade on Starknet</title>
+    <link rel="icon" type="image/svg+xml" href="/cairn.svg" />
+  </head>
+  <body>
+    <header>
+      <a class="brand" href="/" aria-label="Cairn home"
+        ><img src="/cairn.svg" alt="" width="34" height="34" />cairn</a
+      >
+      <nav aria-label="Main navigation">
+        <button data-view="trade" aria-current="page">Trade</button
+        ><button data-view="activity">
+          Activity <span id="activity-count" hidden>0</span></button
+        ><button data-view="help">Help</button>
+      </nav>
+      <button id="connect" class="wallet">
+        Connect wallet <span>↗</span>
+      </button>
+    </header>
+    <main>
+      <section id="view-trade" class="view" aria-label="Trade">
+        <div class="intro">
+          <span class="network"><i></i> Starknet mainnet</span>
+          <h1>Make your next move.</h1>
+          <p>Choose your tokens. Your wallet does the rest.</p>
+        </div>
+        <section class="trade-card" aria-label="Trade tokens">
+          <div class="card-top">
+            <div class="tabs" role="group" aria-label="Trade direction">
+              <button id="buy-tab" aria-pressed="true">
+                Buy</button
+              ><button id="sell-tab" aria-pressed="false">
+                Sell
+              </button>
+            </div>
+            <details class="settings">
+              <summary aria-label="Trade settings">
+                ⚙ <span>Settings</span>
+              </summary>
+              <div class="settings-row">
+                <label for="slippage">Slippage</label
+                ><select id="slippage">
+                  <option value="10">0.1%</option>
+                  <option value="50" selected>0.5%</option>
+                  <option value="100">1.0%</option>
+                </select>
+              </div>
+            </details>
+          </div>
+          <form id="trade-form">
+            <div class="amount-panel">
+              <div class="field-label">
+                <label for="amount">You pay</label
+                ><span id="balance-label">—</span>
+              </div>
+              <div class="amount-row">
+                <input
+                  id="amount"
+                  aria-label="Amount to pay"
+                  inputmode="decimal"
+                  autocomplete="off"
+                  placeholder="0.00"
+                  maxlength="100"
+                />
+                <div class="token-picker">
+                  <span id="sell-mark" class="coin" aria-hidden="true">$</span
+                  ><select id="sell-token" aria-label="Token to pay"></select>
+                </div>
+              </div>
+              <div class="amount-footer">
+                <span id="sell-usd">Exact input</span>
+                <div class="presets">
+                  <button type="button" data-percent="25">25%</button
+                  ><button type="button" data-percent="50">50%</button
+                  ><button type="button" data-percent="100">Max</button>
+                </div>
+              </div>
+            </div>
+            <button type="button" id="reverse" aria-label="Reverse tokens">
+              ↓
+            </button>
+            <div class="amount-panel receive">
+              <div class="field-label">
+                <label for="buy-token">You receive</label><span>Estimated</span>
+              </div>
+              <div class="amount-row">
+                <output id="receive-amount">0.00</output>
+                <div class="token-picker">
+                  <span id="buy-mark" class="coin" aria-hidden="true">✦</span
+                  ><select
+                    id="buy-token"
+                    aria-label="Token to receive"
+                  ></select>
+                </div>
+              </div>
+              <div class="amount-footer">
+                <span id="buy-usd">Quote after connecting</span>
+              </div>
+            </div>
+            <div id="notice" role="status" aria-live="polite">
+              Ready when you are.
+            </div>
+            <button type="submit" id="quote-button" class="primary">
+              Connect wallet <span>↗</span>
+            </button>
+          </form>
+          <div id="review" hidden>
+            <div class="review-head">
+              <h2>One last look</h2>
+              <span id="quote-timer"></span>
+            </div>
+            <div class="review-swap">
+              <div><span>You pay</span><strong id="review-pay"></strong></div>
+              <span class="swap-arrow">↓</span>
+              <div>
+                <span>You receive ≈</span><strong id="review-receive"></strong>
+              </div>
+            </div>
+            <dl id="review-details"></dl>
+            <details class="route-details">
+              <summary>Route &amp; settings</summary>
+              <dl id="route-details"></dl>
+            </details>
+            <label id="impact-warning" class="warning" hidden
+              ><input type="checkbox" id="accept-impact" /> I understand this
+              quote has a price impact above 1%.</label
+            >
+            <p class="review-note">
+              Exact-amount approval. Final network fee in your wallet. Submitted
+              trades cannot be cancelled.
+            </p>
+            <button id="confirm" type="button" class="primary">
+              Confirm in wallet ↗</button
+            ><button id="cancel-review" class="secondary">Edit trade</button>
+          </div>
+          <div class="card-note">
+            <span>◇ Wallet-owned</span
+            ><span>0 Cairn fee · AVNU + network fees apply</span>
+          </div>
+        </section>
+        <a
+          class="bot-link"
+          href="https://t.me/Cairn_tgbot?start=trade"
+          target="_blank"
+          rel="noopener noreferrer"
+          ><span class="bot-icon">↗</span
+          ><span
+            ><strong>Start in Telegram</strong
+            ><small>Trade setup, wallet lookups &amp; alerts</small></span
+          ><span>→</span></a
+        >
+      </section>
+      <section
+        id="view-activity"
+        class="view activity"
+        hidden
+        aria-label="Activity"
+      >
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">YOUR ACTIVITY</p>
+            <h1>Recent trades</h1>
+          </div>
+          <button id="clear-history" class="text-button">Clear history</button>
+        </div>
+        <div id="empty-history" class="empty-state">
+          <div class="empty-icon">⇄</div>
+          <h2>A fresh start.</h2>
+          <p>Your trades appear here after wallet approval.</p>
+          <button class="secondary" data-view="trade">Make a trade →</button>
+        </div>
+        <div id="history-list"></div>
+        <p class="small-note">Saved on this browser only.</p>
+      </section>
+      <section id="view-help" class="view help" hidden aria-label="Help">
+        <p class="eyebrow">A LITTLE GUIDANCE</p>
+        <h1>You're in control.</h1>
+        <div class="steps">
+          <div>
+            <span>01</span>
+            <h2>Choose</h2>
+            <p>Pick two tokens and the amount to spend.</p>
+          </div>
+          <div>
+            <span>02</span>
+            <h2>Review</h2>
+            <p>Check the minimum received, fees and wallet.</p>
+          </div>
+          <div>
+            <span>03</span>
+            <h2>Approve</h2>
+            <p>Sign in your wallet. Follow the result in Activity.</p>
+          </div>
+        </div>
+        <details>
+          <summary>Which wallets work?</summary>
+          <p>
+            Ready and Braavos on Starknet mainnet. On mobile, use your wallet's
+            dapp browser. Telegram's browser may not detect an installed wallet.
+          </p>
+        </details>
+        <details>
+          <summary>What are the fees?</summary>
+          <p>
+            No Cairn trading fee. AVNU and network fees apply and appear in the
+            review. Your wallet shows the final network fee.
+          </p>
+        </details>
+        <details>
+          <summary>What if a trade is pending?</summary>
+          <p>
+            Open Activity and refresh its status. If a wallet response is
+            unknown, check your wallet before trying again. Reverted
+            transactions can still cost network fees.
+          </p>
+        </details>
+        <details>
+          <summary>Privacy &amp; token support</summary>
+          <p>
+            Cairn never receives your wallet keys. Your public address goes to
+            AVNU and the RPC provider. Browser trade history has no Telegram
+            identity attached. Telegram trade drafts expire after15 minutes;
+            cancel or return Home to discard them.
+          </p>
+          <p>
+            STRK, ETH, native USDC, bridged USDC.e, USDT and WBTC. Native and
+            bridged USDC are separate assets. Clearing history does not delete
+            blockchain records.
+          </p>
+        </details>
+      </section>
+    </main>
+    <footer>
+      <span>Routed by AVNU</span
+      ><a
+        href="https://github.com/0xNad/cairn"
+        target="_blank"
+        rel="noopener noreferrer"
+        >Open source ↗</a
+      ><span id="release">Connecting…</span>
+    </footer>
+    <dialog id="wallet-dialog">
+      <div class="dialog-head">
+        <div>
+          <p class="eyebrow">YOUR KEYS STAY YOURS</p>
+          <h2>Connect a wallet</h2>
+        </div>
+        <button id="close-wallets" aria-label="Close wallet dialog">×</button>
       </div>
-    </section>
-    <section class="activity"><div><p class="eyebrow">YOUR ACTIVITY</p><h2>Trades on this browser</h2></div><button id="clear-history" class="text-button">Clear local history</button><p id="empty-history">Your submitted trades will appear here. Nothing is sent until you approve it in your wallet.</p><div id="history-list"></div></section>
-    <section class="details"><details><summary>How trading works</summary><p>Cairn gets a quote from AVNU and checks the exact token approval, exchange, amounts and recipient. Your wallet signs and submits the swap. Cairn never receives your seed phrase or private key.</p><p>This first release supports STRK, ETH, native USDC, bridged USDC.e, USDT and WBTC. Buy means spending your payment token; Sell means spending the selected asset. Both are exact-input swaps.</p></details><details><summary>Wallets, mobile &amp; privacy</summary><p>Use an installed Starknet wallet such as Ready or Braavos. On mobile, open this page in your wallet's dapp browser. If Telegram's browser cannot detect your wallet, use your external browser or open it in Braavos.</p><p>Your wallet address goes to AVNU and our configured Starknet RPC to build quotes and read balances. Trade history is kept only in this browser. No Telegram identity is linked to your wallet. Clearing local history does not delete public blockchain records.</p></details></section>
-  </main>
-  <footer><span>Cairn / Built for Starknet</span><a href="https://github.com/0xNad/cairn" target="_blank" rel="noopener noreferrer">Open source ↗</a><span id="release">Checking trading service…</span></footer>
-  <dialog id="wallet-dialog"><div class="dialog-head"><h2>Connect your wallet</h2><button id="close-wallets" aria-label="Close wallet dialog">×</button></div><p>Choose a Starknet wallet. Cairn never asks for your keys.</p><div id="wallet-list"></div><div id="wallet-empty" hidden><p>No Starknet wallet detected in this browser.</p><a class="secondary link-button" id="braavos-mobile" href="https://braavos.app/" target="_blank" rel="noopener noreferrer">Open in Braavos ↗</a><a class="text-button" href="https://www.ready.co/" target="_blank" rel="noopener noreferrer">Get Ready Wallet ↗</a><p>Already installed? Unlock it, then <button id="refresh-wallets" class="text-button">look again</button>. On desktop use its browser extension; on mobile use its dapp browser.</p></div><p id="wallet-error" role="alert"></p></dialog>
-  <script type="module" src="/app.mjs"></script>
-</body>
+      <div id="wallet-list"></div>
+      <div id="wallet-empty" hidden>
+        <p>No Starknet wallet found in this browser.</p>
+        <a
+          class="primary link-button"
+          id="braavos-mobile"
+          href="https://braavos.app/"
+          target="_blank"
+          rel="noopener noreferrer"
+          >Open in Braavos ↗</a
+        ><a
+          class="secondary link-button"
+          href="https://www.ready.co/"
+          target="_blank"
+          rel="noopener noreferrer"
+          >Get Ready Wallet ↗</a
+        >
+        <p>
+          Already installed? Unlock it, then
+          <button id="refresh-wallets" class="text-button">look again</button>.
+        </p>
+      </div>
+      <p id="wallet-error" role="alert"></p>
+    </dialog>
+    <script type="module" src="/app.mjs"></script>
+  </body>
 </html>

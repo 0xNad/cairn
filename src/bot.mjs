@@ -1,6 +1,6 @@
 import { performance } from 'node:perf_hooks';
 import { walletAlerts } from './alerts.mjs';
-import { callback, commandsFor, parseCommand, parsePaste, respond } from './commands.mjs';
+import { callback, commandsFor, parseCommand, parsePaste, parseTradeReply, parseCustodyReply, respond } from './commands.mjs';
 import { CairnError, log, NodeBusy, RpcError, TelegramDown, TelegramRefused } from './errors.mjs';
 import { decodeChain, hex64, NodeValueError } from './felt.mjs';
 import { links, messages, redactor, textLines } from './format.mjs';
@@ -108,6 +108,7 @@ export async function serve(config, signal) {
   }
   if (config.mode === 'doctor') return doctor(rpc, username);
   const store = new Store(config.data);
+  let custody = null;
   try {
     if (config.mode === 'run') await tg.call('deleteWebhook', { drop_pending_updates: false });
     const commands = commandsFor(config), commandList = JSON.stringify(commands);
@@ -115,11 +116,12 @@ export async function serve(config, signal) {
       await tg.call('setMyCommands', { commands });
       store.transaction(() => store.set('commands', commandList));
     }
-    const bot = new Bot({ config, store, rpc, tg, clean, username, me, signal });
+    custody = config.custodyDirectory ? new (await import('../custody/engine.mjs')).Custody({directory:config.custodyDirectory,rpcUrls:config.rpcUrls ?? [config.rpcUrl]}) : null;
+    const bot = new Bot({ config, store, rpc, tg, clean, username, me, signal, custody });
     if (config.mode === 'tick') return await bot.tick();
     if (config.httpPort !== null) await listen(config, { health: () => bot.health(), metrics: () => bot.metrics() }, signal);
     return await bot.run();
-  } finally { store.close(); }
+  } finally { custody?.close(); store.close(); }
 }
 
 /**
@@ -138,6 +140,7 @@ class Bot {
     this.ledger = new Ledger(o.store);
     this.tokens = new Tokens(o.config, o.store, o.rpc);
     this.rate = new RateLimit(o.store);
+    this.uiClicks = new Map();
     this.scanner = new Scanner(o.rpc, o.config);
     this.fmt = links(o.config, o.clean);
     this.venues = venuesOf(o.config);
@@ -310,7 +313,7 @@ class Bot {
       return () => { resume(); return { guard: { ...found, chat, messageId: message.message_id, thread } }; };
     }
     if (edited) return () => null;
-    const command = parseCommand(message, this.username) ?? parsePaste(message);
+    const command = parseCommand(message, this.username) ?? parseCustodyReply(message,this.context(chat,message)) ?? parseTradeReply(message, this.context(chat,message)) ?? parsePaste(message);
     if (!command) return () => { resume(); return null; };
     const target = { chat_id: chat.id, ...(Number.isSafeInteger(message.message_thread_id) ? { message_thread_id: message.message_thread_id } : {}) };
     const sender = message.sender_chat?.id ?? message.from?.id;
@@ -333,7 +336,12 @@ class Bot {
   }
   async onCallback(query) {
     const chat = query?.message?.chat;
-    const commit = await callback(query, this.context(chat ?? {}, null));
+    const nav = this.config.tradingUrl && query?.data!=='cw:hide' && /^(ui|bt|cw):/.test(String(query?.data ?? ''));
+    const at = Date.now(), user=query.from?.id;
+    const clicks=(this.uiClicks.get(user)??[]).filter(t=>t>at-60000);
+    const verdict = nav && clicks.length>=30 ? 'ignore' : 'ok';
+    if(nav && verdict==='ok'){clicks.push(at);if(this.uiClicks.size>5000)this.uiClicks.clear();this.uiClicks.set(user,clicks);}
+    const commit = verdict === 'ok' ? await callback(query, this.context(chat ?? {}, null)) : () => ({answer:'Please wait a minute before continuing.'});
     if (/^ot:/.test(String(query?.data ?? ''))) this.wake = true;
     return () => {
       if (Number.isSafeInteger(chat?.id)) this.subs.resume(chat.id);
@@ -356,7 +364,7 @@ class Bot {
     return {
       config: this.config, rpc: this.rpc, username: this.username, clean: this.clean, head: this.head, spec: endpoint?.identity?.spec,
       endpoint: this.rpc.endpoints.length > 1 ? this.rpc.name(this.rpc.current) : null,
-      signal: this.signal, subs: this.subs, tokens: this.tokens, fmt: this.fmt, chat,
+      custody: this.custody, userId: message?.from?.id, signal: this.signal, subs: this.subs, tokens: this.tokens, fmt: this.fmt, chat,
       prices: this.prices, names: this.names, venues: this.venues, guards: this.guards,
       // The forum topic a command came from: a feed, watch, whale or track set up there posts there. A reply in
       // an ordinary group (or a comment thread) also carries a message_thread_id, which subscriptions ignore.
@@ -479,6 +487,14 @@ class Bot {
   // ---- alerts --------------------------------------------------------------------------------------------
 
   async background() {
+    if(this.custody && Date.now()-(this.custodyChecked??0)>10000){
+      this.custodyChecked=Date.now();
+      try{for(const r of await this.custody.updates()){
+        const text=`Cairn · ${r.kind} ${r.state}${r.state==='confirmed'?' on Starknet (L2)':''}\n${r.hash?`https://voyager.online/tx/${r.hash}`:'Open Activity for the result.'}`;
+        this.store.transaction(()=>{this.subs.chat({id:r.user,type:'private'});this.ledger.add({chatId:r.user,txHash:`custody:${r.id}:${r.state}`,eventIndex:0,kind:'custody',chainTime:this.head?.timestamp??Math.floor(Date.now()/1000),body:text});});
+        this.custody.acknowledge(r.id,r.state);
+      }}catch{log('warn','Custody transaction status unavailable; existing transactions will be checked again.');}
+    }
     if (!this.head) return;
     try {
       const fork = await this.forks.check(this.store.cursor, this.head);
