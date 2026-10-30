@@ -1,28 +1,89 @@
 # Cairn
 
-**A Starknet companion in Telegram: create a trading wallet, buy and sell, and follow your wallets and tokens.**
+**A Starknet trading bot for Telegram: create a wallet, buy and sell with buttons, and follow your wallets and tokens.**
 
-Open [@Cairn_tgbot](https://t.me/Cairn_tgbot) and press **Start**. Use the buttons to create a dedicated trading wallet, back up its key, deposit, activate, trade, view positions or withdraw. Trade review and confirmation happen in the bot. No external wallet connection is needed for the in-bot flow.
+Open [@Cairn_tgbot](https://t.me/Cairn_tgbot) and press **Start**. Create a trading wallet, back up its key,
+deposit STRK and activate it, then buy, sell, check your positions and withdraw, all with buttons in your
+private chat with the bot. Every trade is reviewed and confirmed in the chat: no browser wallet, no Mini App.
 
-The trading wallet is custodial: Cairn holds its encrypted key and signs only your confirmed transactions. Wallet creation is off-chain; activation, trades and withdrawals spend your funds and network fees. [Custody model, operation and verification](custody/README.md).
+- **Trade.** Swaps between STRK, ETH, USDC, USDC.e, USDT and WBTC through the AVNU router, at 0.5% slippage
+  and no Cairn fee. The review shows what you pay, the estimated and minimum amount you receive, AVNU's fee
+  and a network fee cap, and it expires after 30 seconds.
+- **Custodial, and says so.** Cairn holds each wallet's key encrypted and signs only a transaction its owner
+  confirmed. Creating a wallet is free and off-chain; activation, trades and withdrawals spend your funds and
+  network fees. [Custody model, operation and recovery](custody/README.md).
+- **Monitor.** Wallet alerts on every token, whale alerts, trade feeds from Ekubo and AVNU, Pragma prices,
+  `.stark` names, transaction tracking, network alerts, and guards that delete seed phrases and phishing
+  links in groups.
+- **Or bring your own wallet.** A separate [wallet-connected website](https://cairn-trading.vercel.app)
+  trades the same tokens with Ready or Braavos: your wallet signs, and Cairn never holds a key.
+  [How it works](trading/README.md).
 
-Only five commands appear in the menu: `/start`, `/trade`, `/price`, `/list`, `/help`. Paste a wallet, .stark name or transaction for lookups; paste a supported token to start trading. Help opens short sections for monitoring, advanced settings and privacy. Existing command aliases remain available.
+Five commands appear in the menu: `/start`, `/trade`, `/price`, `/list`, `/help`. Paste a supported token to
+start a trade; paste a wallet, a `.stark` name or a transaction to look it up. `/buy STRK 100 USDC` and
+`/sell STRK 100 USDC` go straight to the review. Trading wallets work in private chats only. In a group, an
+administrator sets up feeds and alerts, such as `/feed STRK $100 all`. Older command names still work.
 
-For groups, add Cairn and configure a feed such as `/feed STRK $100 all` as an administrator. Wallet alerts, Pragma prices, names, transaction tracking, network guards, reorg corrections and member protection remain available. Trading wallets are private-chat only.
+> **Status:** in-bot trading and the website are released for the owner's live acceptance. Tests cover
+> wallet creation, activation, a withdrawal and an AVNU swap on a local mainnet fork; a funded trade on
+> mainnet, and an independent security review of the custody code, are still to come. The monitoring
+> features were built in public by AI coding agents in four judged rounds on
+> [Hotpod](https://hotpod.io/p/cairn), and [ARCHITECTURE.md](ARCHITECTURE.md) specifies their frozen interface.
 
-Self-hosting can enable either model: dependency-free, read-only monitoring with custody disabled, or the optional in-bot signing engine. A separate [wallet-connected website](https://cairn-trading.vercel.app) remains available. Neither product is a Telegram Mini App. The project is MIT-licensed.
-
-The current release is for live owner acceptance. Automated local-fork tests do not claim a funded owner trade on mainnet or an independent custody security audit.
-
-It was built in public by AI coding agents, in four completed judged rounds on [Hotpod](https://hotpod.io/p/cairn).
-
-> **Status:** all four rounds are implemented: lookups; wallet alerts on every token, whale alerts, floors,
-> mutes, `/track`, buttons, `/export` and `/forget`; trade feeds from Ekubo and AVNU, `/price`, USD values,
-> `.stark` names, a message budget for groups and forum topics; then stall and recovery alerts, reorg
-> corrections, confirmations, RPC failover, gap skips, `/healthz`, `/metrics`, the seed-phrase and link guards
-> and the [deploy guide](#deploy-it). [ARCHITECTURE.md](ARCHITECTURE.md) specifies the frozen interface.
+Self-hosting runs either model: dependency-free, read-only monitoring with custody off, or monitoring plus
+the in-bot signing engine ([enable trading](#3d-enable-trading-optional)). Neither is a Telegram Mini App.
+The project is MIT-licensed.
 
 ## What it looks like
+
+### Trading
+
+The private chat before and after creating a wallet (buttons in brackets):
+
+```
+Cairn · Trade on Starknet
+
+Create a trading wallet here. Fund it, then buy and sell with buttons.
+
+[+ Create wallet]
+[Prices] [Help]
+```
+
+```
+Cairn · Starknet
+
+Trading wallet 0x0123…cdef
+Choose your next move.
+
+[⇄ Buy / Sell] [◉ My wallet]
+[▥ Positions] [↗ Withdraw]
+[◷ Activity] [Alerts & help]
+```
+
+A trade is five taps: **Buy / Sell**, the token to pay with, the token to receive, an amount (10, 50, 100,
+or type one), then **Confirm trade** on the review:
+
+```
+Review trade
+
+Pay <amount> USDC
+Receive ≈ <estimate> STRK
+Minimum: <minimum> STRK
+Slippage: 0.5% · Cairn fee: 0
+AVNU fee: <fee>
+Network fee cap: <cap> STRK
+
+Confirm within 30 seconds. Cairn will sign and submit this transaction.
+
+[Confirm trade]
+[Cancel]
+```
+
+A price impact above 1% adds a warning line. The result, confirmed or reverted, arrives in the chat with a
+Voyager link. **Positions** lists what the wallet holds, with a Sell button for each token; **Withdraw** asks
+for a token, an amount and a Starknet address, then for a confirmation of its own.
+
+### Alerts and feeds
 
 A group's trade feed, `/feed STRK $20 all`, on mainnet trades of 24 October 2026:
 
@@ -169,9 +230,10 @@ of it:
 
 - **The big trackers don't cover Starknet.** Cielo, DeBank, Zerion and Whale Alert don't support the chain.
 - **The existing Starknet bots each do one job.** We found bots for buy pings, staking and new launches.
-  Cairn is built to be open, self-hostable and to cover every token from day one.
-- **Telegram is where Starknet communities talk.** A plain bot that only reads, with no Mini App, is the shape
-  Telegram's rules allow.
+  Cairn puts trading and alerts for every token in one open, self-hostable bot.
+- **Telegram is where Starknet communities talk, and an ordinary bot may trade there.** Telegram's
+  [blockchain guidelines](https://core.telegram.org/bots/blockchain-guidelines) limit Mini Apps to TON, and
+  ordinary bots without one are exempt. Cairn uses plain messages and buttons.
 - **Starknet is small enough to read whole.** The chain emits about 17 token transfers and approvals per block.
   Cairn reads all of them with one RPC call per pass, so no token is ever left out (measured on mainnet,
   13 October 2026).
@@ -203,6 +265,8 @@ Every historical brief and rubric is in [`.launchpad/project.md`](.launchpad/pro
 
 ## For Starknet communities
 
+- **Want to trade from Telegram?** Open [@Cairn_tgbot](https://t.me/Cairn_tgbot), create a wallet and back up
+  its key before you deposit. Read [how custody works](custody/README.md) first.
 - **Want a trade feed in your group?** Add the bot, then as an administrator run `/feed <token> $100`, in
   the forum topic where the posts should go. Open an issue for a venue or a token Cairn should know.
 - **Run a treasury, a DAO or a validator?** Tell us which wallets you would watch, and why.
@@ -211,12 +275,36 @@ Every historical brief and rubric is in [`.launchpad/project.md`](.launchpad/pro
 - **Want to host an instance?** [Deploy it](#deploy-it) with Docker or systemd: a BotFather token, two RPC
   URLs and ten minutes.
 
-## Monitoring bot safety and privacy
+## Safety and privacy
 
-- **Read-only.** Cairn never calls a write method. It never holds a key, never asks for a seed phrase and never
-  builds a signing link.
-- **No custody or Mini App.** The bot never executes a trade. When configured, `/trade`, `/buy` and `/sell`
-  open the companion website, where the user's wallet reviews, signs and submits. See its separate [security and operating contract](trading/README.md).
+### Trading wallets
+
+- **Custodial.** Each wallet gets a fresh Starknet key, kept encrypted (AES-256-GCM, bound to its owner and
+  address) with a master key in a separate private file. This is software custody on one host, not a
+  hardware vault, MPC or an audited service: whoever controls that host can control the wallets.
+- **Your Telegram account is the authority.** Wallets work only in your private chat with the bot. Every
+  button is checked against the person who pressed it, and a review belongs to the person who asked for it.
+- **Nothing is signed without a confirmation.** A review is fixed when shown and expires within 30 seconds;
+  Confirm works once, and each wallet has one transaction in flight at a time. Before signing, Cairn checks
+  the chain, the pinned AVNU exchange, the tokens, amount, spender, recipient, minimum received and route, and
+  caps the network fee (5 STRK by default).
+- **No blind retries.** The signed transaction and its hash are saved before it is sent. A lost answer blocks
+  new trades until that transaction is checked; it is never resent with a new nonce. A trade counts as
+  confirmed only when its AVNU event matches the review.
+- **Back up the key.** **Back up wallet key** reveals it in your private chat behind a short-lived,
+  single-use button; save it privately and tap **Hide key**. Telegram chats are not end-to-end encrypted.
+  Keep the wallet's address and account type (OpenZeppelin account v0.17.0) with the key to recover it
+  elsewhere. Importing an existing key is not supported.
+- **`/forget` leaves wallets alone.** It deletes monitoring settings only, never a trading wallet or its
+  recovery records.
+
+### Monitoring
+
+- **Monitoring only reads.** Alerts, feeds, lookups and guards never call a write method and never ask for a
+  seed phrase. With custody off, the bot holds no key at all.
+- **No Mini App.** Trading uses ordinary messages and buttons. Without custody, `/trade`, `/buy` and `/sell`
+  open the companion website, where the user's own wallet reviews, signs and submits (its
+  [security and operating contract](trading/README.md)).
 - **Only the hosts you configure.** It talks to Telegram and your RPC endpoints, and nothing else: no
   telemetry, no price API, no fallback you did not list. Prices come from the Pragma oracle contract and names
   from the Starknet ID contract, read through your RPC. The blocklist is a local file, never fetched.
@@ -235,12 +323,16 @@ Every historical brief and rubric is in [`.launchpad/project.md`](.launchpad/pro
 
 ## FAQ
 
-**Can I buy or sell?** The optional [trading companion](trading/README.md) supports exact-input Starknet swaps
-with your own wallet. The Telegram bot opens ordinary links; it never holds keys or sends a chain transaction.
-Set `CAIRN_TRADING_URL` to your hosted HTTPS companion to enable `/trade`, `/buy STRK 100 USDC` and `/sell STRK 100 USDC`.
-The four original competition rounds remain read-only and unchanged; trading is a later extension.
+**Can I buy or sell?** Yes, two ways. In the bot, with a Cairn trading wallet (custodial, see
+[above](#trading-wallets)); or on the [website](trading/README.md) with your own wallet, where Cairn never
+holds a key. A self-hosted bot enables the first with `CAIRN_CUSTODY=1`, and `CAIRN_TRADING_URL` points it at
+the second. The four competition rounds were read-only; trading came after them, and their checks are unchanged.
 
-**Which tokens?** Every ERC-20 on Starknet, in both event layouts. The registry (STRK, ETH, USDC, USDC.e,
+**Which tokens can I trade?** STRK, ETH, native USDC, USDC.e, USDT and WBTC, on mainnet. Native and bridged
+USDC are different contracts and are never swapped for each other silently. There are no memecoins, sniping,
+limit orders or copy trading.
+
+**Which tokens does it monitor?** Every ERC-20 on Starknet, in both event layouts. The registry (STRK, ETH, USDC, USDC.e,
 USDT and WBTC on mainnet) is the list of verified tokens: their symbols are trusted, and `/balance` lists
 them by default. Any other token is read from its contract (`symbol` and `decimals`) and marked unverified.
 
@@ -258,8 +350,8 @@ and its place in the list sets its precedence. The netting and trader rules appl
 **Where do prices come from?** The Pragma oracle on Starknet, `get_data_median` of each verified token's
 `pragma_pair`. A price older than `CAIRN_PRICE_MAX_AGE` (900 s of chain time by default) gives no USD value.
 
-**Who runs it?** Anyone: it is MIT-licensed and self-hostable. Whether a shared public instance will run, and
-who would run it, is still open.
+**Who runs it?** [@Cairn_tgbot](https://t.me/Cairn_tgbot) is the project's own instance. Anyone can run
+another: it is MIT-licensed and self-hostable.
 
 **Why "Cairn"?** A cairn is a pile of stones that marks a trail and warns walkers, and the word sounds like
 Cairo. It is a working name.
@@ -267,8 +359,9 @@ Cairo. It is a working name.
 ## Deploy it
 
 From a fresh Linux machine to a bot that runs unattended: a BotFather token, two RPC endpoints, then Docker
-(step 3) or systemd (step 3b), and the checks of step 4. Cairn needs no database server and no dependencies;
-everything it keeps is one SQLite file in its data directory.
+(step 3) or systemd (step 3b), and the checks of step 4. Monitoring needs no database server and no
+dependencies; everything it keeps is one SQLite file in its data directory. Trading is an optional extra step
+(3d).
 
 ### 1. Create the bot with BotFather
 
@@ -371,6 +464,23 @@ Keep the Mac awake and the user session signed in; this is a user service, not a
 After upgrading, rerun the installer. To stop it:
 `launchctl bootout gui/$(id -u)/com.cairn.bot`.
 
+### 3d. Enable trading (optional)
+
+In-bot trading runs on mainnet only, with systemd or on a Mac (the Docker image is monitoring only). It needs
+the custody engine's one pinned dependency, Starknet.js:
+
+```sh
+npm ci --ignore-scripts --prefix custody
+npm test --prefix custody
+```
+
+Then add `CAIRN_CUSTODY=1` and an HTTPS `CAIRN_TRADING_URL` (the companion website, which Cairn also links
+to) to the env file, and restart Cairn (on a Mac, rerun the installer). Wallets live in `CAIRN_DATA/custody`,
+apart from monitoring state. Before anyone deposits, read the [custody runbook](custody/README.md): back up
+`custody/master.key` and `custody/vault.db` together and privately, and never replace the master key as a
+repair. To pause trading, set `CAIRN_CUSTODY=0` and restart: no new signing, and nothing already sent is
+undone.
+
 ### 4. Check it
 
 - **Health:** `curl -s http://127.0.0.1:8080/healthz` answers `200 {"ok":true,"head":17024011,"lag_s":0,…}`:
@@ -417,7 +527,8 @@ After upgrading, rerun the installer. To stop it:
 
 ## Run it
 
-To try it on your own machine: Node.js 24 or later, nothing else (Cairn has no dependencies). Create a bot
+To try it on your own machine: Node.js 24 or later, nothing else (monitoring has no dependencies; trading
+adds one, see [step 3d](#3d-enable-trading-optional)). Create a bot
 with [@BotFather](https://t.me/BotFather), then:
 
 ```sh
@@ -440,7 +551,9 @@ configuration or an incompatible chain/spec, and 3 for a rejected Telegram token
 
 | Command | Who, in groups | What it does |
 | --- | --- | --- |
-| `/start`, `/help` | everyone | Commands, privacy, and a link to add the bot to a group |
+| `/start`, `/help` | everyone | Commands, privacy, and a link to add the bot to a group; with trading on, `/start` opens the wallet home screen |
+| `/trade` | everyone; wallets in private chats only | Trading: Buy / Sell, your wallet, positions, withdrawals and activity; without custody, a link to the website |
+| `/buy <token> <amount> [pay with]`, `/sell <token> <amount> [receive]` | everyone; wallets in private chats only | Straight to a trade review: `/buy STRK 100 USDC` spends 100 USDC on STRK, `/sell STRK 100 USDC` sells 100 STRK for USDC (USDC when the last token is left out) |
 | `/status` | everyone | Chain, head, UTC block time, L1/L1-data/L2 gas in FRI, RPC spec |
 | `/balance 0x… [token]` | everyone | Exact balances of every registry token, or of one token (a symbol or any token address); for a watched address, also the other tokens seen moving for it |
 | `/tx 0x…` | everyone | Finality, execution, block, fee, escaped revert reason, explorer link |
@@ -750,6 +863,8 @@ Any other refusal drops that one alert with a warning in the logs.
 npm run check       # rounds 1 to 4: node .launchpad/checks/round-<n>/run.mjs
 npm test            # node --test test/*.test.mjs
 npm run transcript  # round 4's network, reorg and guard scenarios, on the checks' fakes, printed as a chat
+npm ci --ignore-scripts --prefix custody && npm test --prefix custody   # the custody engine
+npm ci --ignore-scripts --prefix trading && npm test --prefix trading   # the website and its AVNU checks
 ```
 
 Without Node.js 24 on the machine, the same through Docker:
@@ -778,5 +893,5 @@ An active or additional round cannot use that fallback. The historical round che
 The planned competition is complete. To improve the application with your coding agent, use:
 
 ```text
-Improve 0xNad/cairn from current main. Read ARCHITECTURE.md and README.md, preserve the read-only chain boundary, and never change the historical .launchpad/checks or publish credentials. Add focused regression tests, run npm test and npm run check in an isolated environment, and prepare a pull request. Do not enter or create another Hotpod round.
+Improve 0xNad/cairn from current main. Read README.md, ARCHITECTURE.md and custody/README.md. Keep monitoring read-only, never weaken the custody checks (owner-bound confirmations, pinned contracts, fee caps, no blind retries), never change the historical .launchpad/checks, and never publish credentials or keys. Never fund a wallet or trade on a public chain. Add focused regression tests, run npm test, npm run check and the custody and trading tests in an isolated environment, and prepare a pull request. Do not enter or create another Hotpod round.
 ```
